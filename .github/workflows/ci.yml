@@ -46,6 +46,7 @@ jobs:
       - name: xtask sources
         run: cargo run -p xtask -- sources
       - name: lockfile matches the manifests
+        shell: bash
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: WASM model
         run: cargo check -p cfdcraft-model --target wasm32-unknown-unknown --locked

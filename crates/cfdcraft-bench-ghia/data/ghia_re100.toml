@@ -1,0 +1,16 @@
+[source]
+paper = "Ghia, Ghia and Shin (1982), J. Comput. Phys. 48, 387-411, Tables I and II, Re=100, 129x129 grid"
+doi = "10.1016/0021-9991(82)90058-4"
+repository = "triscale-innov/LidJul.jl"
+path = "validation/ghia_re100.csv"
+commit = "e5354b7e5eb8567ac812c204338dba2cf0ef540c"
+license = "MIT (Expat)"
+independent_check = "Sandia SIERRA/Fuego Verification Manual v5.20, Table 22.1-1, printed page 186; all 34 values agree"
+independent_url = "https://www.sandia.gov/app/uploads/sites/315/2025/11/Fuego_Verification_5_20.pdf"
+
+[tolerance]
+u_max_abs = 0.02
+v_max_abs = 0.02
+units = "lid_velocities"
+justification = "Initial maximum absolute deviation limit of 0.02 normalized lid velocities (2% of lid speed), compared inclusively (deviation <= tolerance). Upstream LidJul uses fine-grid RMS < 0.01; RMS is not this maximum-error metric. The cavity mesh is 128x128 cells; Ghia used 129x129 grid points, so these counts are not directly a coarseness comparison. All 17+17 stations are checked, including near-wall stations; the computed profiles must include physical walls. Real-run mesh support and residuals must be investigated before any tolerance revision, which requires a written justification. This limit is an acceptance criterion, not a claimed discretization-error bound."
+interpolation = "Linear interpolation in range; endpoint-clamped outside range by the cfdcraft contract. LidJul clamps bracket indices and extrapolates outside range, so its out-of-range behavior differs."

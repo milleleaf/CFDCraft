@@ -1,0 +1,31 @@
+CFDCraft
+Copyright (c) 2026 Milleleaf and the CFDCraft contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+OpenFOAM is a trademark of its respective owners. CFDCraft is an independent project and is not
+affiliated with or endorsed by the OpenFOAM projects or their owners. CFDCraft runs OpenFOAM as a
+separate program and does not include or link its code.
+
+Third-party material
+
+This repository bundles third-party material under its own licence, listed below. The per-file list (author, source, licence) is in ATTRIBUTION.md.
+
+Lid-driven cavity centreline reference values at Re=100 (crates/cfdcraft-bench-ghia/data/ghia_re100.csv)
+- MIT (Expat). Vendored from triscale-innov/LidJul.jl, validation/ghia_re100.csv, commit
+e5354b7e5eb8567ac812c204338dba2cf0ef540c; the upstream notice is reproduced at the top of that file.
+The values are from U. Ghia, K. N. Ghia and C. T. Shin, J. Comput. Phys. 48 (1982) 387-411, and were
+checked against the Sandia SIERRA/Fuego Verification Manual v5.20.
+
+The OpenFOAM log files under crates/cfdcraft-backend-esi/tests/fixtures are captured program output
+used as test inputs.
+
+MIT License
+
+Copyright (c) 2026 Milleleaf and the CFDCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

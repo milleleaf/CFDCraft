@@ -1,0 +1,52 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  14
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+Build  : 14-a4867fc914c1
+Exec   : surfaceFeatures
+Date   : Oct 24 2026
+Time   : 23:13:09
+Host   : "69cadebac291"
+PID    : 190
+I/O    : uncollated
+Case   : /w/of14/windAroundBuildings
+nProcs : 1
+sigFpe : Enabling floating point exception trapping (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 10)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Reading "surfaceFeaturesDict"
+
+Surface            : "buildings.obj"
+
+
+Feature line extraction is only valid on closed manifold surfaces.
+Statistics:
+Triangles    : 400020
+Vertices     : 200062
+Bounding Box : (8.19019 18.6039 0) (237.283 158.66 76)
+
+
+Constructing feature set from included angle 2.61799
+Selecting edges purely based on geometric tests: no
+#0  Foam::error::printStack(Foam::Ostream&) at ??:?
+#1  Foam::sigFpe::sigHandler(int) at ??:?
+#2  ? in "/usr/lib/x86_64-linux-gnu/libc.so.6"
+#3  Foam::surfaceFeatures::calcFeatPoints(Foam::List<Foam::surfaceFeatures::edgeStatus> const&, double) at ??:?
+#4  Foam::surfaceFeatures::findFeatures(double, bool) at ??:?
+#5  Foam::surfaceFeatures::surfaceFeatures(Foam::triSurface const&, double, double, int, bool) at ??:?
+#6  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+#7  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+#8  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+#9  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+#10  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+#11  ? in "/usr/lib/x86_64-linux-gnu/libc.so.6"
+#12  __libc_start_main in "/usr/lib/x86_64-linux-gnu/libc.so.6"
+#13  ? in "/opt/openfoam14/platforms/linux64GccDPInt32Opt/bin/surfaceFeatures"
+Floating point exception (core dumped)

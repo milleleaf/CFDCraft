@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "xtask",
+    "crates/cfdcraft-model",
+    "crates/cfdcraft-backend-esi",
+    "crates/cfdcraft-executor",
+    "crates/cfdcraft-bench-ghia",
+    "crates/cfdcraft-cli",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

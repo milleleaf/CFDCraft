@@ -1,0 +1,10 @@
+[package]
+name = "cfdcraft-bench-ghia"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "=2.0.21"
+toml = "=1.1.8"
+

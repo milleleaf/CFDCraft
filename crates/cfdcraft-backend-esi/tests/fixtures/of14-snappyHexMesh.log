@@ -1,0 +1,53 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  14
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+Build  : 14-a4867fc914c1
+Exec   : snappyHexMesh
+Date   : Oct 24 2026
+Time   : 23:13:10
+Host   : "69cadebac291"
+PID    : 234
+I/O    : uncollated
+Case   : /w/of14/windAroundBuildings
+nProcs : 1
+sigFpe : Enabling floating point exception trapping (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 10)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh for time = 0
+
+Read mesh in = 0.009159 s
+Reading "snappyHexMeshDict"
+
+
+Overall mesh bounding box  : (-20 -50 0) (330 230 140)
+Relative tolerance         : 1e-06
+Absolute matching distance : 0.000469574
+
+Reading refinement surfaces...
+Read refinement surfaces in = 0.539851 s
+
+Reading refinement regions...
+Refinement level 2 for all cells inside refinementBox
+Read refinement regions in = 2.6e-05 s
+
+Reading features...
+
+
+--> FOAM FATAL IO ERROR: 
+Could not open "/w/of14/windAroundBuildings/constant/geometry/buildings.eMesh"
+
+file: /opt/openfoam14/etc/caseDicts/mesh/generation/snappyHexMeshDict.cfg!castellatedMeshControls/features at line 43.
+
+    From function void Foam::refinementFeatures::read(const Foam::objectRegistry&, const Foam::PtrList<Foam::dictionary>&)
+    in file refinementFeatures/refinementFeatures.C at line 95.
+
+FOAM exiting
+

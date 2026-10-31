@@ -1,0 +1,54 @@
+{
+  "schema_version": 0,
+  "domain": {
+    "length_x": {
+      "value": 0.1,
+      "unit": "m"
+    },
+    "length_y": {
+      "value": 0.1,
+      "unit": "m"
+    },
+    "length_z": {
+      "value": 0.05,
+      "unit": "m"
+    }
+  },
+  "fluid": {
+    "kinematic_viscosity": {
+      "value": 0.0001,
+      "unit": "m2/s"
+    }
+  },
+  "boundary_conditions": {
+    "lid_velocity": {
+      "value": 0.1,
+      "unit": "m/s"
+    },
+    "moving_wall": "Lid",
+    "stationary_walls": "NoSlip"
+  },
+  "mesh": {
+    "cells_x": 128,
+    "cells_y": 128,
+    "cells_z": 1
+  },
+  "solver": {
+    "solver": "SimpleLaminar",
+    "end_time": {
+      "value": 5000,
+      "unit": "s"
+    },
+    "write_interval": {
+      "value": 500,
+      "unit": "s"
+    },
+    "convergence": {
+      "p": 1e-06,
+      "U": 1e-06
+    }
+  },
+  "monitors": {
+    "centreline_u_sample_count": 64
+  }
+}

@@ -1,0 +1,12 @@
+# Example host profile used by the tests. Copy to hosts.toml (gitignored) and set ssh_target to your box.
+[profiles.box]
+ssh_target = "USER@HOST"
+docker_socket_remote = "/var/run/docker.sock"
+work_dir = "/data/cfdcraft/work"
+cpus = 2
+memory_gb = 8
+wall_clock_seconds = 3600
+concurrency = 1
+load_threshold = 8.0
+container_prefix = "cfdcraft-"
+remote_user_uid = 1000

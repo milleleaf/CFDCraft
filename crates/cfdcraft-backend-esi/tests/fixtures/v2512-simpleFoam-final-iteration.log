@@ -1,0 +1,33 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2512                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _87ed40d2-20251219 OPENFOAM=2512 version=2512
+Arch   : "LSB;label=32;scalar=64"
+Exec   : simpleFoam
+Date   : Oct 28 2026
+Time   : 06:57:10
+Host   : f784e4005584
+PID    : 492
+I/O    : uncollated
+Case   : /w
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+memory pool : not available
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Time = 2000
+
+smoothSolver:  Solving for Ux, Initial residual = 1.40824257965e-05, Final residual = 5.73080745087e-11, No Iterations 10
+smoothSolver:  Solving for Uy, Initial residual = 1.64915897456e-05, Final residual = 6.68156882637e-11, No Iterations 10
+DICPCG:  Solving for p, Initial residual = 1.16679921136e-05, Final residual = 8.07812612296e-11, No Iterations 207
+time step continuity errors : sum local = 1.76001718173e-12, global = 5.82244678358e-18, cumulative = -1.12538524598e-16
+ExecutionTime = 108.42 s  ClockTime = 109 s
+
+End
+

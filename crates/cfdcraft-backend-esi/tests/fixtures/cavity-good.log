@@ -1,0 +1,10 @@
+sigFpe : Enabling floating point exception trapping (FOAM_SIGFPE).
+cells: 16384
+Total volume = 0.0005
+Mesh OK.
+Time = 2000
+smoothSolver: Solving for Ux, Initial residual = 1e-8, Final residual = 1e-11, No Iterations 1
+smoothSolver: Solving for Uy, Initial residual = 2e-8, Final residual = 1e-11, No Iterations 1
+PCG: Solving for p, Initial residual = 3e-8, Final residual = 1e-11, No Iterations 1
+ExecutionTime = 1 s ClockTime = 1 s
+End

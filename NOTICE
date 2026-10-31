@@ -3,9 +3,9 @@ Copyright (c) 2026 Milleleaf and the CFDCraft contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-OpenFOAM is a trademark of its respective owners. CFDCraft is an independent project and is not
-affiliated with or endorsed by the OpenFOAM projects or their owners. CFDCraft runs OpenFOAM as a
-separate program and does not include or link its code.
+CFDCraft is not approved or endorsed by OpenCFD Limited. OPENFOAM(R) and OpenCFD(R) are registered
+trade marks of OpenCFD Limited. CFDCraft runs OpenFOAM as a separate program and does not include or
+link its code.
 
 Third-party material
 

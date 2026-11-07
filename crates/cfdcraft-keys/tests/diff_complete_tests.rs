@@ -4,7 +4,10 @@
 use cfdcraft_keys::{
     Axis, Change, Residual, StageRecipes, ToolIdentity, ToolPart, diff_mesh, diff_result,
 };
-use cfdcraft_model::{BoundaryKind, RawBackend, RawOverride, ResolvedStudy, Study, resolve};
+use cfdcraft_model::{
+    BoundaryKind, MonitorField, RawBackend, RawOverride, ResolvedProbe, ResolvedStudy, Study,
+    resolve,
+};
 
 fn cavity() -> ResolvedStudy {
     let study = Study::from_json(include_str!(
@@ -64,6 +67,31 @@ fn raw(file: &str, entry: &str, value: &str) -> RawOverride {
         entry: text(entry),
         value: text(value),
     }
+}
+
+fn probe(label: &str, x: f64, y: f64) -> ResolvedProbe {
+    ResolvedProbe {
+        label: text(label),
+        x,
+        y,
+        field: MonitorField::Velocity,
+    }
+}
+
+/// Lists the five default probes, which changes nothing in the recipe.
+fn list_default_probes(r: &mut ResolvedStudy) {
+    let (lx, ly) = (r.domain.length_x, r.domain.length_y);
+    r.monitors.probes = [
+        (0.5, 0.5),
+        (0.25, 0.25),
+        (0.75, 0.25),
+        (0.25, 0.75),
+        (0.75, 0.75),
+    ]
+    .iter()
+    .zip(["a", "b", "c", "d", "e"])
+    .map(|((fx, fy), label)| probe(label, fx * lx, fy * ly))
+    .collect();
 }
 
 fn rows(o: &ResolvedStudy) -> Vec<Row> {
@@ -295,6 +323,38 @@ fn rows(o: &ResolvedStudy) -> Vec<Row> {
             }],
         ),
         row(
+            "the default probes listed",
+            list_default_probes,
+            vec![],
+            vec![],
+        ),
+        row(
+            "a sixth probe",
+            |r| {
+                list_default_probes(r);
+                r.monitors.probes.push(probe("f", 0.05, 0.05));
+            },
+            vec![],
+            vec![Change::Monitor {
+                id: text("probe_6"),
+                from: None,
+                to: Some(text("x 0.05 m, y 0.05 m, velocity")),
+            }],
+        ),
+        row(
+            "a probe moved",
+            |r| {
+                list_default_probes(r);
+                r.monitors.probes[1].x = 0.03;
+            },
+            vec![],
+            vec![Change::Monitor {
+                id: text("probe_2"),
+                from: Some(text("x 0.025 m, y 0.025 m, velocity")),
+                to: Some(text("x 0.03 m, y 0.025 m, velocity")),
+            }],
+        ),
+        row(
             "a raw override outside the mesh",
             |r| {
                 r.raw_overrides.insert(
@@ -350,12 +410,14 @@ fn every_setting_gives_the_change_that_names_it() {
             "{}: the mesh changes",
             row.name
         );
-        assert_eq!(
-            diff_result(&old.result, &new.result),
-            row.result,
-            "{}: the result changes",
-            row.name
-        );
+        // A length also moves the default probes, which sit at fractions of the domain: those
+        // Monitor lines are real and are checked in diff_monitors_tests, so a length row names
+        // only the setting change here.
+        let mut result = diff_result(&old.result, &new.result);
+        if row.name.starts_with("length ") {
+            result.retain(|c| !matches!(c, Change::Monitor { .. }));
+        }
+        assert_eq!(result, row.result, "{}: the result changes", row.name);
     }
 }
 

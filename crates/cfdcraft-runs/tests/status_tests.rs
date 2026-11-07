@@ -1,6 +1,7 @@
 use cfdcraft_model::{Study, resolve};
 use cfdcraft_runs::{
-    Axis, Change, Output, Provenance, RunRecord, StageRecipes, StageState, ToolIdentity, status,
+    Axis, Change, Outcome, Output, Provenance, RunRecord, StageRecipes, StageState, ToolIdentity,
+    status,
 };
 use cfdcraft_store::ContentHash;
 use serde_json::json;
@@ -60,6 +61,11 @@ fn record(id: &str, recipes: &StageRecipes, with_mesh: bool, rerun_of: Option<&s
         checks: Vec::new(),
         key_numbers: Default::default(),
         comparison: None,
+        continued_from: None,
+        outcome: Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 

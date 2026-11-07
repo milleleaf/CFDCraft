@@ -5,8 +5,9 @@
 
 use crate::report::Report;
 use cfdcraft_backend_esi::{
-    CaseTree, CompileError, Dialect, compile,
-    export::export_tree,
+    CaseTree, CompileError, Dialect,
+    case::{CaseOptions, compile_with},
+    export::export_tree_for,
     guard::{self, Refusal},
     reader::{EsiReader, source_files},
 };
@@ -67,7 +68,20 @@ pub(crate) fn rel_name(path: &Path) -> String {
 // The report is the error on purpose: a failed chain hands back the finished, classified result.
 #[allow(clippy::result_large_err)]
 pub fn prepare(study_json: &str, dialect: Dialect) -> Result<Prepared, Report> {
-    prepare_with_tamper(study_json, dialect, |_| {})
+    prepare_with_options(study_json, dialect, &CaseOptions::default())
+}
+
+/// `prepare` for a case written for the number of processes in `options`. One process gives
+/// exactly the trees `prepare` gives; more add the decomposition and a parallel `Allrun`, and the
+/// case goes through the same gates.
+// The report is the error on purpose: a failed chain hands back the finished, classified result.
+#[allow(clippy::result_large_err)]
+pub fn prepare_with_options(
+    study_json: &str,
+    dialect: Dialect,
+    options: &CaseOptions,
+) -> Result<Prepared, Report> {
+    prepare_inner(study_json, dialect, options, |_| {})
 }
 
 /// `prepare`, with a closure that edits the compiled tree before the safety scan. It exists so
@@ -77,6 +91,16 @@ pub fn prepare(study_json: &str, dialect: Dialect) -> Result<Prepared, Report> {
 pub fn prepare_with_tamper(
     study_json: &str,
     dialect: Dialect,
+    tamper: impl FnOnce(&mut CaseTree),
+) -> Result<Prepared, Report> {
+    prepare_inner(study_json, dialect, &CaseOptions::default(), tamper)
+}
+
+#[allow(clippy::result_large_err)]
+fn prepare_inner(
+    study_json: &str,
+    dialect: Dialect,
+    options: &CaseOptions,
     tamper: impl FnOnce(&mut CaseTree),
 ) -> Result<Prepared, Report> {
     let fail = |found: Vec<Diagnostic>, hash: Option<String>, note: Option<MigrationNote>| {
@@ -96,7 +120,7 @@ pub fn prepare_with_tamper(
     let resolved = resolve(&study)
         .map_err(|e| fail(vec![model_refused(e.to_string())], None, migration.clone()))?;
     let hash = canonical_hash(&resolved);
-    let mut tree = compile(&resolved, dialect).map_err(|e| {
+    let mut tree = compile_with(&resolved, dialect, options).map_err(|e| {
         let finding = match e {
             CompileError::Raw { label, reason } => raw_refused(&label, &reason),
             other => model_refused(other.to_string()),
@@ -113,7 +137,7 @@ pub fn prepare_with_tamper(
     if has_errors(&unread) {
         return Err(fail(unread, Some(hash), migration));
     }
-    let export_tree = export_tree(&tree, &hash);
+    let export_tree = export_tree_for(&tree, &hash, options.np);
     Ok(Prepared {
         resolved,
         hash,

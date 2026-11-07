@@ -1,5 +1,5 @@
 use crate::{
-    docker::{RunSpec, docker_cmd, run_args},
+    docker::{RunSpec, detached_args, docker_cmd, run_args},
     hosts::{HostProfile, PreflightError, preflight},
     lock::{self, Guard, Holder},
     tunnel::{SOCKET_PATH_LIMIT, Tunnel, ssh_command},
@@ -147,7 +147,7 @@ impl std::error::Error for RunError {}
 
 /// Which program a command talks to, so a failure maps to the right error.
 #[derive(Clone, Copy)]
-pub(crate) enum Stage {
+pub enum Stage {
     Ssh,
     Docker,
     Local,
@@ -233,7 +233,8 @@ pub fn wait_cancellable(
     }
 }
 
-pub(crate) fn checked(c: &mut Command, stage: Stage) -> Result<(), RunError> {
+/// Run a command to completion under a 60 s limit; a non-zero status is an error of `stage`.
+pub fn checked(c: &mut Command, stage: Stage) -> Result<(), RunError> {
     let mut child = c.spawn()?;
     let s = wait_bounded(&mut child, Duration::from_secs(60))?;
     if !s.success() {
@@ -244,7 +245,8 @@ pub(crate) fn checked(c: &mut Command, stage: Stage) -> Result<(), RunError> {
 fn text(c: &mut Command, stage: Stage) -> Result<String, RunError> {
     text_bounded(c, Duration::from_secs(30), stage)
 }
-fn text_bounded(c: &mut Command, limit: Duration, stage: Stage) -> Result<String, RunError> {
+/// Run a command and return its standard output as text, under `limit`.
+pub fn text_bounded(c: &mut Command, limit: Duration, stage: Stage) -> Result<String, RunError> {
     let (status, out, err) = output_bounded(c, limit)?;
     if !status.success() {
         return Err(stage.failure(status, String::from_utf8_lossy(&err).into_owned()));
@@ -253,7 +255,7 @@ fn text_bounded(c: &mut Command, limit: Duration, stage: Stage) -> Result<String
 }
 /// Run a command with piped output under a wall-clock limit; the caller decides
 /// what the exit status means.
-pub(crate) fn output_bounded(
+pub fn output_bounded(
     c: &mut Command,
     limit: Duration,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), RunError> {
@@ -326,6 +328,44 @@ fn stop_and_confirm(p: &HostProfile, socket: &Path, id: &str) -> bool {
     matches!(remaining, Ok(ref s) if s.trim().is_empty())
 }
 
+/// The job lock folder on the compute host.
+fn lock_path(p: &HostProfile) -> String {
+    format!("{}/.cfdcraft-job-lock", p.work_dir)
+}
+
+/// A detached job that is running on the compute host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Started {
+    pub run_id: String,
+    pub remote_dir: String,
+}
+
+/// A container with this run id exists on the host (found by its label).
+fn confirm_by_label(p: &HostProfile, socket: &Path, id: &str) -> Result<(), RunError> {
+    let label = format!("cfdcraft.run={id}");
+    let seen = text(
+        &mut docker_cmd(
+            p,
+            socket,
+            &[
+                "ps",
+                "--filter",
+                &format!("label={label}"),
+                "--format",
+                "{{.Names}}",
+            ],
+        ),
+        Stage::Docker,
+    )?;
+    if seen.lines().any(|l| l.trim() == id) {
+        Ok(())
+    } else {
+        Err(RunError::Docker {
+            detail: format!("container {id} not found after start"),
+        })
+    }
+}
+
 /// A started job: tunnel open, preflight passed, project lock held. `execute`
 /// does the long part. Dropping a job that was never executed releases the lock
 /// and closes the tunnel.
@@ -348,6 +388,19 @@ impl Job {
         config: RunConfig,
         label: &str,
     ) -> Result<Job, RunError> {
+        Self::begin_as(p, key, config, &run_id(label)?)
+    }
+
+    /// Like `begin`, with a run id the caller chose before the lock is taken, so
+    /// a crash leaves a container name that can be looked for. The id is
+    /// `[A-Za-z0-9-]`, 1 to 128 characters, and starts with the profile's
+    /// container prefix.
+    pub fn begin_as(
+        p: &HostProfile,
+        key: &Path,
+        config: RunConfig,
+        run_id: &str,
+    ) -> Result<Job, RunError> {
         p.validate()?;
         if !key.is_file() {
             return Err(RunError::Setup(format!(
@@ -355,7 +408,16 @@ impl Job {
                 key.display()
             )));
         }
-        let id = run_id(label)?;
+        if run_id.is_empty()
+            || run_id.len() > 128
+            || !run_id.starts_with(&p.container_prefix)
+            || !run_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err(RunError::Setup("invalid run id".into()));
+        }
+        let id = run_id.to_string();
         let tunnel = Tunnel::open(p, key, &config.socket_dir, &short_tag(&id))?;
         let uptime = text(ssh_command(p, key).arg("uptime"), Stage::Ssh)?;
         let ps = text(
@@ -371,7 +433,7 @@ impl Job {
         if uid.trim() != p.remote_user_uid.to_string() {
             return Err(RunError::Setup("remote UID differs from profile".into()));
         }
-        let lock_path = format!("{}/.cfdcraft-job-lock", p.work_dir);
+        let lock_path = lock_path(p);
         let holder = Holder::new(
             &id,
             &id,
@@ -484,6 +546,73 @@ impl Job {
             exit_code: status.code(),
             preflight_uptime: self.uptime.clone(),
             duration_seconds: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Start the job so that it outlives this client: upload the case, start a
+    /// labelled container that is not removed on exit and keep the lock. The
+    /// tunnel closes when this returns; the container keeps running.
+    pub fn start_detached(
+        mut self,
+        case: &Path,
+        scratch: &Path,
+        spec: &RunSpec,
+        doc: &str,
+        np: u32,
+    ) -> Result<Started, RunError> {
+        let (p, key, id) = (&self.p, &self.key, &self.id);
+        let cancelled = || self.cancel.load(Ordering::SeqCst);
+        std::fs::create_dir_all(scratch)?;
+        if cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        let remote = format!("{}/{id}", p.work_dir);
+        let args = detached_args(p, &remote, id, doc, np, spec).map_err(RunError::Setup)?;
+        let refs: Vec<_> = args.iter().map(String::as_str).collect();
+        checked(
+            ssh_command(p, key).arg(format!("mkdir '{}'", remote)),
+            Stage::Ssh,
+        )?;
+        let archive = scratch.join("input.tar");
+        checked(
+            Command::new("tar")
+                .arg("-C")
+                .arg(case)
+                .args(["-cf"])
+                .arg(&archive)
+                .arg("."),
+            Stage::Local,
+        )?;
+        let uploaded = checked(
+            ssh_command(p, key)
+                .arg(format!("tar -xf - -C '{}'", remote))
+                .stdin(File::open(&archive)?),
+            Stage::Ssh,
+        );
+        let _ = std::fs::remove_file(&archive);
+        uploaded?;
+        if cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        let socket = &self.tunnel.socket_path;
+        let started = checked(&mut docker_cmd(p, socket, &refs), Stage::Docker)
+            .and_then(|()| confirm_by_label(p, socket, id));
+        if let Err(e) = started {
+            if stop_and_confirm(p, socket, id) {
+                if lock::release_checked(p, key, &lock_path(p), id).is_ok() {
+                    self.lock.release = false;
+                }
+                return Err(e);
+            }
+            self.lock.release = false;
+            return Err(RunError::Setup(format!(
+                "could not confirm owned container {id} stopped; retained project lock for recovery"
+            )));
+        }
+        self.lock.release = false;
+        Ok(Started {
+            run_id: id.clone(),
+            remote_dir: remote,
         })
     }
 }

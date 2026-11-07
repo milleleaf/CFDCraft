@@ -14,8 +14,16 @@
 
 use std::path::{Path, PathBuf};
 
-use cfdcraft_backend_esi::Dialect;
-use cfdcraft_capture::{key_numbers, mesh_bundle, result_bundle, store_bundle};
+use cfdcraft_assess::Spec;
+use cfdcraft_backend_esi::{
+    CaseFile, CaseTree, Dialect,
+    case::{CaseOptions, continue_case},
+    export::export_tree_for,
+};
+use cfdcraft_capture::{
+    CaptureError, checkpoint_bundle, key_numbers, latest_time_dir, mesh_bundle, read_entry,
+    result_bundle, store_bundle,
+};
 use cfdcraft_compare::{Comparison, KeyNumbers, Tolerance, compare};
 use cfdcraft_doc::{
     DocError, Document, Opened, Stamp, open, open_stamped, save_if_unchanged, store_dir,
@@ -23,25 +31,29 @@ use cfdcraft_doc::{
 use cfdcraft_keys::{Stage, StageKeys, StageRecipes, ToolIdentity, diff_mesh};
 use cfdcraft_model::{Diagnostic, Severity, Study};
 use cfdcraft_runs::{
-    Check, Item, Output, Provenance, RunRecord, StageState, Status, find_run, is_plain_name,
-    latest_mesh, latest_result, next_run_id, status_for, verify_runs,
+    Check, Checkpoint, ContinuedFrom, Item, Output, Provenance, RunRecord, StageState, Status,
+    find_run, is_plain_name, latest_mesh, latest_result, next_run_id, status_for, verify_runs,
 };
+use cfdcraft_settle::{Settings, Verdict};
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
 
+use crate::convergence::{assess_dir, settings_for, spec_for};
 use crate::documents::{
     DocOutcome, Finding, finding, is_pack_name, migration_with, not_written, pack_kept, problem,
     read_failure, refused, shown,
 };
 use crate::inspect::judgement;
 use crate::keys::tool_identity;
-use crate::prepare::{Prepared, prepare};
+use crate::prepare::{Prepared, prepare, prepare_with_options};
+use crate::queue_ops::CONTINUE_REFUSED;
 use crate::reasons::reason_text;
 use crate::report::{ExitClass, Report};
 use crate::repro::{ComparisonData, Repro, RunData};
 use crate::scenario_ops::effective_of;
 
 const SOLVE: &str = "solve";
+const CONTINUE: &str = "continue";
 
 /// The code of an update that is refused.
 const REFUSED: &str = "CFD-REPRO-008";
@@ -56,6 +68,11 @@ pub struct CaseRun {
     pub checks: Vec<Check>,
     /// A label for the machine the case ran on, if it has one.
     pub host: Option<String>,
+    /// The number of processes the case ran on; `None` is a run that did not say.
+    pub np: Option<u32>,
+    /// The solver time a run stopped on request was cut short at, as plain decimal text. A run
+    /// that went to its end has none. The folder of a stopped run holds its latest written time.
+    pub stopped_at: Option<String>,
 }
 
 /// Something that can run the case of a study.
@@ -82,6 +99,12 @@ pub enum JobAction {
         /// Whether to run with this build's tools when the run was made with others.
         allow_tool_change: bool,
     },
+    /// Run the result again from the saved state of a run that was stopped on request, with the
+    /// settings that run recorded, and record the new run with its parent.
+    Continue {
+        /// The stopped run to continue.
+        run: String,
+    },
 }
 
 /// The name of the operation a job reports as.
@@ -90,6 +113,7 @@ pub(crate) fn operation_of(action: &JobAction) -> &'static str {
         JobAction::Solve => SOLVE,
         JobAction::Item(_) => "update",
         JobAction::Rerun { .. } => "rerun",
+        JobAction::Continue { .. } => CONTINUE,
     }
 }
 
@@ -134,6 +158,31 @@ pub struct DocJob {
     pending: Pending,
     warnings: Vec<Diagnostic>,
     repeat: Option<Repeat>,
+    /// What the verdict on a finished run is made from: the monitors and the tolerances.
+    assess: (Spec, Settings),
+    /// The cells of the mesh the study makes.
+    cells: u64,
+    /// For a continued run, the run and time it starts from.
+    continue_from: Option<ContinuedFrom>,
+    /// For a continued run, the saved state it starts from: the blob and its size.
+    checkpoint: Option<(ContentHash, u64)>,
+}
+
+/// The cells of the mesh a study makes.
+fn cells_of(resolved: &cfdcraft_model::ResolvedStudy) -> u64 {
+    resolved
+        .mesh
+        .cells_x
+        .saturating_mul(resolved.mesh.cells_y)
+        .saturating_mul(resolved.mesh.cells_z)
+}
+
+/// An id given by a person, shortened and with control characters replaced, for a message.
+fn plain_for_message(id: &str) -> String {
+    id.chars()
+        .take(40)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 fn stage_words(mesh: bool, result: bool) -> Vec<String> {
@@ -472,6 +521,9 @@ fn plan_with_tool(
     {
         return plan_rerun(path, run, *tolerance, *allow_tool_change, &tool);
     }
+    if let JobAction::Continue { run } = &action {
+        return plan_continue(path, run, &tool);
+    }
     plan_make(path, scenario, action, &tool, options)
 }
 
@@ -501,6 +553,8 @@ fn plan_make(
         ..
     } = prepared;
     let runs = &document.artifacts.runs;
+    let assess = (spec_for(&resolved), settings_for(&effective));
+    let cells = cells_of(&resolved);
 
     let keys = recipes.keys();
     let pruned = Pruned {
@@ -561,6 +615,10 @@ fn plan_make(
         pending: wanted,
         warnings,
         repeat: None,
+        assess,
+        cells,
+        continue_from: None,
+        checkpoint: None,
     })
 }
 
@@ -648,6 +706,8 @@ fn plan_rerun(
     room_for_run(OP, path, &document)?;
     let effective = original.provenance.settings.clone();
     let scenario = original.scenario.clone();
+    let assess = (spec_for(&prepared.resolved), settings_for(&effective));
+    let cells = cells_of(&prepared.resolved);
     let repeat = Repeat {
         original: original.clone(),
         tolerance,
@@ -673,11 +733,129 @@ fn plan_rerun(
         },
         warnings,
         repeat: Some(repeat),
+        assess,
+        cells,
+        continue_from: None,
+        checkpoint: None,
+    })
+}
+
+/// Plan the continuation of the stopped run called `wanted`. Only what the run recorded is used:
+/// the settings it was made from and its saved state, never the study as the document holds it now.
+fn plan_continue(
+    path: &Path,
+    wanted: &str,
+    tool: &ToolIdentity,
+) -> Result<DocJob, Box<DocOutcome>> {
+    let fail = |reason: String| {
+        let line = Line::ContinueRefused { reason };
+        Box::new(refused(CONTINUE, problem((CONTINUE_REFUSED, line))))
+    };
+    if is_pack_name(path) {
+        return Err(Box::new(refused(CONTINUE, problem(pack_kept(path)))));
+    }
+    let opened = open(path).map_err(|e| Box::new(open_refusal(CONTINUE, &e, path)))?;
+    if opened.packed_entries > 0 {
+        return Err(Box::new(refused(CONTINUE, problem(pack_kept(path)))));
+    }
+    let document = opened.document;
+    let runs = &document.artifacts.runs;
+    if let Err(e) = verify_runs(runs) {
+        return Err(Box::new(refused(
+            CONTINUE,
+            problem(inconsistent(&e.to_string())),
+        )));
+    }
+    let original = is_plain_name(wanted)
+        .then(|| find_run(runs, wanted))
+        .flatten();
+    let Some(original) = original else {
+        let name = plain_for_message(wanted);
+        return Err(fail(format!("there is no run called {name}")));
+    };
+    let (cfdcraft_runs::Outcome::Stopped { .. }, Some(checkpoint)) =
+        (&original.outcome, original.checkpoint.as_ref())
+    else {
+        let run = &original.id;
+        return Err(fail(format!(
+            "{run} went to its end and has no saved state to continue from"
+        )));
+    };
+    let store = Store::open(store_dir(path)).ok();
+    if !blob_present(store.as_ref(), &checkpoint.blob, checkpoint.size) {
+        let run = &original.id;
+        return Err(fail(format!(
+            "the saved state of {run} is no longer in the store"
+        )));
+    }
+
+    let study_json =
+        serde_json::to_string_pretty(&original.provenance.settings).expect("a study is plain data");
+    let prepared = prepare(&study_json, Dialect::EsiV2512).map_err(|report| {
+        Box::new(DocOutcome {
+            report: report.for_operation(CONTINUE),
+            line: None,
+        })
+    })?;
+    let recorded = StageRecipes::from_resolved(&prepared.resolved, &original.provenance.tool);
+    let recipes = StageRecipes::from_resolved(&prepared.resolved, tool);
+    if recorded.keys().mesh != original.provenance.mesh_key {
+        let reason = format!(
+            "run {}: the recorded settings do not make the recorded keys",
+            original.id
+        );
+        return Err(Box::new(refused(CONTINUE, problem(inconsistent(&reason)))));
+    }
+    if recipes.keys().mesh != original.provenance.mesh_key {
+        let changes = diff_mesh(&recorded.mesh, &recipes.mesh);
+        let run = &original.id;
+        let what = if changes.is_empty() {
+            "the mesh it stands on is not the one this build makes".to_owned()
+        } else {
+            reason_text(&changes)
+        };
+        return Err(fail(format!(
+            "{run} was made with other tools than this build: {what}"
+        )));
+    }
+
+    room_for_run(CONTINUE, path, &document)?;
+    let effective = original.provenance.settings.clone();
+    let scenario = original.scenario.clone();
+    let from = ContinuedFrom {
+        run: original.id.clone(),
+        time: checkpoint.time.clone(),
+    };
+    let held = (checkpoint.blob, checkpoint.size);
+    let assess = (spec_for(&prepared.resolved), settings_for(&effective));
+    let cells = cells_of(&prepared.resolved);
+    Ok(DocJob {
+        path: path.to_owned(),
+        action: JobAction::Continue {
+            run: wanted.to_owned(),
+        },
+        study_json,
+        effective,
+        scenario,
+        hash: prepared.hash,
+        end_time: prepared.resolved.solver.end_time,
+        recipes,
+        document,
+        pending: Pending {
+            mesh: false,
+            result: true,
+        },
+        warnings: prepared.warnings,
+        repeat: None,
+        assess,
+        cells,
+        continue_from: Some(from),
+        checkpoint: Some(held),
     })
 }
 
 impl DocJob {
-    /// The name of the operation this job reports as: `solve`, `update` or `rerun`.
+    /// The name of the operation this job reports as: `solve`, `update`, `rerun` or `continue`.
     pub(crate) fn operation(&self) -> &'static str {
         operation_of(&self.action)
     }
@@ -685,6 +863,72 @@ impl DocJob {
     /// The study the case is made from, as pretty JSON.
     pub fn study_json(&self) -> &str {
         &self.study_json
+    }
+
+    /// The variant the job is for; `None` is the study itself.
+    pub(crate) fn scenario(&self) -> Option<&str> {
+        self.scenario.as_deref()
+    }
+
+    /// The cells of the mesh the case makes.
+    pub fn cell_count(&self) -> u64 {
+        self.cells
+    }
+
+    /// What the verdict on a finished run of this job is made from: the monitors and the
+    /// tolerances. A watcher reads the same pair, so the table it shows and the recorded verdict
+    /// cannot disagree.
+    pub fn assess_inputs(&self) -> &(Spec, Settings) {
+        &self.assess
+    }
+
+    /// The fields of the saved state a continued run starts from, as case files under their time
+    /// folder: `U` and `p`, and `phi` when it was saved. A job that is not a continuation has
+    /// none. The blob is checked against its name when it is read.
+    pub fn continue_seed(&self, store: &Store) -> Result<Vec<CaseFile>, String> {
+        let (Some(from), Some((blob, _))) = (&self.continue_from, &self.checkpoint) else {
+            return Ok(Vec::new());
+        };
+        let bytes = store
+            .read(*blob)
+            .map_err(|e| format!("the saved state of {} cannot be read: {e}", from.run))?;
+        let mut files = Vec::new();
+        for field in ["U", "p", "phi"] {
+            let name = format!("{}/{field}", from.time);
+            match read_entry(&bytes, &name) {
+                Ok(data) => files.push(CaseFile {
+                    rel_path: name.into(),
+                    bytes: data,
+                }),
+                Err(CaptureError::Missing(_)) if field == "phi" => {}
+                Err(e) => {
+                    return Err(format!(
+                        "the saved state of {} is incomplete: {e}",
+                        from.run
+                    ));
+                }
+            }
+        }
+        Ok(files)
+    }
+
+    /// The case to run on `np` processes: the exported case of the study, and with a `seed` the
+    /// same case continued from the seed's latest time. The seed goes through the safety scan with
+    /// the rest of the case. Without a seed this is the ordinary export for `np` processes.
+    pub fn case_tree(&self, np: u32, seed: &[CaseFile]) -> Result<CaseTree, Box<Report>> {
+        let prepared =
+            prepare_with_options(&self.study_json, Dialect::EsiV2512, &CaseOptions { np })
+                .map_err(|report| Box::new(report.for_operation(self.operation())))?;
+        if seed.is_empty() {
+            return Ok(prepared.export_tree);
+        }
+        let continued = continue_case(&prepared.tree, seed).map_err(|e| {
+            let line = Line::ContinueRefused {
+                reason: e.to_string(),
+            };
+            Box::new(refused(CONTINUE, problem((CONTINUE_REFUSED, line))).report)
+        })?;
+        Ok(export_tree_for(&continued, &prepared.hash, np))
     }
 
     /// Record what the runner made. Nothing is recorded unless every check held and the whole
@@ -747,7 +991,15 @@ impl DocJob {
     /// named by their content, so storing them before the document is looked at again does no
     /// harm when the record is then refused.
     fn store_output(&self, run: &CaseRun) -> Result<Stored, String> {
+        if let Some(time) = &run.stopped_at {
+            return self.store_stopped(run, time);
+        }
         let dir = run.results_dir.as_path();
+        // The verdict is made from the files as the run left them, before anything is stored.
+        let verdict = self
+            .pending
+            .result
+            .then(|| assess_dir(dir, &self.assess.0, &self.assess.1).verdict);
         let mesh = self
             .pending
             .mesh
@@ -780,6 +1032,46 @@ impl DocJob {
             result,
             numbers,
             regenerated_mesh: None,
+            checkpoint: None,
+            verdict,
+        })
+    }
+
+    /// Capture a run that was stopped on request: its mesh when the job is waiting for one, and its
+    /// saved state at the latest time it wrote. No result is stored and there is no verdict.
+    fn store_stopped(&self, run: &CaseRun, time: &str) -> Result<Stored, String> {
+        let dir = run.results_dir.as_path();
+        let latest = latest_time_dir(dir).map_err(|e| e.to_string())?;
+        if latest != time {
+            return Err(format!(
+                "the run was stopped at {time}, but the newest time it wrote is {latest}"
+            ));
+        }
+        let mesh = self
+            .pending
+            .mesh
+            .then(|| mesh_bundle(dir))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let saved = checkpoint_bundle(dir, time).map_err(|e| e.to_string())?;
+
+        let store = Store::create(store_dir(&self.path)).map_err(|e| e.to_string())?;
+        let mesh = mesh
+            .map(|bundle| store_bundle(&store, &bundle))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let (blob, size) = store_bundle(&store, &saved).map_err(|e| e.to_string())?;
+        Ok(Stored {
+            mesh,
+            result: None,
+            numbers: KeyNumbers::new(),
+            regenerated_mesh: None,
+            checkpoint: Some(Checkpoint {
+                time: time.to_owned(),
+                blob,
+                size,
+            }),
+            verdict: None,
         })
     }
 
@@ -795,8 +1087,19 @@ impl DocJob {
             mesh: mesh_blob,
             result: result_blob,
             numbers,
+            checkpoint,
+            verdict,
             ..
         } = stored;
+        let (outcome, checkpoint) = match checkpoint {
+            Some(saved) => (
+                cfdcraft_runs::Outcome::Stopped {
+                    at_time: saved.time.clone(),
+                },
+                Some(saved),
+            ),
+            None => (cfdcraft_runs::Outcome::Complete, None),
+        };
         let mesh_hash = match mesh_blob {
             Some((hash, _)) => hash,
             None => latest_mesh(runs, keys.mesh)
@@ -832,6 +1135,11 @@ impl DocJob {
             checks: run.checks,
             key_numbers: numbers,
             comparison: None,
+            continued_from: self.continue_from.clone(),
+            outcome,
+            checkpoint,
+            verdict,
+            np: run.np,
         })
     }
 
@@ -894,6 +1202,11 @@ impl DocJob {
             checks,
             key_numbers: stored.numbers,
             comparison: Some(comparison.clone()),
+            continued_from: None,
+            outcome: cfdcraft_runs::Outcome::Complete,
+            checkpoint: None,
+            verdict: stored.verdict,
+            np: run.np,
         };
         Ok((record, comparison))
     }
@@ -932,6 +1245,7 @@ impl DocJob {
             Err(reason) => return self.not_recorded(&reason),
         };
         let id = record.id.clone();
+        let stopped_at = record.checkpoint.as_ref().map(|saved| saved.time.clone());
         if let Err(e) = document.add_run(record) {
             return self.not_recorded(&e.to_string());
         }
@@ -940,19 +1254,27 @@ impl DocJob {
         }
 
         let mut data = run_data(Some(id.clone()), self.pending, &self.recipes.keys());
-        let line = match &self.action {
-            JobAction::Item(stage) => {
-                // The other stage was not asked for, so it was not reused either.
-                data.reused.clear();
-                Line::ItemUpdated {
-                    item: format!("{}:{}", doc_label(&self.path), stage.as_str()),
-                    run: id,
+        let line = if let Some(time) = stopped_at {
+            // A stopped run holds no result: only the mesh can have been stored, and the result
+            // stays out of date.
+            data.recorded = stage_words(self.pending.mesh, false);
+            data.reused = stage_words(!self.pending.mesh, false);
+            Line::StoppedRunNote { run: id, time }
+        } else {
+            match &self.action {
+                JobAction::Item(stage) => {
+                    // The other stage was not asked for, so it was not reused either.
+                    data.reused.clear();
+                    Line::ItemUpdated {
+                        item: format!("{}:{}", doc_label(&self.path), stage.as_str()),
+                        run: id,
+                    }
                 }
+                _ => Line::RunRecorded {
+                    run: id,
+                    stages: data.recorded.join(", "),
+                },
             }
-            _ => Line::RunRecorded {
-                run: id,
-                stages: data.recorded.join(", "),
-            },
         };
         let report = Report::from_diagnostics(operation, self.warnings, Some(self.hash))
             .with_migration(migration_with(&opened.notes, true))
@@ -966,6 +1288,9 @@ impl DocJob {
 
     fn finish_rerun(self, run: CaseRun, repeat: &Repeat) -> DocOutcome {
         let operation = operation_of(&self.action);
+        if run.stopped_at.is_some() {
+            return self.not_recorded("a rerun goes to its end and cannot be recorded as stopped");
+        }
         if let Err(outcome) = self.reopen(&run) {
             return *outcome;
         }
@@ -1028,6 +1353,10 @@ struct Stored {
     numbers: KeyNumbers,
     /// For a rerun made with other tools: the hash of the mesh that run regenerated.
     regenerated_mesh: Option<ContentHash>,
+    /// For a run stopped on request, its saved state at the latest time it wrote.
+    checkpoint: Option<Checkpoint>,
+    /// The convergence verdict on a finished run, made from the files it left.
+    verdict: Option<Verdict>,
 }
 
 /// Solve the document at `path` with `runner`: run the case if the mesh or the result is out of
@@ -1083,6 +1412,8 @@ mod tests {
                     detail: "passed".to_owned(),
                 }],
                 host: Some("fixture-host".to_owned()),
+                np: None,
+                stopped_at: None,
             })
         }
     }

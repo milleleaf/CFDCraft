@@ -14,13 +14,13 @@ endTime 60.0;
 deltaT 1;
 writeControl timeStep;
 writeInterval 60.0;
-purgeWrite 0;
+purgeWrite 2;
 writeFormat ascii;
 writePrecision 12;
 writeCompression off;
 timeFormat general;
 timePrecision 12;
-runTimeModifiable false;
+runTimeModifiable true;
 
 functions
 {
@@ -51,5 +51,117 @@ functions
                 nPoints 32;
             }
         );
+    }
+    probe_1
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.5 0.05 0.005)
+        );
+        fields (U);
+    }
+    probe_2
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.25 0.025 0.005)
+        );
+        fields (U);
+    }
+    probe_3
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.75 0.025 0.005)
+        );
+        fields (U);
+    }
+    probe_4
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.25 0.07500000000000001 0.005)
+        );
+        fields (U);
+    }
+    probe_5
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.75 0.07500000000000001 0.005)
+        );
+        fields (U);
+    }
+    balance_inlet
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name inlet;
+        operation sum;
+        fields (phi);
+    }
+    balance_outlet
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name outlet;
+        operation sum;
+        fields (phi);
+    }
+    balance_fixedWalls
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name fixedWalls;
+        operation sum;
+        fields (phi);
+    }
+    balance_symmetry
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name symmetry;
+        operation sum;
+        fields (phi);
     }
 }

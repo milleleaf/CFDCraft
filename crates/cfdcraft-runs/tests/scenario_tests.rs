@@ -1,7 +1,7 @@
 use cfdcraft_model::{Study, resolve};
 use cfdcraft_runs::{
-    Change, Output, Provenance, RunRecord, RunsError, StageRecipes, StageState, ToolIdentity,
-    status, status_for, verify_runs,
+    Change, Outcome, Output, Provenance, RunRecord, RunsError, StageRecipes, StageState,
+    ToolIdentity, status, status_for, verify_runs,
 };
 use cfdcraft_store::ContentHash;
 
@@ -65,6 +65,11 @@ fn record(
         checks: Vec::new(),
         key_numbers: Default::default(),
         comparison: None,
+        continued_from: None,
+        outcome: Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 

@@ -1,4 +1,4 @@
-//! An MCP server over stdio that offers twenty-eight typed operations and nothing else: create and
+//! An MCP server over stdio that offers thirty-five typed operations and nothing else: create and
 //! validate a study, compile and export it, save, open, pack and unpack a document, start, poll
 //! and collect a run, start a job on a document (solve it or one of its variants, rerun a recorded
 //! result, or update its mesh or its result), and read what a document records: whether it is up
@@ -6,17 +6,27 @@
 //! how two runs compare and what an update would do. Variants of a document are listed, shown,
 //! diffed, created, changed and labelled; sweeps of a document are planned, stored and checked
 //! before anything is solved; disk use is read per variant, and stored results are pruned only by
-//! the one tool that does it, which shows a plan unless it is told to apply it. The reading
-//! operations write nothing and start nothing. There is no shell and no free-form dictionary
+//! the one tool that does it, which shows a plan unless it is told to apply it. A solve is put in
+//! the document's queue and a background runner, which outlives the server, advances it; the queue
+//! is listed, added to, reordered and cancelled, a running job is asked to stop, and its monitors
+//! and log are read from the copies the runner keeps on this machine. The reading operations write
+//! nothing and start nothing. There is no shell and no free-form dictionary
 //! access. Every argument is a name, a mode, a job word, a run id, a flag, a list of changes to
 //! settings, a sweep or a study; none is a path, a host, a key or a command. Those are settings of
 //! the server itself, given once on the command line.
 //!
 //! Standard output carries protocol messages only; anything else goes to standard error.
 
+use cfdcraft_drain::{
+    finalize::read_report,
+    spawn_detached,
+    watch::{self, BalanceView, RowView, WatchError},
+};
+use cfdcraft_model::Diagnostic;
 use cfdcraft_ops::{
-    DocJobKind, HolderInfo, Report, ResultOutcome, RunMode, RunRegistry, ServerSettings, Stage,
-    StartOutcome, Status, Workspace, cases::cli_problem, scenario_ops::LabelUpdate,
+    AddRequest, DocJobKind, ExitClass, HolderInfo, JobView, Report, Repro, ResultOutcome, RunMode,
+    RunRegistry, ServerSettings, Stage, StartOutcome, Status, Workspace, cases::cli_problem,
+    queue_file::QueueFile, scenario_ops::LabelUpdate,
 };
 use cfdcraft_text::{Line, Text};
 use rmcp::{
@@ -28,7 +38,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, OnceLock},
     task::{Context, Poll},
@@ -76,6 +86,9 @@ pub struct McpConfig {
     pub key: PathBuf,
     pub hosts: PathBuf,
     pub profile: String,
+    /// Whether a solve is put in the document's queue for a background runner, which goes on when
+    /// this server stops (true), or stays attached to this server and stops with it (false).
+    pub queued_jobs: bool,
 }
 
 struct State {
@@ -113,7 +126,8 @@ impl State {
             config.hosts.clone(),
             &config.profile,
             socket_dir,
-        )?;
+        )?
+        .with_queue(config.queued_jobs);
         Ok(Self {
             workspace,
             registry: RunRegistry::new(),
@@ -360,8 +374,14 @@ impl StartDocumentJobArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RunIdArgs {
-    /// The run id that `start_run` returned.
+    /// The run id that `start_run` or `start_document_job` returned. A queued solve returns a job
+    /// id such as `q-001`.
     run_id: String,
+    /// For a job id such as `q-001`: the name of its document. Every document numbers its jobs from
+    /// 1, so without it the id is looked for in every document and counts only when exactly one has
+    /// it. A run id from `start_run` takes no document.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -409,13 +429,88 @@ struct PlanUpdateArgs {
     order: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct QueueAddArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of a variant to solve, from `scenario_list`, or `base` for the study itself. Give at
+    /// most one of `scenario`, `sweep` and `run`; with none, the study itself is queued.
+    #[serde(default)]
+    scenario: Option<String>,
+    /// The id of a sweep stored in the document, from `sweep_create`: every point of it is queued,
+    /// in point order.
+    #[serde(default)]
+    sweep: Option<String>,
+    /// The id of a stopped run, from `list_runs`: its saved state is continued.
+    #[serde(default)]
+    run: Option<String>,
+    /// Make a result again that was pruned on purpose. Left off, a pruned result is not out of date
+    /// and nothing is queued for it.
+    #[serde(default)]
+    remake_pruned: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct JobArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The job id from `queue_list`, such as `q-001`.
+    job: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct QueueReorderArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The job id from `queue_list`, such as `q-001`. It must be waiting.
+    job: String,
+    /// The place among the waiting jobs to move it to, counted from 1; a number past the ends is
+    /// the nearest end.
+    position: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MonitorsArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The job id from `queue_list`, such as `q-001`. Without `job` and `run`, the active job is
+    /// shown, or the newest when none is active.
+    #[serde(default)]
+    job: Option<String>,
+    /// The id of a recorded run, from `list_runs`: its table is made again from its stored result.
+    /// Give at most one of `job` and `run`.
+    #[serde(default)]
+    run: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LogArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The job id from `queue_list`, such as `q-001`.
+    job: String,
+    /// The byte to read from, as `next_offset` of the earlier call said. Without it, the start.
+    #[serde(default)]
+    offset: Option<u64>,
+    /// How many lines to return: 1 to 200. Without it, 40.
+    #[serde(default)]
+    lines: Option<u32>,
+}
+
 // ---- tool results ----
 
 #[derive(Serialize, JsonSchema)]
 struct StartRunOutput {
-    /// `started`, `busy`, `refused` or `nothing_to_run`. A start never waits for the job and never
-    /// queues. `nothing_to_run` is a start of a document job that found nothing out of date: the
-    /// report holds the data, `message` says so in words, and nothing started.
+    /// `started`, `busy`, `refused` or `nothing_to_run`. A start never waits for the job. A solve
+    /// is put in the document's queue and the answer is its job id; the other jobs and `start_run`
+    /// run at once on the compute host and are never queued. `nothing_to_run` is a start of a
+    /// document job that found nothing out of date: the report holds the data, `message` says so
+    /// in words, and nothing started.
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
@@ -427,7 +522,8 @@ struct StartRunOutput {
     retry_after_seconds: Option<u64>,
     /// When busy: the holder is far past its own time cap. Reported only; nothing is broken.
     stale: bool,
-    /// When refused: the reasons, in the same structure every operation returns.
+    /// When refused: the reasons, in the same structure every operation returns. Also present on a
+    /// started solve whose job is queued but whose background runner could not be started.
     #[serde(skip_serializing_if = "Option::is_none")]
     report: Option<Report>,
     /// The sentence for a person: present when the status is `nothing_to_run`, absent otherwise.
@@ -437,7 +533,9 @@ struct StartRunOutput {
 
 #[derive(Serialize, JsonSchema)]
 struct RunStatusOutput {
-    /// `running`, `finished` or `not_found`.
+    /// `running`, `finished` or `not_found`. For a queue job id it is the state of the job:
+    /// `queued`, `starting`, `running`, `stopping`, `finishing`, `unreachable`, `finished`,
+    /// `stopped`, `failed`, `cancelled` or `interrupted`.
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
@@ -451,11 +549,111 @@ struct RunStatusOutput {
 
 #[derive(Serialize, JsonSchema)]
 struct GetResultOutput {
-    /// `running`, `finished` or `not_found`.
+    /// `running`, `finished` or `not_found`. A queue job that has not ended is `running`, whatever
+    /// its state; use `run_status` for the state.
     status: String,
-    /// Once finished: the full report.
+    /// Once a run started by `start_run` or by an attached job has finished: the full report.
     #[serde(skip_serializing_if = "Option::is_none")]
     report: Option<Report>,
+    /// Once a queue job has ended: how it ended. The run it recorded is read with `get_run_result`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job: Option<JobResult>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct JobResult {
+    /// The job id.
+    job: String,
+    /// `finished`, `stopped`, `failed`, `cancelled` or `interrupted`.
+    outcome: String,
+    /// The run the document recorded, for a finished or stopped job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
+    /// The stable code of a failed or interrupted job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    /// The sentences that say how it ended, with host paths and run names hidden.
+    lines: Vec<String>,
+}
+
+/// One monitored quantity of a job or a recorded run.
+#[derive(Serialize, JsonSchema)]
+struct MonitorRow {
+    /// The name in the case, such as `probe_1.Ux`.
+    name: String,
+    /// The study's own name for the monitor, with the same ending, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    last: f64,
+    tail_mean: f64,
+    spread: f64,
+    /// `settled`, `drifting`, `oscillating`, `too_early`, `too_few_samples` or `error`.
+    state: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct BalanceOut {
+    /// `ok`, `failed` or `not_applicable`.
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imbalance: Option<f64>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct VerdictOut {
+    /// `converged`, `not_converged` or `not_judged`.
+    state: String,
+    /// Why the verdict is not converged, as stable words such as `not_settled:probe_1.Ux`.
+    reasons: Vec<String>,
+}
+
+#[derive(Serialize, JsonSchema, Default)]
+struct MonitorsOutput {
+    /// `ok`, or `refused` with a `code` and a `message`.
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run: Option<String>,
+    /// For a job: its state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    iterations: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_time: Option<f64>,
+    /// Whether the solver log has its end line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ended: Option<bool>,
+    rows: Vec<MonitorRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mass_balance: Option<BalanceOut>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy_balance: Option<BalanceOut>,
+    /// The verdict made from the files as they stand. It is a reading, never a failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verdict: Option<VerdictOut>,
+    /// For a recorded run: the verdict recorded with it, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_verdict: Option<VerdictOut>,
+}
+
+#[derive(Serialize, JsonSchema, Default)]
+struct LogOutput {
+    /// `ok`, or `refused` with a `code` and a `message`.
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    /// The lines, with host paths and run names hidden.
+    text: String,
+    /// Where the next piece begins: give it as `offset` to read on.
+    next_offset: u64,
 }
 
 /// The answer to a start: the run id, or who holds the host, or the report that refused it. A
@@ -496,6 +694,289 @@ fn start_output(outcome: StartOutcome) -> StartRunOutput {
         }
     }
     out
+}
+
+/// The ids of the jobs a queue report lists, in queue order.
+fn job_ids(report: &Report) -> Vec<String> {
+    match &report.repro {
+        Some(Repro::Queue(data)) => data.jobs.iter().map(|job| job.id.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The finding for a queued job whose runner could not be started: a start the system refused.
+fn runner_failed() -> Diagnostic {
+    let line = Line::QueueRefused {
+        reason: "the job is queued, but the queue runner could not be started".into(),
+    };
+    Diagnostic::error("CFD-INFRA-007", "queue", "", Text::english().render(&line))
+}
+
+/// Make sure a runner is advancing the queue of the document `name`: start one, in a process of its
+/// own that outlives this server, unless one is going. `Some` when it could not be started.
+fn ensure_runner(s: &State, name: &str) -> Option<Diagnostic> {
+    let doc = s.workspace.document_path(name)?;
+    if QueueFile::new(&doc).drain_running() {
+        return None;
+    }
+    let started =
+        std::env::current_exe().and_then(|exe| spawn_detached(&exe, &s.settings.drain_args(&doc)));
+    started.is_err().then(runner_failed)
+}
+
+/// Put `request` in the queue of the document `name` and make sure a runner is going when it added
+/// a job. Returns the queue report and the ids of the jobs it added. A runner that could not be
+/// started is a finding of class 4 on the report; the jobs stay queued.
+fn add_to_queue(s: &State, name: &str, request: &AddRequest) -> (Report, Vec<String>) {
+    let before = job_ids(&s.workspace.queue_list(name));
+    let mut report = s.workspace.queue_add(name, request);
+    let added: Vec<String> = job_ids(&report)
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    if !added.is_empty()
+        && let Some(found) = ensure_runner(s, name)
+    {
+        report.diagnostics.push(found);
+        report.set_class(ExitClass::Infrastructure);
+    }
+    (report, added)
+}
+
+/// A solve of the study or of a variant, queued: the answer carries the job id of the first job
+/// added, which `run_status` and `get_result` accept.
+fn queue_start(
+    s: &State,
+    name: &str,
+    scenario: Option<String>,
+    remake_pruned: bool,
+) -> StartRunOutput {
+    let request = AddRequest {
+        scenario,
+        remake_pruned,
+        ..AddRequest::default()
+    };
+    let (report, added) = add_to_queue(s, name, &request);
+    let Some(run_id) = added.into_iter().next() else {
+        let nothing = report.exit_class == 0;
+        let mut out = start_output(StartOutcome::Refused(Box::new(report)));
+        if nothing {
+            out.message = Some(Text::english().render(&Line::QueueNothingToAdd));
+        }
+        return out;
+    };
+    let mut out = start_output(StartOutcome::Started { run_id });
+    if report.exit_class != 0 {
+        out.report = Some(report);
+    }
+    out
+}
+
+/// How a queue job ended, for `get_result`; a job that has not ended is still running.
+fn job_result(doc: &Path, job: JobView) -> GetResultOutput {
+    let ended = matches!(
+        job.state.as_str(),
+        "finished" | "stopped" | "failed" | "cancelled" | "interrupted"
+    );
+    if !ended {
+        return GetResultOutput {
+            status: "running".into(),
+            report: None,
+            job: None,
+        };
+    }
+    let lines = QueueFile::new(doc)
+        .live_dir(&job.id)
+        .and_then(|live| read_report(&live))
+        .map(|report| report.lines)
+        .unwrap_or_default();
+    GetResultOutput {
+        status: "finished".into(),
+        report: None,
+        job: Some(JobResult {
+            job: job.id,
+            outcome: job.state,
+            run: job.run,
+            code: job.code,
+            lines,
+        }),
+    }
+}
+
+/// The most lines one `run_log` call returns.
+const MAX_LOG_LINES: u32 = 200;
+/// The lines `run_log` returns when the caller does not say.
+const DEFAULT_LOG_LINES: u32 = 40;
+
+/// The word a plain enum is written as in JSON, such as `settled` or `not_converged`.
+fn word<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// A refusal with its stable code and the sentence from the text crate.
+fn refusal(code: &str, line: &Line) -> (String, String) {
+    (code.to_owned(), Text::english().render(line))
+}
+
+fn refused_name() -> (String, String) {
+    let reason = "a document name is 1 to 40 characters: lower-case letters, digits and hyphens";
+    refusal(
+        "CFD-WS-001",
+        &Line::QueueRefused {
+            reason: reason.into(),
+        },
+    )
+}
+
+/// What a failed look at a job or a recorded run says. Nothing here quotes the operating system.
+fn watch_refusal(error: WatchError) -> (String, String) {
+    match error {
+        WatchError::BadJob { job } | WatchError::UnknownJob { job } => {
+            refusal("CFD-QUEUE-002", &Line::QueueUnknownJob { job })
+        }
+        WatchError::UnknownRun { run } => refusal("CFD-REPRO-004", &Line::UnknownRun { run }),
+        WatchError::NoResult { run } => refusal("CFD-REPRO-005", &Line::RunHasNoResult { run }),
+        WatchError::NoMirror { job } => {
+            let line = Line::QueueNotAllowed {
+                job,
+                state: "not started".into(),
+                action: "watched".into(),
+            };
+            refusal("CFD-QUEUE-003", &line)
+        }
+        WatchError::Queue { .. } | WatchError::Io { .. } => {
+            let reason = "the live view could not be read".into();
+            refusal("CFD-QUEUE-004", &Line::QueueDamaged { reason })
+        }
+    }
+}
+
+fn monitors_refused((code, message): (String, String)) -> MonitorsOutput {
+    MonitorsOutput {
+        status: "refused".into(),
+        code: Some(code),
+        message: Some(message),
+        ..MonitorsOutput::default()
+    }
+}
+
+fn rows_out(rows: &[RowView]) -> Vec<MonitorRow> {
+    rows.iter()
+        .map(|row| MonitorRow {
+            name: row.name.clone(),
+            label: row.label.clone(),
+            last: row.last,
+            tail_mean: row.mean,
+            spread: row.spread,
+            state: word(&row.state),
+        })
+        .collect()
+}
+
+fn balance_out(balance: &BalanceView) -> BalanceOut {
+    BalanceOut {
+        state: word(&balance.status),
+        imbalance: balance.imbalance,
+    }
+}
+
+/// The table of a job or of a recorded run, read from the copies on this machine.
+fn monitors_output(s: &State, a: &MonitorsArgs) -> MonitorsOutput {
+    let Some(doc) = s.workspace.document_path(&a.name) else {
+        return monitors_refused(refused_name());
+    };
+    if let Some(run) = &a.run {
+        if a.job.is_some() {
+            let reason = "ask for a job or for a run, not for both at once".into();
+            return monitors_refused(refusal("CFD-QUEUE-001", &Line::QueueRefused { reason }));
+        }
+        return match watch::monitors_of_run(&doc, run) {
+            Ok(view) => MonitorsOutput {
+                status: "ok".into(),
+                run: Some(view.run),
+                iterations: Some(view.iterations),
+                last_time: view.last_time,
+                ended: Some(view.ended),
+                rows: rows_out(&view.rows),
+                mass_balance: Some(balance_out(&view.mass)),
+                energy_balance: Some(balance_out(&view.energy)),
+                verdict: Some(VerdictOut {
+                    state: word(&view.verdict.state),
+                    reasons: view.verdict.reasons.clone(),
+                }),
+                recorded_verdict: view.recorded.as_ref().map(|v| VerdictOut {
+                    state: word(&v.state),
+                    reasons: v.reasons.clone(),
+                }),
+                ..MonitorsOutput::default()
+            },
+            Err(error) => monitors_refused(watch_refusal(error)),
+        };
+    }
+    let job = a.job.clone().or_else(|| {
+        let report = s.workspace.queue_list(&a.name);
+        match report.repro {
+            Some(Repro::Queue(data)) => data
+                .active
+                .clone()
+                .or_else(|| data.jobs.last().map(|job| job.id.clone())),
+            _ => None,
+        }
+    });
+    let Some(job) = job else {
+        let reason = "the queue holds no job to show".into();
+        return monitors_refused(refusal("CFD-QUEUE-002", &Line::QueueRefused { reason }));
+    };
+    match watch::monitors(&doc, &job) {
+        Ok(view) => MonitorsOutput {
+            status: "ok".into(),
+            job: Some(view.job),
+            state: Some(word(&view.state)),
+            iterations: Some(view.iterations),
+            last_time: view.last_time,
+            ended: Some(view.ended),
+            rows: rows_out(&view.rows),
+            mass_balance: Some(balance_out(&view.mass)),
+            energy_balance: Some(balance_out(&view.energy)),
+            verdict: Some(VerdictOut {
+                state: word(&view.verdict.state),
+                reasons: view.verdict.reasons.clone(),
+            }),
+            ..MonitorsOutput::default()
+        },
+        Err(error) => monitors_refused(watch_refusal(error)),
+    }
+}
+
+/// A piece of the solver log of a job, from the copy on this machine.
+fn log_output(s: &State, a: &LogArgs) -> LogOutput {
+    let refused = |(code, message): (String, String)| LogOutput {
+        status: "refused".into(),
+        code: Some(code),
+        message: Some(message),
+        ..LogOutput::default()
+    };
+    let lines = a.lines.unwrap_or(DEFAULT_LOG_LINES);
+    if !(1..=MAX_LOG_LINES).contains(&lines) {
+        let reason = format!("lines is 1 to {MAX_LOG_LINES}");
+        return refused(refusal("CFD-QUEUE-001", &Line::QueueRefused { reason }));
+    }
+    let Some(doc) = s.workspace.document_path(&a.name) else {
+        return refused(refused_name());
+    };
+    let wanted = usize::try_from(lines).unwrap_or(usize::MAX);
+    match watch::log(&doc, &a.job, a.offset.unwrap_or(0), wanted) {
+        Ok(view) => LogOutput {
+            status: "ok".into(),
+            text: view.text,
+            next_offset: view.next_offset,
+            ..LogOutput::default()
+        },
+        Err(error) => refused(watch_refusal(error)),
+    }
 }
 
 /// Run a blocking operation off the protocol loop. A panic becomes a protocol error with a fixed
@@ -642,7 +1123,7 @@ impl CfdServer {
 
     #[tool(
         name = "start_document_job",
-        description = "Start a job on a stored document and return at once with a run id: solve it (or one of its variants), rerun one of its recorded results, or update its mesh or its result. Poll run_status and get_result. If the host is busy the answer is busy with a retry time; starts are never queued. When nothing is out of date the answer is nothing_to_run and nothing starts."
+        description = "Start a job on a stored document and return at once: solve it (or one of its variants), rerun one of its recorded results, or update its mesh or its result. A solve is put in the document's queue and answered with a job id such as q-001; a background runner on this machine advances the queue and goes on when this server stops, so leaving a solve does not stop it. Watch it with run_status, run_monitors and run_log, and read how it ended with get_result. A rerun or an update runs at once and stops with this server; if the host is busy the answer is busy with a retry time. When nothing is out of date the answer is nothing_to_run and nothing starts."
     )]
     async fn start_document_job(
         &self,
@@ -650,20 +1131,30 @@ impl CfdServer {
     ) -> Result<Json<StartRunOutput>, ErrorData> {
         let s = self.state.clone();
         blocking(move || {
-            let outcome = match a.kind() {
-                Ok(kind) => s
-                    .workspace
-                    .start_document_job(&s.registry, &s.settings, &a.name, kind),
-                Err(report) => StartOutcome::Refused(report),
+            let kind = match a.kind() {
+                Ok(kind) => kind,
+                Err(report) => return start_output(StartOutcome::Refused(report)),
             };
-            start_output(outcome)
+            match kind {
+                DocJobKind::Solve if s.settings.queued() => queue_start(&s, &a.name, None, false),
+                DocJobKind::SolveScenario {
+                    scenario,
+                    remake_pruned,
+                } if s.settings.queued() => queue_start(&s, &a.name, scenario, remake_pruned),
+                kind => start_output(s.workspace.start_document_job(
+                    &s.registry,
+                    &s.settings,
+                    &a.name,
+                    kind,
+                )),
+            }
         })
         .await
     }
 
     #[tool(
         name = "run_status",
-        description = "Say whether a run is still going. Only runs started by this server are known."
+        description = "Say whether a run is still going. Runs started by this server are known, and so are the queue jobs of the documents of its workspace (give the document's name with a job id such as q-001)."
     )]
     async fn run_status(
         &self,
@@ -671,6 +1162,14 @@ impl CfdServer {
     ) -> Result<Json<RunStatusOutput>, ErrorData> {
         let s = self.state.clone();
         blocking(move || {
+            if let Some((_, job)) = s.workspace.find_job(a.name.as_deref(), &a.run_id) {
+                return RunStatusOutput {
+                    status: job.state,
+                    mode: Some(job.kind),
+                    elapsed_seconds: None,
+                    exit_class: None,
+                };
+            }
             let (status, mode, elapsed, class) =
                 match s.workspace.run_status(&s.registry, &a.run_id) {
                     Status::NotFound => ("not_found", None, None, None),
@@ -701,7 +1200,7 @@ impl CfdServer {
 
     #[tool(
         name = "get_result",
-        description = "Return the report of a finished run. Judge it by evidence.verdict: a smoke pass shows only that the case loads and iterates."
+        description = "Return the report of a finished run. Judge it by evidence.verdict: a smoke pass shows only that the case loads and iterates. For a queue job id such as q-001 (with the document's name) it says how the job ended and names the run it recorded."
     )]
     async fn get_result(
         &self,
@@ -709,6 +1208,9 @@ impl CfdServer {
     ) -> Result<Json<GetResultOutput>, ErrorData> {
         let s = self.state.clone();
         blocking(move || {
+            if let Some((doc, job)) = s.workspace.find_job(a.name.as_deref(), &a.run_id) {
+                return job_result(&doc, job);
+            }
             let (status, report) = match s.workspace.run_result(&s.registry, &a.run_id) {
                 ResultOutcome::NotFound => ("not_found", None),
                 ResultOutcome::Running => ("running", None),
@@ -717,6 +1219,7 @@ impl CfdServer {
             GetResultOutput {
                 status: status.into(),
                 report,
+                job: None,
             }
         })
         .await
@@ -935,12 +1438,109 @@ impl CfdServer {
         })
         .await
     }
+
+    #[tool(
+        name = "queue_list",
+        description = "List the jobs in the queue of a stored document, in the order they start, with each one's state, variant, kind, recorded run, code and progress line. Reads the document's queue only: it touches no compute host and starts nothing."
+    )]
+    async fn queue_list(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.queue_list(&a.name)).await
+    }
+
+    #[tool(
+        name = "queue_add",
+        description = "Put more jobs in the queue of a stored document: the study itself (no other input), one variant, every point of a stored sweep, or the continuation of a stopped run. Give at most one of scenario, sweep and run. A background runner on this machine then advances the queue, one job at a time, and goes on when this server stops. Returns the queue. A request with nothing out of date adds nothing."
+    )]
+    async fn queue_add(
+        &self,
+        Parameters(a): Parameters<QueueAddArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            let request = AddRequest {
+                scenario: a.scenario,
+                sweep: a.sweep,
+                continue_run: a.run,
+                remake_pruned: a.remake_pruned,
+            };
+            add_to_queue(&s, &a.name, &request).0
+        })
+        .await
+    }
+
+    #[tool(
+        name = "queue_reorder",
+        description = "Move a waiting job to a place among the waiting jobs, counted from 1. Only a waiting job can be moved. Returns the queue. Touches no compute host."
+    )]
+    async fn queue_reorder(
+        &self,
+        Parameters(a): Parameters<QueueReorderArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            let to = usize::try_from(a.position.saturating_sub(1)).unwrap_or(usize::MAX);
+            s.workspace.queue_reorder(&a.name, &a.job, to)
+        })
+        .await
+    }
+
+    #[tool(
+        name = "queue_cancel",
+        description = "Cancel a waiting job at once, or ask a running job to write its latest results and stop; it then ends as stopped and can be continued. A job that has ended cannot be cancelled. Returns the queue. The stop is carried out by the background runner; this call touches no compute host."
+    )]
+    async fn queue_cancel(
+        &self,
+        Parameters(a): Parameters<JobArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.queue_cancel(&a.name, &a.job)).await
+    }
+
+    #[tool(
+        name = "run_stop",
+        description = "Ask a running job to write its latest results and stop. It then ends as stopped, is recorded as a stopped run without a result, and can be continued with queue_add and its run. Only a running job can be asked. The stop is carried out by the background runner; this call touches no compute host."
+    )]
+    async fn run_stop(
+        &self,
+        Parameters(a): Parameters<JobArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.queue_stop(&a.name, &a.job)).await
+    }
+
+    #[tool(
+        name = "run_monitors",
+        description = "Show the monitored quantities of a job as the files copied from the compute host stand now: for each its last value, tail mean, spread and whether it is settled or drifting, then the mass and energy balances and the convergence verdict. Give a job (default: the active job, else the newest) or a recorded run of the document, whose table is made again from its stored result. Reads copies already on this machine: it touches no compute host. A verdict that is not converged is a reading, not a failure."
+    )]
+    async fn run_monitors(
+        &self,
+        Parameters(a): Parameters<MonitorsArgs>,
+    ) -> Result<Json<MonitorsOutput>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || monitors_output(&s, &a)).await
+    }
+
+    #[tool(
+        name = "run_log",
+        description = "Return a piece of the solver log of a job from the copy on this machine: at most 200 lines from a byte offset, with host paths and run names hidden, and the offset the next piece begins at. Call it again with next_offset to read on. It touches no compute host."
+    )]
+    async fn run_log(
+        &self,
+        Parameters(a): Parameters<LogArgs>,
+    ) -> Result<Json<LogOutput>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || log_output(&s, &a)).await
+    }
 }
 
 #[tool_handler(
     router = self.tool_router,
     name = "cfdcraft",
-    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result) and poll it like a run, one job at a time. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
+    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result). A solve is queued and answered with a job id that goes on when the server stops; a rerun or an update runs at once, one at a time. Poll a job with run_status, watch it with run_monitors and run_log, reorder or cancel the queue, ask a running job to stop with run_stop, and read how it ended with get_result. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
 )]
 impl ServerHandler for CfdServer {}
 

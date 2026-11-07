@@ -9,6 +9,10 @@
 # $CFC_TEST_DOCKER_STDOUT, when set, is printed to standard output by `run`, as a container's own
 # output would be.
 # Every container name passed to `run` is appended to `names`.
+# `run -d` starts a detached container instead: it is recorded in $CFC_TEST_ROOT/containers/<name>/
+# (files `state`, `exit`, `oom`, `labels`) and `run` returns at once, whatever the mode. `inspect`,
+# `ps` (with -a and --filter label=k=v or name=^n$), `stop` and `rm` work on those records; `stop`
+# leaves a container exited with status 143 and `rm` deletes its record.
 shift 2
 command=$1
 shift
@@ -18,8 +22,60 @@ if [ "${CFC_TEST_DOCKER_FAIL:-}" = "$command" ]; then
     exit 1
 fi
 case "$command" in
-    ps) if [ -f "$CFC_TEST_ROOT/running" ]; then cat "$CFC_TEST_ROOT/running"; fi;;
+    ps)
+        all=0; label=; nm=
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                -a|--all) all=1;;
+                --format) shift;;
+                --filter)
+                    shift
+                    case "$1" in
+                        label=*) label=${1#label=};;
+                        name=*) nm=${1#name=}; nm=${nm#^}; nm=${nm%\$};;
+                    esac;;
+            esac
+            shift
+        done
+        if [ -z "$label" ] && [ -f "$CFC_TEST_ROOT/running" ]; then cat "$CFC_TEST_ROOT/running"; fi
+        for d in "$CFC_TEST_ROOT"/containers/*/; do
+            [ -d "$d" ] || continue
+            n=$(basename "$d")
+            st=$(cat "$d/state")
+            if [ "$all" != 1 ] && [ "$st" != running ]; then continue; fi
+            if [ -n "$label" ] && ! grep -qxF "$label" "$d/labels"; then continue; fi
+            if [ -n "$nm" ] && [ "$n" != "$nm" ]; then continue; fi
+            printf '%s\n' "$n"
+        done;;
+    inspect)
+        for a do name=$a; done
+        d="$CFC_TEST_ROOT/containers/$name"
+        if [ ! -d "$d" ]; then printf 'Error: No such object: %s\n' "$name" >&2; exit 1; fi
+        printf '%s %s %s\n' "$(cat "$d/state")" "$(cat "$d/exit")" "$(cat "$d/oom")";;
     run)
+        detached=0
+        for a do if [ "$a" = -d ]; then detached=1; fi; done
+        if [ "$detached" = 1 ]; then
+            name=; labels=
+            nl='
+'
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --name) shift; name=$1;;
+                    --label) shift; labels="$labels$1$nl";;
+                esac
+                shift
+            done
+            d="$CFC_TEST_ROOT/containers/$name"
+            mkdir -p "$d"
+            printf 'running\n' > "$d/state"
+            printf '0\n' > "$d/exit"
+            printf 'false\n' > "$d/oom"
+            printf '%s' "$labels" > "$d/labels"
+            printf '%s\n' "$name" >> "$CFC_TEST_ROOT/names"
+            printf '%s\n' "$name"
+            exit 0
+        fi
         while [ "$#" -gt 0 ]; do
             if [ "$1" = --name ]; then shift; printf '%s\n' "$1" > "$CFC_TEST_ROOT/running"; printf '%s\n' "$1" >> "$CFC_TEST_ROOT/names"; break; fi
             shift
@@ -39,6 +95,11 @@ case "$command" in
         esac;;
     stop|rm)
         if [ "$CFC_TEST_MODE" = cleanup-fails ]; then exit 1; fi
-        rm -f "$CFC_TEST_ROOT/running";;
+        rm -f "$CFC_TEST_ROOT/running"
+        for a do name=$a; done
+        d="$CFC_TEST_ROOT/containers/$name"
+        if [ -n "$name" ] && [ -d "$d" ]; then
+            if [ "$command" = stop ]; then printf 'exited\n' > "$d/state"; printf '143\n' > "$d/exit"; else rm -rf "$d"; fi
+        fi;;
     *) printf 'unexpected docker command: %s\n' "$command" >&2; exit 91;;
 esac

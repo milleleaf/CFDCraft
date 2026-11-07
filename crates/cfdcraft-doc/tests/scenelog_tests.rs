@@ -130,6 +130,11 @@ fn record_for(id: &str, study: &Study) -> RunRecord {
         }],
         key_numbers: KeyNumbers::from([("solver.iterations".to_owned(), 120.0)]),
         comparison: None,
+        continued_from: None,
+        outcome: cfdcraft_runs::Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 
@@ -258,14 +263,15 @@ fn a_document_without_variants_writes_none_of_the_new_members() {
 }
 
 #[test]
-fn a_schema_2_file_opens_with_one_note_and_no_variants() {
+fn a_schema_2_file_opens_with_two_notes_and_no_variants() {
     let bytes = file_with_artifacts(2, &json!({"blobs": [], "links": [], "runs": []}));
     let opened = from_bytes(&bytes).unwrap();
 
     assert_eq!(opened.schema_version, 2);
-    assert_eq!(opened.notes.len(), 1);
+    assert_eq!(opened.notes.len(), 2);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (2, 3));
     assert!(opened.notes[0].summary.contains("variants"));
+    assert_eq!((opened.notes[1].from, opened.notes[1].to), (3, 4));
     let artifacts = &opened.document.artifacts;
     assert!(artifacts.scenarios.is_empty());
     assert!(artifacts.sweeps.is_empty());
@@ -274,24 +280,24 @@ fn a_schema_2_file_opens_with_one_note_and_no_variants() {
 }
 
 #[test]
-fn a_schema_1_file_opens_with_two_notes() {
+fn a_schema_1_file_opens_with_three_notes() {
     let bytes = file_with_artifacts(1, &json!({"blobs": [], "links": []}));
     let opened = from_bytes(&bytes).unwrap();
 
     assert_eq!(opened.schema_version, 1);
     let pairs: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
-    assert_eq!(pairs, vec![(1, 2), (2, 3)]);
+    assert_eq!(pairs, vec![(1, 2), (2, 3), (3, 4)]);
     assert!(opened.document.artifacts.scenarios.is_empty());
 }
 
 #[test]
-fn a_schema_0_file_with_no_index_opens_with_three_notes() {
+fn a_schema_0_file_with_no_index_opens_with_four_notes() {
     let bytes = archive(vec![
         ("manifest.json", manifest(0), DEFLATE),
         ("study.json", CAVITY_V0.as_bytes().to_vec(), DEFLATE),
     ]);
     let opened = from_bytes(&bytes).unwrap();
-    assert_eq!(opened.notes.len(), 3);
+    assert_eq!(opened.notes.len(), 4);
     assert_eq!(opened.document.artifacts, ArtifactIndex::default());
 }
 

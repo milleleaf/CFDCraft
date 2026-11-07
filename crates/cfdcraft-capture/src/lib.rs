@@ -1,7 +1,7 @@
 //! Turn the folder a finished run left behind into the blobs and key numbers a run record names.
 //!
 //! Two bundles come out of a results folder: the mesh (the five `polyMesh` files) and the result
-//! (final fields, centreline samples and the three logs). A bundle is a ZIP with sorted entries,
+//! (final fields, centreline samples, the three logs and the monitor files). A bundle is a ZIP with sorted entries,
 //! stored without compression, with a fixed time and fixed permissions, so equal files always give
 //! equal bytes and an equal hash. The key numbers (iteration count, last initial residuals and
 //! every centreline sample) are read from the same files for comparison.
@@ -19,10 +19,14 @@
 mod bundle;
 #[doc(hidden)]
 pub mod fixture;
+mod monitors;
 mod numbers;
 mod result;
 
 pub use bundle::{Bundle, entry_names, mesh_bundle, mesh_bundle_limited, read_entry, store_bundle};
+pub use monitors::{
+    MAX_MONITOR_FILES, checkpoint_bundle, latest_time_dir, monitor_names, monitor_names_limited,
+};
 pub use numbers::key_numbers;
 pub use result::{find_time_dir, result_bundle, result_bundle_limited};
 

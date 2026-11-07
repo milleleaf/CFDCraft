@@ -1,4 +1,4 @@
-use crate::{dictionary, scalar};
+use crate::{dictionary, monitors::functions_block, scalar};
 use cfdcraft_model::ResolvedStudy;
 
 pub fn control_dict(s: &ResolvedStudy) -> String {
@@ -10,11 +10,12 @@ pub fn control_dict(s: &ResolvedStudy) -> String {
     let end = scalar(s.solver.end_time);
     let interval = scalar(s.solver.write_interval);
     let samples = s.monitors.centreline_u_sample_count;
+    let monitors = functions_block(s);
     dictionary(
         "controlDict",
         "dictionary",
         &format!(
-            "application simpleFoam;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {end};\ndeltaT 1;\nwriteControl timeStep;\nwriteInterval {interval};\npurgeWrite 0;\nwriteFormat ascii;\nwritePrecision 12;\nwriteCompression off;\ntimeFormat general;\ntimePrecision 12;\nrunTimeModifiable false;\n\nfunctions\n{{\n    centreline\n    {{\n        type sets;\n        libs (sampling);\n        writeControl writeTime;\n        setFormat raw;\n        interpolationScheme cellPoint;\n        fields (U);\n        sets\n        (\n            vertical\n            {{\n                type uniform;\n                axis y;\n                start ({cx} 0 {cz});\n                end ({cx} {y} {cz});\n                nPoints {samples};\n            }}\n            horizontal\n            {{\n                type uniform;\n                axis x;\n                start (0 {cy} {cz});\n                end ({x} {cy} {cz});\n                nPoints {samples};\n            }}\n        );\n    }}\n}}\n"
+            "application simpleFoam;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {end};\ndeltaT 1;\nwriteControl timeStep;\nwriteInterval {interval};\npurgeWrite 2;\nwriteFormat ascii;\nwritePrecision 12;\nwriteCompression off;\ntimeFormat general;\ntimePrecision 12;\nrunTimeModifiable true;\n\nfunctions\n{{\n    centreline\n    {{\n        type sets;\n        libs (sampling);\n        writeControl writeTime;\n        setFormat raw;\n        interpolationScheme cellPoint;\n        fields (U);\n        sets\n        (\n            vertical\n            {{\n                type uniform;\n                axis y;\n                start ({cx} 0 {cz});\n                end ({cx} {y} {cz});\n                nPoints {samples};\n            }}\n            horizontal\n            {{\n                type uniform;\n                axis x;\n                start (0 {cy} {cz});\n                end ({x} {cy} {cz});\n                nPoints {samples};\n            }}\n        );\n    }}\n{monitors}}}\n"
         ),
     )
 }

@@ -4,15 +4,18 @@ These JSON Schema files describe the JSON inside a `.cfdcraft` study file, for p
 
 | File | Describes |
 |---|---|
-| `cfdcraft-manifest-v3.json` | `manifest.json` of a file at schema 3: the format name, the schema number and the program that wrote the file |
+| `cfdcraft-manifest-v4.json` | `manifest.json` of a file at schema 4: the format name, the schema number and the program that wrote the file |
 | `cfdcraft-study-v1.json` | `study.json`: the study itself, which carries its own number (1) |
-| `cfdcraft-artifacts-v3.json` | `artifacts.json` of a file at schema 3: stored results, linked files, the runs, the variants, the sweeps and the pruned results |
+| `cfdcraft-artifacts-v4.json` | `artifacts.json` of a file at schema 4: stored results, linked files, the runs (including stopped and continued runs and the verdict on each), the variants, the sweeps and the pruned results |
+| `cfdcraft-queue-v1.json` | `queue.json`, the list of jobs kept beside a study file; it carries its own number (1) |
+| `cfdcraft-manifest-v3.json` | `manifest.json` of a file written at schema 3; frozen (see Versions) |
+| `cfdcraft-artifacts-v3.json` | `artifacts.json` of a file written at schema 3; frozen (see Versions) |
 | `cfdcraft-manifest-v2.json` | `manifest.json` of a file written at schema 2; frozen (see Versions) |
 | `cfdcraft-artifacts-v2.json` | `artifacts.json` of a file written at schema 2; frozen (see Versions) |
 | `cfdcraft-manifest-v1.json` | `manifest.json` of a file written at schema 1; frozen (see Versions) |
 | `cfdcraft-artifacts-v1.json` | `artifacts.json` of a file written at schema 1; frozen (see Versions) |
 
-Use the manifest and artifact-index files that match the schema number of the file you are checking. The study file is the same for both.
+Use the manifest and artifact-index files that match the schema number of the file you are checking. The study file is the same for all of them. The queue file is not a member of the study file: it lives beside it and has its own file.
 
 ## The file
 
@@ -31,15 +34,15 @@ CFDCraft writes the members in the order above, with the manifest first, and a t
 
 Two numbers are in play, and they are not the same thing.
 
-The number of the file is `schema_version` in the manifest. One integer covers the whole file (currently 3). The manifest and artifact-index schema files carry it in their names (`-v3` is file schema 3), and the manifest schema allows exactly its own number.
+The number of the file is `schema_version` in the manifest. One integer covers the whole file (currently 4). The manifest and artifact-index schema files carry it in their names (`-v4` is file schema 4), and the manifest schema allows exactly its own number.
 
-The study carries its own number in `schema_version` inside `study.json` (currently 1). It changes only when the study changes in a way that makes an earlier study unreadable, so a file at schema 3 holds a study at number 1, and `cfdcraft-study-v1.json` describes it.
+The study carries its own number in `schema_version` inside `study.json` (currently 1). It changes only when the study changes in a way that makes an earlier study unreadable, so a file at schema 4 holds a study at number 1, and `cfdcraft-study-v1.json` describes it.
 
-The study file has been extended once without a new number. It gained the optional member `raw_overrides` (see Raw overrides). Every study that was accepted before is still accepted by `cfdcraft-study-v1.json`, and a study that leaves the member out is unchanged, including its hash. The number stays 1 on purpose: raising it would change the canonical hash of every study.
+The study file has been extended twice without a new number. It gained the optional member `raw_overrides` (see Raw overrides), and then the optional members `probes`, `lines`, `surfaces` and `settle` inside `monitors` (see Monitors). Every study that was accepted before is still accepted by `cfdcraft-study-v1.json`, and a study that leaves the members out is unchanged, including its hash. The number stays 1 on purpose: raising it would change the canonical hash of every study.
 
 A reader refuses a file whose number is newer than it knows, deciding from the manifest alone, before it reads the study. Older files are brought forward to the current number when they are opened, and the reader reports what changed.
 
-A schema file is never edited once its number has been superseded. A change to the format ships as a new version, with new files next to the old ones. The files for schemas 1 and 2 stay in this folder, as they were when the next schema was introduced, for files written at those numbers. A test holds a copy of each and a recorded length and checksum, so an edit to one of them fails the build.
+A schema file is never edited once its number has been superseded. A change to the format ships as a new version, with new files next to the old ones. The files for schemas 1, 2 and 3 stay in this folder, as they were when the next schema was introduced, for files written at those numbers. A test holds a copy of each and a recorded length and checksum, so an edit to one of them fails the build.
 
 One edit to a schema 1 file is on record, and it came before the freeze. The artifact-index file for schema 1 got the link `id` pattern (`^[a-z0-9][a-z0-9-]{0,39}$`) and its description about an hour and a quarter after the first schema files were written (the commits 60c1f9d and 844169c), before any release or tag, in a fix that made the schema state a rule the reader already enforced. No file the earlier text accepted and CFDCraft opened is refused by the later one, because the reader refused a link `id` outside that pattern already. The frozen schema 1 text is the text with the pattern.
 
@@ -47,7 +50,7 @@ One edit to a schema 1 file is on record, and it came before the freeze. The art
 
 Use any JSON Schema validator that supports draft 2020-12, with the file that matches the member and the version. The schemas contain no references to anything outside themselves, so a validator never needs to fetch anything. Their `$id` values are URNs (for example `urn:cfdcraft:schema:study:1`), not web addresses.
 
-A file written at schema 1 validates against the schema 1 manifest and artifact-index files with the study file. A file at schema 2 validates against the schema 2 files, and a file at schema 3 against the schema 3 files, in both cases with the same study file.
+A file written at schema 1 validates against the schema 1 manifest and artifact-index files with the study file. A file at schema 2 validates against the schema 2 files, a file at schema 3 against the schema 3 files and a file at schema 4 against the schema 4 files, in every case with the same study file. A `queue.json` validates against `cfdcraft-queue-v1.json`.
 
 Unknown keys are rejected in the manifest, the study, the artifact index, links, stored results, run records, variants, sweeps and raw overrides (these records are closed). The labels under `boundary_conditions` and the names under `key_numbers` and a result recipe's `boundaries` are free-form keys. The recipe, tool, comparison and tolerance records inside a run record are not closed in the schema, and the reader ignores an unknown key there too.
 
@@ -60,7 +63,7 @@ Unknown keys are rejected in the manifest, the study, the artifact index, links,
 - `boundary_conditions` is an object keyed by a label of your choice. Each entry has `faces` (a list of `XMin`, `XMax`, `YMin`, `YMax`), `kind` (one of `VelocityInlet`, `PressureOutlet`, `NoSlipWall`, `SlipWall`, `MovingWall`, `Symmetry`) and, for a velocity inlet and a moving wall, `velocity`.
 - `mesh` has the whole numbers `cells_x`, `cells_y` and `cells_z`.
 - `solver` has `solver` (`SimpleLaminar`), `end_time` and `write_interval`, and optionally `convergence` with `p` and `U`.
-- `monitors` has `centreline_u_sample_count`.
+- `monitors` has `centreline_u_sample_count` and, optionally, `probes`, `lines`, `surfaces` and `settle`; see Monitors.
 - `raw_overrides` is optional; see Raw overrides.
 
 A quantity is an object with a number `value` and a `unit`. The units the schema lists are `m`, `mm`, `m/s`, `m2/s`, `Pa`, `K`, `s`, `1` and `rpm`. The reader also accepts `m²/s` as another way to write `m2/s`; the schema does not list it, so a document that uses it is rejected by the schema and accepted by CFDCraft. Write `m2/s`.
@@ -77,6 +80,8 @@ More things are beyond the schema, and CFDCraft checks them when it opens or sav
 - A variant's parent is `base` or a variant listed earlier in `scenarios`, so a variant is never listed before its parent. Ids are plain names (the same rule as a link id), `base` holds no parent, overrides or origin, a chain of parents is at most 16 levels deep, a file holds at most 1000 variants, a variant at most 200 overrides, a name is 1 to 80 characters and notes at most 2000, and each setting is a well-formed pointer.
 - A sweep's `base` is `base` or a listed variant, sweep ids are unique, a sweep has at most 8 parameters, at most 1000 values for each parameter and at most 200 points, and a variant's `origin` names a listed sweep and a point it has. A run's `scenario` names a listed variant.
 - `pruned` is sorted, has no repeat and lists only hashes that `blobs` lists.
+- A stopped run holds a `checkpoint` and no `result`, and a run that went to its end holds no `checkpoint`. A run that continues another names an earlier run. A process count is at least 1.
+- In a queue, at most one job is active, an active job has a run id and a queued job has none, a finished or stopped job names its run and a failed or interrupted job has a code.
 
 A file where any of these fails passes the schema and is refused by CFDCraft.
 
@@ -109,7 +114,17 @@ Each record may carry a `scenario`, the id of the variant it was made for. Witho
 
 The mesh recipe and the result recipe each have an optional `raw` member that holds the raw overrides the recipe depends on (see Raw overrides). Both are left out when there are none, so a recipe without raw overrides, and its key, are what they were.
 
-When an older file is opened it is brought forward to the current number and the reader says what changed, one note for each step. A schema 1 file opens with two notes (1 to 2: an empty history; 2 to 3: room for variants, sweeps and pruned results) and a schema 2 file with one. Nothing else about the file changes.
+When an older file is opened it is brought forward to the current number and the reader says what changed, one note for each step. A schema 1 file opens with three notes (1 to 2: an empty history; 2 to 3: room for variants, sweeps and pruned results; 3 to 4: room for stopped and continued runs and the verdict on a result), a schema 2 file with two and a schema 3 file with one. Nothing else about the file changes.
+
+Schema 4 adds five optional members to a run record, and a run that has none of them is an ordinary complete run:
+
+- `outcome` is the word `complete` or an object `{"stopped": {"at_time": "<solver time>"}}`. A run that was stopped on request has the second form, a `checkpoint` and no `result`.
+- `checkpoint` is the latest written time of a stopped run: `time` (plain decimal text), the `blob` hash and the `size` of the stored data. A later run can start from it.
+- `continued_from` names the earlier run (`run`) and the solver time (`time`) that a continued run started from.
+- `verdict` is the judgement made when the run was recorded on whether it had converged: a `state` (`converged`, `not_converged` or `not_judged`), the `reasons`, the numbers of every monitored quantity (`last`, `mean`, `spread`, `drift`, `status` and the number of `samples`) and the `mass` and `energy` balances. A run counts as converged only when every monitored quantity has settled and the balances hold; the residuals alone never decide it.
+- `np` is the number of processes the run used.
+
+A result recipe's `monitors` member now lists the probes, lines and surface integrals the case wrote, in order and in metres, when there are any.
 
 ## Variants and sweeps
 
@@ -128,6 +143,21 @@ The `sweeps` entry lists parameter sweeps. A sweep has an `id`, a `base` (a vari
 - A sweep expands into one point for each combination of the values of its parameters, the first parameter varying slowest. A point is a variant named `<sweep>-<number>`, where the number is the position of the point counted from 1, with three digits.
 
 The `pruned` entry lists the hashes of stored results that were removed from the store on purpose. Every such hash is also listed in `blobs`, and the run records that named the result stay, with their key numbers. Storing the same result again takes its hash off the list.
+
+## Monitors
+
+The optional members of `monitors` say what to watch while the solver runs. Each is an object keyed by a label of your choice (the same naming rule as a boundary label), and the label is for people only: it never reaches a solver case.
+
+- `probes`: each has `x` and `y` (quantities, a point in the plane of the case) and `field` (`velocity` or `pressure`). At most 16.
+- `lines`: each has the ends `x0`, `y0`, `x1`, `y1` (quantities), `samples` (2 to 2000 points, ends included) and `field`. At most 8.
+- `surfaces`: each has the `boundary` (the label of a boundary of the study) and the `quantity` (`flux`, `pressure_average` or `pressure_integral`). At most 8.
+- `settle`: optional tolerances for judging a monitored quantity settled: `tail_fraction`, `tail_floor`, `spread_rel` and `drift_rel`. A member left out uses the built-in value. They judge a run and do not change what is run.
+
+A study that lists no probe, line or surface is watched at five default velocity points. The schema checks the shape; the ranges, the labels and the positions inside the domain are checked by CFDCraft when it validates a study.
+
+## The queue file
+
+`queue.json` sits in the store folder beside a study file and lists the jobs to run, in the order they start. It carries its own `schema_version` (currently 1) and is described by `cfdcraft-queue-v1.json`. A job has an `id` (`q-` and a number), a `kind` (`solve`, or `{"continue": {"run": "<stopped run>"}}`), a `state` and, as it goes, a `run_id`, the `run` it recorded, a `code` when it failed, a pending `stop` and a display-only `progress`. `next_number` is the number the next job gets and is never lowered. A reader refuses a queue file whose number is newer than it knows.
 
 ## Raw overrides
 

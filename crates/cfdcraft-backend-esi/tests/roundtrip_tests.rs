@@ -593,3 +593,155 @@ fn vertices_that_are_not_the_boxs_corners_in_the_blocks_order_are_refused() {
         found[0].message
     );
 }
+
+// ---- monitors -----------------------------------------------------------------------------
+
+/// The study text with these members added at the front of its `monitors` object.
+fn with_monitors(json: &str, members: &str) -> String {
+    json.replacen(
+        "\"monitors\": {",
+        &format!("\"monitors\": {{ {members},"),
+        1,
+    )
+}
+
+const LISTED: &str = r#""probes": { "lidprobe": { "x": {"value": 0.05, "unit": "m"}, "y": {"value": 0.05, "unit": "m"}, "field": "velocity" } },
+        "lines": { "midline": { "x0": {"value": 0.0, "unit": "m"}, "y0": {"value": 0.05, "unit": "m"}, "x1": {"value": 0.1, "unit": "m"}, "y1": {"value": 0.05, "unit": "m"}, "samples": 16, "field": "pressure" } },
+        "surfaces": {
+            "a_flux": { "boundary": "lid", "quantity": "flux" },
+            "b_avg": { "boundary": "walls", "quantity": "pressure_average" },
+            "c_int": { "boundary": "walls", "quantity": "pressure_integral" }
+        },
+        "settle": { "tail_fraction": 0.5 }"#;
+
+/// `text` with the first `from` after the start of function object `object` replaced by `to`.
+fn edit_object(text: &str, object: &str, from: &str, to: &str) -> String {
+    let at = text.find(&format!("\n    {object}\n")).unwrap();
+    let (head, tail) = text.split_at(at);
+    assert!(tail.contains(from), "{object} has no {from}");
+    format!("{head}{}", tail.replacen(from, to, 1))
+}
+
+#[test]
+fn both_golden_cases_round_trip_clean_with_the_monitors() {
+    for (name, json) in cases() {
+        let (study, files) = case(json);
+        assert_eq!(check(&files, &study), vec![], "{name}");
+        let facts = EsiReader.read(&files).unwrap();
+        for n in 1..=5 {
+            for member in ["x", "y", "field"] {
+                assert!(
+                    facts.contains_key(&format!("/monitors/probe/{n}/{member}")),
+                    "{name}: probe {n} {member}"
+                );
+            }
+        }
+        assert!(!facts.keys().any(|k| k.starts_with("/monitors/line/")));
+    }
+    let listed = with_monitors(CAVITY_V1, LISTED);
+    let (study, files) = case(&listed);
+    assert_eq!(check(&files, &study), vec![]);
+    let facts = EsiReader.read(&files).unwrap();
+    assert_eq!(
+        facts["/monitors/line/1/samples"].value,
+        FactValue::Count(16)
+    );
+    assert_eq!(
+        facts["/monitors/line/1/field"].value,
+        FactValue::Text("pressure".into())
+    );
+    assert_eq!(
+        facts["/monitors/surface/3/quantity"].value,
+        FactValue::Text("pressure_integral".into())
+    );
+    assert_eq!(
+        facts["/monitors/surface/2/kind"].value,
+        FactValue::Text("no-slip wall".into())
+    );
+}
+
+#[test]
+fn zeroing_or_dropping_any_recovered_monitor_value_fails_the_check() {
+    let (zeroed, dropped, survivors) = run_harness(&with_monitors(CAVITY_V1, LISTED));
+    assert!(survivors.is_empty(), "{survivors:#?}");
+    assert!(zeroed >= 30, "only {zeroed} zero mutations");
+    assert!(dropped >= 30, "only {dropped} drop mutations");
+}
+
+#[test]
+fn a_probe_written_at_the_wrong_place_names_the_probe_and_the_file() {
+    let (study, files) = case(CAVITY_V1);
+    let bad = mutated(&files, CONTROL, |t| {
+        edit_object(t, "probe_2", "(0.025 0.025 0.025)", "(0.026 0.025 0.025)")
+    });
+    let found = check(&bad, &study);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let d = &found[0];
+    assert_eq!(d.code, "CFD-RT-001");
+    assert_eq!(d.setting, "probe 2 x");
+    assert!(
+        d.message.contains("written as 0.026 in the case"),
+        "{}",
+        d.message
+    );
+    assert!(d.message.contains("the study has 0.025"), "{}", d.message);
+    let line = text(&bad, CONTROL)
+        .lines()
+        .position(|l| l.contains("(0.026 0.025 0.025)"))
+        .unwrap() as u64
+        + 1;
+    let at = d.location.as_ref().unwrap();
+    assert_eq!((at.file.as_str(), at.line), (CONTROL, line));
+}
+
+#[test]
+fn a_surface_written_on_the_wrong_patch_is_a_mismatch() {
+    let (study, files) = case(&with_monitors(CAVITY_V1, LISTED));
+    let bad = mutated(&files, CONTROL, |t| {
+        edit_object(t, "surface_1", "name movingWall;", "name fixedWalls;")
+    });
+    let found = check(&bad, &study);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let d = &found[0];
+    assert_eq!(d.code, "CFD-RT-001");
+    assert_eq!(d.setting, "surface 1 boundary kind");
+    assert!(
+        d.message
+            .contains("written as no-slip wall in the case, but the study has moving wall"),
+        "{}",
+        d.message
+    );
+}
+
+#[test]
+fn a_monitor_object_that_is_missing_fails_closed() {
+    let (study, files) = case(&with_monitors(CAVITY_V1, LISTED));
+    let bad = mutated(&files, CONTROL, |t| {
+        let start = t.find("\n    line_1\n").unwrap() + 1;
+        let end = t[start..].find("\n    }\n").unwrap() + start + "\n    }\n".len();
+        format!("{}{}", &t[..start], &t[end..])
+    });
+    let found = check(&bad, &study);
+    assert_eq!(found.len(), 6, "{found:?}");
+    for d in &found {
+        assert_eq!(d.code, "CFD-RT-001");
+        assert!(d.setting.starts_with("line 1 "), "{}", d.setting);
+        assert!(
+            d.message.contains("was not found in the written case"),
+            "{}",
+            d.message
+        );
+    }
+}
+
+#[test]
+fn a_monitor_object_with_a_missing_entry_cannot_be_read_back() {
+    let (study, files) = case(CAVITY_V1);
+    let bad = mutated(&files, CONTROL, |t| {
+        edit_object(t, "probe_3", "        fields (U);\n", "")
+    });
+    let found = check(&bad, &study);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].code, "CFD-RT-002");
+    assert!(found[0].message.contains(CONTROL), "{}", found[0].message);
+}

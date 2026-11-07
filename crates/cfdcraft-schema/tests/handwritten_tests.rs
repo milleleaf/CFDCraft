@@ -6,22 +6,26 @@ use std::path::PathBuf;
 use cfdcraft_doc::{BlobKind, from_bytes};
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::{Study, canonical_hash, resolve};
+use cfdcraft_queue::{QUEUE_SCHEMA, Queue};
 use cfdcraft_schema::validate;
 use serde_json::{Value, json};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
 const MANIFEST: &[u8] = include_bytes!("fixtures/handwritten/manifest.json");
+const MANIFEST_V3: &[u8] = include_bytes!("fixtures/handwritten-v3/manifest.json");
 const MANIFEST_V1: &[u8] = include_bytes!("fixtures/handwritten-v1/manifest.json");
 const MANIFEST_V2: &[u8] = include_bytes!("fixtures/handwritten-v2/manifest.json");
 const STUDY: &[u8] = include_bytes!("fixtures/handwritten/study.json");
 const ARTIFACTS: &[u8] = include_bytes!("fixtures/handwritten/artifacts.json");
+const QUEUE: &str = include_str!("fixtures/handwritten/queue.json");
 
 #[derive(Clone, Copy)]
 enum Member {
     Study,
     Manifest,
     Artifacts,
+    Queue,
 }
 
 fn fixtures() -> PathBuf {
@@ -33,6 +37,7 @@ fn kind_of(member: Member) -> &'static str {
         Member::Study => "study",
         Member::Manifest => "manifest",
         Member::Artifacts => "artifacts",
+        Member::Queue => "queue",
     }
 }
 
@@ -41,11 +46,13 @@ fn read_schema(path: PathBuf) -> Value {
 }
 
 /// The published schema file for a member, read from `schema/` as a tool author would get it. The
-/// study has its own number; the manifest and the artifact index carry the number of the file.
+/// study and the queue have their own numbers; the manifest and the artifact index carry the number
+/// of the file.
 fn published_schema(member: Member) -> Value {
     let version = match member {
         Member::Study => Study::SCHEMA_VERSION,
         Member::Manifest | Member::Artifacts => CURRENT_SCHEMA,
+        Member::Queue => QUEUE_SCHEMA,
     };
     read_schema(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,6 +98,17 @@ fn handwritten_members_validate_against_the_published_files() {
 }
 
 #[test]
+fn a_handwritten_queue_validates_and_opens_through_the_reader() {
+    let queue: Value = serde_json::from_str(QUEUE).unwrap();
+    assert_eq!(validate(&published_schema(Member::Queue), &queue), Ok(()));
+    let opened = Queue::from_json(QUEUE).unwrap();
+    assert_eq!(opened.schema_version, QUEUE_SCHEMA);
+    assert_eq!(opened.jobs.len(), 2);
+    assert_eq!(opened.jobs[0].run_id.as_deref(), Some("cavity-4242-1"));
+    assert!(opened.jobs[1].run_id.is_none());
+}
+
+#[test]
 fn a_file_assembled_by_plain_zip_code_opens_with_the_expected_study() {
     let opened = from_bytes(&archive(MANIFEST, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, CURRENT_SCHEMA);
@@ -117,7 +135,31 @@ fn a_file_assembled_by_plain_zip_code_opens_with_the_expected_study() {
 }
 
 #[test]
-fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+fn a_handwritten_schema_3_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+    let manifest: Value = serde_json::from_slice(MANIFEST_V3).unwrap();
+    let study: Value = serde_json::from_slice(STUDY).unwrap();
+    let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
+    assert_eq!(
+        validate(&frozen_schema(Member::Manifest, 3), &manifest),
+        Ok(())
+    );
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    assert_eq!(
+        validate(&frozen_schema(Member::Artifacts, 3), &artifacts),
+        Ok(())
+    );
+    // The current manifest file allows its own number only.
+    assert!(validate(&published_schema(Member::Manifest), &manifest).is_err());
+
+    let opened = from_bytes(&archive(MANIFEST_V3, STUDY, ARTIFACTS)).unwrap();
+    assert_eq!(opened.schema_version, 3);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (3, 4));
+    assert!(opened.document.artifacts.runs.is_empty());
+}
+
+#[test]
+fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with_two_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V2).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -135,15 +177,16 @@ fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V2, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 2);
-    assert_eq!(opened.notes.len(), 1);
+    assert_eq!(opened.notes.len(), 2);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (2, 3));
+    assert_eq!((opened.notes[1].from, opened.notes[1].to), (3, 4));
     assert!(opened.document.artifacts.scenarios.is_empty());
     assert!(opened.document.artifacts.sweeps.is_empty());
     assert!(opened.document.artifacts.pruned.is_empty());
 }
 
 #[test]
-fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_two_notes() {
+fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_three_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V1).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -161,20 +204,23 @@ fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V1, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 1);
-    assert_eq!(opened.notes.len(), 2);
+    assert_eq!(opened.notes.len(), 3);
     let steps: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
-    assert_eq!(steps, [(1, 2), (2, 3)]);
+    assert_eq!(steps, [(1, 2), (2, 3), (3, 4)]);
     assert!(opened.document.artifacts.runs.is_empty());
 }
 
 /// File (relative to `tests/fixtures`), which member it is, whether the schema accepts it, and
-/// whether the reader accepts the file it makes. The two columns agree on every row except five:
+/// whether the reader accepts the file it makes. The two columns agree on every row except eight:
 /// the unit alias, the repeated link id, the run record whose keys are not those of its recipes,
-/// a variant listed before its parent and a pruned hash that the list of stored results lacks.
+/// a variant listed before its parent, a pruned hash that the list of stored results lacks, a
+/// stopped run without a checkpoint, a run continued from a later run and a queue with two active
+/// jobs.
 const CASES: &[(&str, Member, bool, bool)] = &[
     ("handwritten/manifest.json", Member::Manifest, true, true),
     ("handwritten/study.json", Member::Study, true, true),
     ("handwritten/artifacts.json", Member::Artifacts, true, true),
+    ("handwritten/queue.json", Member::Queue, true, true),
     (
         "invalid/study_extra_top_level_key.json",
         Member::Study,
@@ -279,6 +325,30 @@ const CASES: &[(&str, Member, bool, bool)] = &[
         true,
         false,
     ),
+    // The record is well formed, so the schema accepts it. That a stopped run holds a checkpoint
+    // and no result involves several members of the record, which only the reader checks.
+    (
+        "invalid/artifacts_stopped_run_without_checkpoint.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
+    // Both records are well formed. That a run continues an earlier run involves two records,
+    // which only the reader checks.
+    (
+        "invalid/artifacts_continued_from_later_run.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
+    // Both jobs are well formed. That only one job is active involves two jobs, which only the
+    // queue reader checks.
+    (
+        "invalid/queue_two_active_jobs.json",
+        Member::Queue,
+        true,
+        false,
+    ),
 ];
 
 /// The schema verdict and the reader verdict for one fixture. The reader verdict is that of the
@@ -291,12 +361,17 @@ fn verdicts(file: &str, member: Member) -> (bool, bool) {
         Member::Manifest => archive(&bytes, STUDY, ARTIFACTS),
         Member::Study => archive(MANIFEST, &bytes, ARTIFACTS),
         Member::Artifacts => archive(MANIFEST, STUDY, &bytes),
+        // The queue is not a member of the study file: its own reader gives the verdict.
+        Member::Queue => {
+            let text = String::from_utf8(bytes).unwrap();
+            return (schema_accepts, Queue::from_json(&text).is_ok());
+        }
     };
     (schema_accepts, from_bytes(&whole).is_ok())
 }
 
 #[test]
-fn schema_and_reader_agree_on_every_fixture_but_the_five_documented_ones() {
+fn schema_and_reader_agree_on_every_fixture_but_the_eight_documented_ones() {
     for (file, member, schema_accepts, reader_accepts) in CASES {
         assert_eq!(
             verdicts(file, *member),
@@ -321,7 +396,7 @@ fn every_invalid_fixture_is_in_the_table() {
 }
 
 #[test]
-fn only_the_unit_alias_the_repeated_link_id_foreign_run_keys_and_the_two_new_rules_differ() {
+fn only_the_listed_rules_differ() {
     let differ: Vec<&str> = CASES
         .iter()
         .filter(|(_, _, schema_accepts, reader_accepts)| schema_accepts != reader_accepts)
@@ -334,7 +409,10 @@ fn only_the_unit_alias_the_repeated_link_id_foreign_run_keys_and_the_two_new_rul
             "invalid/artifacts_repeated_link_id.json",
             "invalid/artifacts_run_with_foreign_keys.json",
             "invalid/artifacts_scenario_parent_later.json",
-            "invalid/artifacts_pruned_unlisted.json"
+            "invalid/artifacts_pruned_unlisted.json",
+            "invalid/artifacts_stopped_run_without_checkpoint.json",
+            "invalid/artifacts_continued_from_later_run.json",
+            "invalid/queue_two_active_jobs.json"
         ]
     );
 }

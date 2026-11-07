@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use cfdcraft_doc::{ArtifactIndex, FORMAT_ID};
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::Study;
+use cfdcraft_queue::{QUEUE_SCHEMA, Queue};
 use cfdcraft_schema::{
-    artifacts_schema, manifest_schema, published, study_schema, to_file_text, validate,
+    artifacts_schema, manifest_schema, published, queue_schema, study_schema, to_file_text,
+    validate,
 };
 use serde_json::{Value, json};
 
@@ -13,11 +15,12 @@ const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1
 const META_SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Each kind of member with the number its schema file carries: the study its own number, the
-/// manifest and the artifact index the number of the whole file.
-const KINDS: [(&str, u32); 3] = [
+/// manifest and the artifact index the number of the whole file, the queue its own number.
+const KINDS: [(&str, u32); 4] = [
     ("study", Study::SCHEMA_VERSION),
     ("manifest", CURRENT_SCHEMA),
     ("artifacts", CURRENT_SCHEMA),
+    ("queue", QUEUE_SCHEMA),
 ];
 
 fn schema_dir() -> PathBuf {
@@ -112,6 +115,7 @@ fn schemas_have_an_identity_a_closed_shape_and_no_network_references() {
         ("study", Study::SCHEMA_VERSION, study_schema()),
         ("manifest", CURRENT_SCHEMA, manifest_schema()),
         ("artifacts", CURRENT_SCHEMA, artifacts_schema()),
+        ("queue", QUEUE_SCHEMA, queue_schema()),
     ] {
         assert_eq!(schema["$schema"], META_SCHEMA, "{name}");
         assert_eq!(
@@ -245,8 +249,10 @@ fn the_readme_names_every_published_file() {
     let frozen = [
         "cfdcraft-manifest-v1.json",
         "cfdcraft-manifest-v2.json",
+        "cfdcraft-manifest-v3.json",
         "cfdcraft-artifacts-v1.json",
         "cfdcraft-artifacts-v2.json",
+        "cfdcraft-artifacts-v3.json",
     ]
     .map(str::to_owned);
     let published_files = published().into_iter().map(|(file, _)| file);
@@ -289,15 +295,20 @@ fn the_artifact_index_schema_describes_a_run_record_completely() {
     assert_eq!(
         property_names(&defs["RunRecord"]),
         [
+            "checkpoint",
             "checks",
             "comparison",
+            "continued_from",
             "id",
             "key_numbers",
             "mesh",
+            "np",
+            "outcome",
             "provenance",
             "rerun_of",
             "result",
-            "scenario"
+            "scenario",
+            "verdict"
         ]
     );
     assert_eq!(
@@ -413,6 +424,8 @@ fn the_study_schema_is_extended_not_changed() {
     assert_eq!(validate(&schema, &cavity()), Ok(()));
     assert_eq!(validate(&schema, &with), Ok(()));
     Study::from_json(&with.to_string()).unwrap();
+    // The monitors added later are optional members of the same study file.
+    assert_eq!(validate(&schema, &probe_study()), Ok(()));
 
     let mut extra = with.clone();
     extra["raw_overrides"]["relax"]["comment"] = json!("x");
@@ -501,4 +514,179 @@ fn an_index_with_variants_sweeps_and_pruned_hashes_validates() {
     let mut extra = index;
     extra["scenarios"][0]["origin"]["comment"] = json!("x");
     assert!(validate(&schema, &extra).is_err());
+}
+
+/// The schema 3 files as they stood when schema 4 was introduced: the length in bytes and an
+/// FNV-1a 64-bit checksum of each.
+const FROZEN_SUMS_V3: [(&str, usize, u64); 2] = [
+    ("cfdcraft-artifacts-v3.json", 36131, 0x3d39_6105_a876_562c),
+    ("cfdcraft-manifest-v3.json", 1289, 0x5d96_90e5_9265_8798),
+];
+
+#[test]
+fn the_frozen_v3_files_are_byte_identical_to_the_published_v3_files_and_pinned() {
+    let frozen_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frozen");
+    for (file, length, sum) in FROZEN_SUMS_V3 {
+        let published = fs::read(schema_dir().join(file)).unwrap();
+        let frozen = fs::read(frozen_dir.join(file)).unwrap();
+        assert_eq!(published, frozen, "{file}: the frozen copy differs");
+        assert_eq!(
+            (frozen.len(), checksum(&frozen)),
+            (length, sum),
+            "{file} is not the text recorded when it was frozen; a published file is never \
+             edited, so raise the schema number instead"
+        );
+    }
+}
+
+#[test]
+fn the_artifact_index_schema_describes_the_new_run_members() {
+    let schema = artifacts_schema();
+    let defs = &schema["$defs"];
+    let run = &defs["RunRecord"];
+    for name in ["continued_from", "outcome", "checkpoint", "verdict", "np"] {
+        assert!(run["properties"].get(name).is_some(), "{name}");
+        let required = run["required"].as_array().unwrap();
+        assert!(!required.contains(&json!(name)), "{name} must be optional");
+    }
+    assert_eq!(
+        property_names(&defs["MonitorsRecipe"]),
+        ["centreline_u_sample_count", "lines", "probes", "surfaces"]
+    );
+    assert_eq!(property_names(&defs["ProbeRecipe"]), ["field", "x", "y"]);
+    assert_eq!(
+        property_names(&defs["LineRecipe"]),
+        ["field", "samples", "x0", "x1", "y0", "y1"]
+    );
+    assert_eq!(property_names(&defs["SurfaceRecipe"]), ["kind", "quantity"]);
+    assert_eq!(
+        property_names(&defs["Checkpoint"]),
+        ["blob", "size", "time"]
+    );
+    assert_eq!(property_names(&defs["ContinuedFrom"]), ["run", "time"]);
+    // The verdict kept on a run is the settle verdict, which the compare verdict of a rerun
+    // shares a name with.
+    assert_eq!(
+        property_names(&defs["Verdict2"]),
+        [
+            "energy",
+            "mass",
+            "quantities",
+            "reasons",
+            "residuals_ok",
+            "state"
+        ]
+    );
+    assert_eq!(
+        run["properties"]["verdict"]["anyOf"][0]["$ref"],
+        "#/$defs/Verdict2"
+    );
+    assert_eq!(
+        property_names(&defs["QuantityState"]),
+        [
+            "drift", "last", "mean", "name", "samples", "spread", "status"
+        ]
+    );
+    assert_eq!(
+        property_names(&defs["Balance"]),
+        ["imbalance", "reference", "status"]
+    );
+}
+
+fn probe_study() -> Value {
+    let mut study = cavity();
+    study["monitors"]["probes"] = json!({
+        "centre": {
+            "x": { "value": 0.05, "unit": "m" },
+            "y": { "value": 0.05, "unit": "m" },
+            "field": "velocity"
+        }
+    });
+    study["monitors"]["lines"] = json!({
+        "mid": {
+            "x0": { "value": 0.0, "unit": "m" },
+            "y0": { "value": 0.05, "unit": "m" },
+            "x1": { "value": 0.1, "unit": "m" },
+            "y1": { "value": 0.05, "unit": "m" },
+            "samples": 64,
+            "field": "pressure"
+        }
+    });
+    study["monitors"]["surfaces"] = json!({
+        "out": { "boundary": "lid", "quantity": "flux" }
+    });
+    study["monitors"]["settle"] = json!({ "tail_fraction": 0.2, "tail_floor": 50 });
+    study
+}
+
+#[test]
+fn the_study_schema_takes_the_optional_monitors_and_refuses_unknown_members() {
+    let schema = study_schema();
+    assert_eq!(validate(&schema, &cavity()), Ok(()));
+    let with = probe_study();
+    assert_eq!(validate(&schema, &with), Ok(()));
+    Study::from_json(&with.to_string()).unwrap();
+
+    let mut extra = with.clone();
+    extra["monitors"]["probes"]["centre"]["comment"] = json!("x");
+    assert!(validate(&schema, &extra).is_err());
+
+    let mut other_field = with.clone();
+    other_field["monitors"]["probes"]["centre"]["field"] = json!("temperature");
+    assert!(validate(&schema, &other_field).is_err());
+
+    let mut other_quantity = with.clone();
+    other_quantity["monitors"]["surfaces"]["out"]["quantity"] = json!("heat");
+    assert!(validate(&schema, &other_quantity).is_err());
+
+    let mut unknown_setting = with;
+    unknown_setting["monitors"]["settle"]["tolerance"] = json!(0.1);
+    assert!(validate(&schema, &unknown_setting).is_err());
+}
+
+#[test]
+fn the_queue_schema_validates_a_good_queue_and_refuses_an_unknown_state() {
+    let schema = queue_schema();
+    assert_eq!(schema["$id"], "urn:cfdcraft:schema:queue:1");
+    let good = json!({
+        "schema_version": QUEUE_SCHEMA,
+        "next_number": 3,
+        "jobs": [
+            {
+                "id": "q-001",
+                "kind": "solve",
+                "state": "running",
+                "run_id": "cavity-4242-1",
+                "progress": { "time": 120.5, "iterations": 240 }
+            },
+            { "id": "q-002", "kind": { "continue": { "run": "run-1" } }, "state": "queued" }
+        ]
+    });
+    assert_eq!(validate(&schema, &good), Ok(()));
+    Queue::from_json(&good.to_string()).unwrap();
+    assert_eq!(validate(&schema, &json!({ "schema_version": 1 })), Ok(()));
+
+    let mut state = good.clone();
+    state["jobs"][0]["state"] = json!("paused");
+    assert!(validate(&schema, &state).is_err());
+
+    let mut number = good.clone();
+    number["schema_version"] = json!(2);
+    assert!(validate(&schema, &number).is_err());
+
+    let mut extra = good;
+    extra["jobs"][1]["comment"] = json!("x");
+    assert!(validate(&schema, &extra).is_err());
+}
+
+#[test]
+fn published_includes_the_queue_file() {
+    let files: Vec<String> = published().into_iter().map(|(file, _)| file).collect();
+    assert_eq!(
+        files
+            .iter()
+            .filter(|file| file.as_str() == "cfdcraft-queue-v1.json")
+            .count(),
+        1
+    );
 }

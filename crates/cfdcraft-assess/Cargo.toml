@@ -1,0 +1,13 @@
+[package]
+name = "cfdcraft-assess"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-logscan = { path = "../cfdcraft-logscan", version = "=0.1.0" }
+cfdcraft-monitors = { path = "../cfdcraft-monitors", version = "=0.1.0" }
+cfdcraft-settle = { path = "../cfdcraft-settle", version = "=0.1.0" }
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

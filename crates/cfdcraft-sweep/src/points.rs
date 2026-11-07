@@ -50,9 +50,10 @@ pub enum SweepError {
     /// A value of a count parameter is not a whole number that is not negative.
     #[error("\"{name}\" is a count, but {value} is not a whole number from 0 up to 2^53")]
     NotACount { name: String, value: f64 },
-    /// A setting pointer is not usable, or two parameters aim at one setting.
+    /// A setting pointer is not usable, or two parameters aim at one setting or at settings one of
+    /// which lies below the other.
     #[error(
-        "\"{name}\" aims at the setting \"{setting}\", which is not usable or is set by another parameter"
+        "\"{name}\" aims at the setting \"{setting}\", which is not usable or overlaps a setting of another parameter"
     )]
     BadSetting { name: String, setting: String },
     /// A unit is empty, too long or holds a control character.
@@ -176,6 +177,17 @@ fn has_control(text: &str) -> bool {
     text.chars().any(char::is_control)
 }
 
+/// Whether two setting pointers are one or one lies below the other, so that a change to one would
+/// replace or be replaced by a change to the other.
+fn overlap(a: &str, b: &str) -> bool {
+    let below = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    a == b || below(a, b) || below(b, a)
+}
+
 fn check_target(p: &Parameter, seen: &mut Vec<String>) -> Result<(), SweepError> {
     let bad_setting = |setting: &str| SweepError::BadSetting {
         name: p.name.clone(),
@@ -186,7 +198,7 @@ fn check_target(p: &Parameter, seen: &mut Vec<String>) -> Result<(), SweepError>
         if !setting.starts_with('/')
             || !(2..=200).contains(&len)
             || has_control(setting)
-            || seen.iter().any(|s| s == setting)
+            || seen.iter().any(|s| overlap(s, setting))
         {
             return Err(bad_setting(setting));
         }
@@ -329,6 +341,12 @@ fn assignments(p: &Parameter, v: f64) -> Result<Vec<Assignment>, SweepError> {
             let (c, s) = cos_sin(v);
             let x = tidy(base_x * c - base_y * s);
             let y = tidy(base_x * s + base_y * c);
+            if !x.is_finite() || !y.is_finite() {
+                return Err(SweepError::BadValues {
+                    name: p.name.clone(),
+                    reason: format!("the vector turned by {v} is too large to hold as a number"),
+                });
+            }
             let mut both = one(setting_x, json!({ "value": x, "unit": unit }));
             both.extend(one(setting_y, json!({ "value": y, "unit": unit })));
             both

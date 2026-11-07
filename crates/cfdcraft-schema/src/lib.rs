@@ -1,4 +1,5 @@
-//! The published JSON Schema files for the three JSON members of a study file.
+//! The published JSON Schema files for the three JSON members of a study file and for the queue
+//! file that sits beside it.
 //!
 //! Each file is named after the number of the thing it describes: the manifest and the artifact
 //! index carry the number of the file, the study carries its own.
@@ -13,6 +14,7 @@
 use cfdcraft_doc::{ArtifactIndex, FORMAT_ID, Manifest};
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::Study;
+use cfdcraft_queue::{QUEUE_SCHEMA, Queue};
 use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::Value;
 
@@ -96,9 +98,21 @@ pub fn artifacts_schema() -> Value {
     )
 }
 
+/// The schema of `queue.json`, which carries its own number.
+pub fn queue_schema() -> Value {
+    overlay(
+        generated::<Queue>(),
+        "queue",
+        "queue.json",
+        QUEUE_SCHEMA,
+        &[("schema_version", QUEUE_SCHEMA.into())],
+    )
+}
+
 /// The files published in the `schema/` folder: each file name with the function that generates
 /// its content. A name carries the number of what the file describes: the study's own number for
-/// the study, the number of the whole file for the manifest and the artifact index.
+/// the study, the number of the whole file for the manifest and the artifact index, and the
+/// queue's own number for the queue.
 pub fn published() -> Vec<(String, fn() -> Value)> {
     vec![
         (
@@ -112,6 +126,10 @@ pub fn published() -> Vec<(String, fn() -> Value)> {
         (
             format!("cfdcraft-artifacts-v{CURRENT_SCHEMA}.json"),
             artifacts_schema as fn() -> Value,
+        ),
+        (
+            format!("cfdcraft-queue-v{QUEUE_SCHEMA}.json"),
+            queue_schema as fn() -> Value,
         ),
     ]
 }

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "next_number": 3,
+  "jobs": [
+    {
+      "id": "q-001",
+      "scenario": "fast-lid",
+      "kind": "solve",
+      "origin": {
+        "sweep": "lid-sweep",
+        "index": 0
+      },
+      "state": "running",
+      "attempts": 1,
+      "run_id": "cavity-4242-1",
+      "progress": {
+        "time": 120.5,
+        "iterations": 240,
+        "settled": 1,
+        "drifting": 2,
+        "monitors": 3,
+        "updated": 5,
+        "summary": "running, 1 of 3 settled"
+      }
+    },
+    {
+      "id": "q-002",
+      "kind": {
+        "continue": {
+          "run": "run-1"
+        }
+      },
+      "state": "queued"
+    }
+  ]
+}

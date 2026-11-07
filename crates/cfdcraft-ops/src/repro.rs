@@ -5,6 +5,7 @@ use cfdcraft_diskuse::{DiskUse, PrunePlan};
 use cfdcraft_keys::Change;
 use cfdcraft_runs::{Check, Provenance};
 use cfdcraft_scenarios::Override;
+use cfdcraft_settle::Verdict;
 use cfdcraft_sweep::Point;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,8 @@ pub enum Repro {
     Disk(Box<DiskUse>),
     /// What pruning stored results would remove, or did.
     Prune(Box<PruneData>),
+    /// The job queue of a document.
+    Queue(Box<QueueData>),
 }
 
 /// The outcome of one solve.
@@ -124,6 +127,10 @@ pub struct ResultData {
     pub key_numbers: KeyNumbers,
     /// For a rerun, how it compares with the run it repeats.
     pub comparison: Option<Comparison>,
+    /// The convergence verdict made when the run was recorded; absent for a run recorded without
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convergence: Option<Verdict>,
 }
 
 /// What one run was made from.
@@ -280,4 +287,35 @@ pub struct PruneData {
     /// Whether the plan was carried out; false for a dry run.
     pub applied: bool,
     pub plan: PrunePlan,
+}
+
+/// The job queue of a document, in the order its jobs start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct QueueData {
+    pub jobs: Vec<JobView>,
+    /// The job that is starting, running, stopping, finishing or unreachable, if there is one.
+    pub active: Option<String>,
+    /// Whether a runner is advancing the queue now.
+    pub drain: bool,
+}
+
+/// One job of the queue as it is shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JobView {
+    pub id: String,
+    /// The variant the job solves; null for the study itself.
+    pub scenario: Option<String>,
+    /// `solve` or `continue`.
+    pub kind: String,
+    /// The state word: `queued`, `starting`, `running`, `stopping`, `finishing`, `unreachable`,
+    /// `finished`, `stopped`, `failed`, `cancelled` or `interrupted`.
+    pub state: String,
+    /// The sweep and point the job came from, written `<sweep> <point>`.
+    pub origin: Option<String>,
+    /// The run recorded for a finished or stopped job.
+    pub run: Option<String>,
+    /// The stable code of a failed or interrupted job.
+    pub code: Option<String>,
+    /// A one-line summary of the latest progress of an active job.
+    pub progress_line: Option<String>,
 }

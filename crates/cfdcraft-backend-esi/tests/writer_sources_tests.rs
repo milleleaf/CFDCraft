@@ -69,3 +69,14 @@ fn the_dictionary_editor_is_listed_and_is_one_file() {
         "a file added to the editor must be listed in WRITER_SOURCES"
     );
 }
+
+#[test]
+fn the_writer_sources_list_has_nine_files_including_monitors_rs() {
+    assert_eq!(WRITER_SOURCES.len(), 9);
+    assert!(
+        WRITER_SOURCES
+            .iter()
+            .any(|(name, _)| *name == "monitors.rs")
+    );
+    assert!(!NOT_THE_WRITER.contains(&"monitors.rs"));
+}

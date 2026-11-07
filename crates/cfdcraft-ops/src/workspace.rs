@@ -9,8 +9,11 @@ use crate::{
     host_runner::finish_job,
     jobs::{JobAction, JobOptions, operation_of, plan_scenario_job_with},
     prepare::prepare,
+    queue_file::QueueFile,
+    queue_ops::{self, AddRequest},
     registry::{ResultOutcome, RunRegistry, StartOutcome, Status},
     report::{ExitClass, Report},
+    repro::{JobView, Repro},
     run::{RunMode, RunRequest},
     scenario_ops::LabelUpdate,
 };
@@ -35,6 +38,9 @@ const PACKS: &str = "packs";
 
 /// The most documents one plan of an update may name.
 const MAX_PLAN_DOCUMENTS: usize = 16;
+
+/// The most documents looked through for a queue job whose document was not named.
+const MAX_JOB_SEARCH: usize = 256;
 
 /// The directories under a workspace root, each a real directory.
 #[derive(Debug, Clone)]
@@ -436,6 +442,90 @@ impl Workspace {
         let report = crate::update::plan_update_report(&paths, items, order).report;
         self.within(report.for_operation(OP))
     }
+}
+
+impl Workspace {
+    /// The file of the document called `name`, for a valid name.
+    pub fn document_path(&self, name: &str) -> Option<PathBuf> {
+        Self::valid_name(name).then(|| self.document_file(name))
+    }
+
+    /// Put jobs in the queue of the document. Nothing starts here: the background runner does.
+    pub fn queue_add(&self, name: &str, request: &AddRequest) -> Report {
+        self.named("queue_add", name, || {
+            queue_ops::queue_add(&self.document_file(name), request).report
+        })
+    }
+
+    /// The queue of the document, in the order its jobs start.
+    pub fn queue_list(&self, name: &str) -> Report {
+        self.named("queue_list", name, || {
+            queue_ops::queue_list(&self.document_file(name)).report
+        })
+    }
+
+    /// Move the waiting job `job` to place `to` among the waiting jobs, counted from 0.
+    pub fn queue_reorder(&self, name: &str, job: &str, to: usize) -> Report {
+        self.named("queue_reorder", name, || {
+            queue_ops::queue_reorder(&self.document_file(name), job, to).report
+        })
+    }
+
+    /// Cancel a waiting job, or ask a running one to write its latest results and stop.
+    pub fn queue_cancel(&self, name: &str, job: &str) -> Report {
+        self.named("queue_cancel", name, || {
+            queue_ops::queue_cancel(&self.document_file(name), job).report
+        })
+    }
+
+    /// Ask the running job to write its latest results and stop.
+    pub fn queue_stop(&self, name: &str, job: &str) -> Report {
+        self.named("run_stop", name, || {
+            queue_ops::queue_stop(&self.document_file(name), job).report
+        })
+    }
+
+    /// The document and the job a queue job id (`q-` and digits) names. With `name` only that
+    /// document is looked in. Without it every document is, and the job counts only when exactly
+    /// one document has it, because every queue numbers its jobs from 1.
+    pub fn find_job(&self, name: Option<&str>, job: &str) -> Option<(PathBuf, JobView)> {
+        let digits = job.strip_prefix("q-")?;
+        if !(1..=10).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let names: Vec<String> = match name {
+            Some(n) if Self::valid_name(n) => vec![n.to_owned()],
+            Some(_) => return None,
+            None => std::fs::read_dir(self.dir(DOCUMENTS))
+                .ok()?
+                .flatten()
+                .filter_map(|entry| {
+                    let file = entry.file_name().into_string().ok()?;
+                    let stem = file.strip_suffix(".cfdcraft")?;
+                    Self::valid_name(stem).then(|| stem.to_owned())
+                })
+                .take(MAX_JOB_SEARCH)
+                .collect(),
+        };
+        let mut found = names.iter().filter_map(|n| {
+            let path = self.document_file(n);
+            // A look at the queue file first, so a document without the job is not opened.
+            let queue = QueueFile::new(&path).read().ok()?;
+            if !queue.jobs.iter().any(|j| j.id == job) {
+                return None;
+            }
+            match queue_ops::queue_list(&path).report.repro {
+                Some(Repro::Queue(data)) => data
+                    .jobs
+                    .into_iter()
+                    .find(|j| j.id == job)
+                    .map(|j| (path, j)),
+                _ => None,
+            }
+        });
+        let first = found.next()?;
+        (name.is_some() || found.next().is_none()).then_some(first)
+    }
 
     fn pack_file(&self, name: &str) -> PathBuf {
         self.dir(PACKS).join(format!("{name}.cfdpack"))
@@ -527,6 +617,7 @@ pub struct ServerSettings {
     hosts: PathBuf,
     profile: String,
     socket_dir: PathBuf,
+    queued: bool,
 }
 
 impl ServerSettings {
@@ -546,7 +637,42 @@ impl ServerSettings {
             hosts: hosts.into(),
             profile: profile.to_owned(),
             socket_dir: socket_dir.into(),
+            queued: true,
         })
+    }
+
+    /// Whether solves are queued for the background runner (the default) or stay attached to the
+    /// server and stop when it stops.
+    #[must_use]
+    pub fn with_queue(mut self, queued: bool) -> Self {
+        self.queued = queued;
+        self
+    }
+
+    /// Whether solves are queued.
+    pub fn queued(&self) -> bool {
+        self.queued
+    }
+
+    /// The arguments that start the background runner of the document at `doc` in the foreground
+    /// of its own process. The key stays in the list because the child needs it; the list is only
+    /// ever handed to a new process, never logged or shown.
+    pub fn drain_args(&self, doc: &Path) -> Vec<String> {
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        vec![
+            "queue".to_owned(),
+            "drain".to_owned(),
+            text(doc),
+            "--foreground".to_owned(),
+            "--key".to_owned(),
+            text(&self.key),
+            "--hosts".to_owned(),
+            text(&self.hosts),
+            "--profile".to_owned(),
+            self.profile.clone(),
+            "--socket-dir".to_owned(),
+            text(&self.socket_dir),
+        ]
     }
 }
 

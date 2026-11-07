@@ -1,7 +1,7 @@
 use cfdcraft_model::{Study, resolve};
 use cfdcraft_runs::{
-    Check, KeyNumbers, MAX_RUNS, Output, Provenance, RunRecord, RunsError, Stage, StageRecipes,
-    ToolIdentity, is_plain_name, redact_hosts, verify_runs,
+    Check, KeyNumbers, MAX_RUNS, Outcome, Output, Provenance, RunRecord, RunsError, Stage,
+    StageRecipes, ToolIdentity, is_plain_name, redact_hosts, verify_runs,
 };
 use cfdcraft_store::ContentHash;
 
@@ -71,6 +71,11 @@ fn record_for(id: &str, study: &Study) -> RunRecord {
         }],
         key_numbers: KeyNumbers::from([("solver.iterations".to_owned(), 120.0)]),
         comparison: None,
+        continued_from: None,
+        outcome: Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 

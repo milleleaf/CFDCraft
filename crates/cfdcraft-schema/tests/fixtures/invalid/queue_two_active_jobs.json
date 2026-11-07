@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "next_number": 3,
+  "jobs": [
+    {
+      "id": "q-001",
+      "kind": "solve",
+      "state": "running",
+      "run_id": "cavity-4242-1"
+    },
+    {
+      "id": "q-002",
+      "kind": "solve",
+      "state": "running",
+      "run_id": "cavity-4243-1"
+    }
+  ]
+}

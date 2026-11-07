@@ -4,10 +4,12 @@ pub mod disk;
 pub mod document;
 pub mod export;
 pub mod keys;
+pub mod queue;
 pub mod repro;
 pub mod run;
 pub mod scenario;
 pub mod sweep;
+pub mod watch;
 pub type Error = Box<dyn std::error::Error>;
 
 /// Reads a study file and runs `operation` on its text. A file that cannot be read is a finished,
@@ -105,4 +107,16 @@ pub fn emit_data(outcome: &cfdcraft_ops::DocOutcome, json: bool) -> Result<i32, 
         println!("{}", cfdcraft_text::Text::english().render(line));
     }
     Ok(code)
+}
+
+/// The report as JSON with one more member, for a verb whose answer has no place in the shared
+/// report. The member is named `key`.
+pub fn json_with(
+    report: &cfdcraft_ops::Report,
+    key: &str,
+    data: serde_json::Value,
+) -> Result<String, Error> {
+    let mut value = serde_json::to_value(report)?;
+    value[key] = data;
+    Ok(value.to_string())
 }

@@ -1,0 +1,358 @@
+{
+  "$defs": {
+    "Job": {
+      "additionalProperties": false,
+      "description": "One job.",
+      "properties": {
+        "attempts": {
+          "description": "How many times a start was retried.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "description": "The stable code of a failed or interrupted job.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "`q-` and a number of at least three digits, for example `q-001`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/JobKind",
+          "description": "What the job does."
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Origin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sweep point the job came from, if it came from one."
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Progress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last progress report of an active job."
+        },
+        "run": {
+          "description": "The run recorded for a finished or stopped job.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "The name of the run (and of its container); set from `starting` until the end.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scenario": {
+          "description": "The scenario to solve; none means the study itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/JobState",
+          "description": "Where the job is in its life."
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A stop that was asked for and not yet carried out."
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "state"
+      ],
+      "type": "object"
+    },
+    "JobKind": {
+      "description": "What a job does.",
+      "oneOf": [
+        {
+          "const": "solve",
+          "description": "Solve from the start.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Continue a stopped run from its latest written time.",
+          "properties": {
+            "continue": {
+              "additionalProperties": false,
+              "properties": {
+                "run": {
+                  "description": "The stopped run to continue.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "continue"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "JobState": {
+      "description": "Where a job is in its life. The last five are end states.",
+      "oneOf": [
+        {
+          "const": "queued",
+          "description": "Waiting its turn.",
+          "type": "string"
+        },
+        {
+          "const": "starting",
+          "description": "Being uploaded and started.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Running on the compute host.",
+          "type": "string"
+        },
+        {
+          "const": "stopping",
+          "description": "A stop was applied; waiting for the solver to write and end.",
+          "type": "string"
+        },
+        {
+          "const": "finishing",
+          "description": "The container ended; the files are being fetched and judged.",
+          "type": "string"
+        },
+        {
+          "const": "unreachable",
+          "description": "The host cannot be reached; the run may still be going.",
+          "type": "string"
+        },
+        {
+          "const": "finished",
+          "description": "Ended and recorded.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Stopped on request, with a recorded checkpoint.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Ended with an error.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled before it ran.",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "Lost: the watch gave up.",
+          "type": "string"
+        }
+      ]
+    },
+    "Origin": {
+      "additionalProperties": false,
+      "description": "The sweep point a job came from.",
+      "properties": {
+        "index": {
+          "description": "The point number within the sweep.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sweep": {
+          "description": "The sweep id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sweep",
+        "index"
+      ],
+      "type": "object"
+    },
+    "Progress": {
+      "additionalProperties": false,
+      "description": "A progress report, for display only. It holds no clock: `updated` is a number the caller\npasses in. The resume offset of a mirrored file is the length of its mirror file, never stored\nhere.",
+      "properties": {
+        "drifting": {
+          "default": 0,
+          "description": "How many are still drifting.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "iterations": {
+          "default": 0,
+          "description": "The iterations or time steps so far.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "monitors": {
+          "default": 0,
+          "description": "How many are monitored.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settled": {
+          "default": 0,
+          "description": "How many monitored quantities have settled.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary": {
+          "description": "A one-line summary for people.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "The latest solver time, if the solver has one.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "updated": {
+          "default": 0,
+          "description": "When the report was made, as a number the caller chose.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "StopCause": {
+      "description": "Why a stop was asked for.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "A person asked.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "The job was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "diverged",
+          "description": "The solution diverged.",
+          "type": "string"
+        },
+        {
+          "const": "disk",
+          "description": "The disk is nearly full.",
+          "type": "string"
+        }
+      ]
+    },
+    "StopMode": {
+      "description": "How a stop writes.",
+      "oneOf": [
+        {
+          "const": "write_now",
+          "description": "Write the fields now, then end.",
+          "type": "string"
+        },
+        {
+          "const": "no_write",
+          "description": "End without writing (the fields cannot be trusted).",
+          "type": "string"
+        }
+      ]
+    },
+    "StopRequest": {
+      "additionalProperties": false,
+      "description": "A stop that was asked for.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/StopCause",
+          "description": "Why."
+        },
+        "mode": {
+          "$ref": "#/$defs/StopMode",
+          "description": "How to stop."
+        }
+      },
+      "required": [
+        "mode",
+        "cause"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:queue:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The whole queue file.",
+  "properties": {
+    "jobs": {
+      "default": [],
+      "description": "The jobs, in the order they will start.",
+      "items": {
+        "$ref": "#/$defs/Job"
+      },
+      "type": "array"
+    },
+    "next_number": {
+      "default": 1,
+      "description": "The number the next job gets. It is never lowered, so clearing finished jobs never makes a\njob id come back.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "description": "The version of this file's shape.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version"
+  ],
+  "title": "CFDCraft queue.json, schema 1",
+  "type": "object"
+}

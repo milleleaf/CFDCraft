@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use cfdcraft_keys::Stage;
 use thiserror::Error;
 
-use crate::record::RunRecord;
+use crate::record::{Outcome, RunRecord};
 
 /// The most records a log may hold. This is a sanity bound for the reader. It is not the limit a
 /// history meets in practice: a record with its two recipes and its key numbers runs to many
@@ -61,6 +61,9 @@ pub enum RunsError {
     /// A rerun carries another scenario tag than the run it repeats.
     #[error("run {run}: it repeats \"{of}\", which was made for another scenario")]
     RerunScenario { run: String, of: String },
+    /// A run's outcome, checkpoint, parent run or process count do not agree with each other.
+    #[error("run {run}: {reason}")]
+    BadOutcome { run: String, reason: String },
 }
 
 /// The one rule for a plain name, which every run id, link id and document name follows: 1 to 40
@@ -181,8 +184,64 @@ pub fn verify_runs(runs: &[RunRecord]) -> Result<(), RunsError> {
                 of: of.clone(),
             });
         }
+        check_outcome(run, &seen)?;
         seen.insert(id, run.result.is_some());
         tags.insert(id, tag);
+    }
+    Ok(())
+}
+
+/// Whether `text` is a plain decimal number: digits with at most one point, and at least one digit.
+fn is_plain_decimal(text: &str) -> bool {
+    text.bytes().any(|c| c.is_ascii_digit())
+        && text.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        && text.bytes().filter(|&c| c == b'.').count() <= 1
+}
+
+/// The outcome rules: what a stopped, continued or rerun record may hold.
+fn check_outcome(run: &RunRecord, earlier: &HashMap<&str, bool>) -> Result<(), RunsError> {
+    let bad = |reason: &str| RunsError::BadOutcome {
+        run: run.id.clone(),
+        reason: reason.to_owned(),
+    };
+    if run.rerun_of.is_some()
+        && (!run.outcome.is_complete() || run.checkpoint.is_some() || run.continued_from.is_some())
+    {
+        return Err(bad(
+            "it is a rerun, which cannot be stopped, hold a checkpoint or continue another run",
+        ));
+    }
+    match &run.outcome {
+        Outcome::Stopped { at_time } => {
+            let Some(checkpoint) = &run.checkpoint else {
+                return Err(bad("it was stopped but holds no checkpoint"));
+            };
+            if run.result.is_some() {
+                return Err(bad("it was stopped, so it cannot hold a result"));
+            }
+            if &checkpoint.time != at_time {
+                return Err(bad(
+                    "its checkpoint was written at another time than the time it was stopped at",
+                ));
+            }
+        }
+        Outcome::Complete if run.checkpoint.is_some() => {
+            return Err(bad("it went to its end, so it cannot hold a checkpoint"));
+        }
+        Outcome::Complete => {}
+    }
+    if let Some(from) = &run.continued_from {
+        if !earlier.contains_key(from.run.as_str()) {
+            return Err(bad("it continues a run that is not an earlier run"));
+        }
+        if !is_plain_decimal(&from.time) {
+            return Err(bad(
+                "the time it continues from is not a plain decimal number",
+            ));
+        }
+    }
+    if run.np == Some(0) {
+        return Err(bad("it ran on 0 processes, but at least 1 is needed"));
     }
     Ok(())
 }

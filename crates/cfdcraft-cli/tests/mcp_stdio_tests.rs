@@ -63,6 +63,8 @@ fn args(root: &Path) -> Vec<String> {
         p("dummy-key"),
         "--hosts".into(),
         p("hosts.toml"),
+        // These tests were written for jobs that stop with the server; the queue has its own.
+        "--attached-jobs".into(),
     ]
 }
 
@@ -242,7 +244,14 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
             "pack_document",
             "plan_update",
             "prune",
+            "queue_add",
+            "queue_cancel",
+            "queue_list",
+            "queue_reorder",
+            "run_log",
+            "run_monitors",
             "run_status",
+            "run_stop",
             "save_document",
             "scenario_diff",
             "scenario_label",
@@ -933,12 +942,12 @@ fn surface_problems(tools: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_surface_is_still_closed_with_twenty_eight_tools() {
+fn the_surface_is_still_closed_with_thirty_five_tools() {
     let root = fresh("closed");
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 28);
+    assert_eq!(tools.as_array().unwrap().len(), 35);
     for name in [
         "save_document",
         "open_document",
@@ -947,6 +956,7 @@ fn the_surface_is_still_closed_with_twenty_eight_tools() {
         "list_runs",
         "scenario_list",
         "disk_use",
+        "queue_list",
     ] {
         let tool = tools
             .as_array()
@@ -980,6 +990,17 @@ fn the_surface_is_still_closed_with_twenty_eight_tools() {
             &["name", "overrides", "parent", "scenario", "title"][..],
         ),
         ("scenario_show", &["name", "scenario"][..]),
+        ("run_status", &["name", "run_id"][..]),
+        ("get_result", &["name", "run_id"][..]),
+        (
+            "queue_add",
+            &["name", "remake_pruned", "run", "scenario", "sweep"][..],
+        ),
+        ("queue_reorder", &["job", "name", "position"][..]),
+        ("queue_cancel", &["job", "name"][..]),
+        ("run_stop", &["job", "name"][..]),
+        ("run_monitors", &["job", "name", "run"][..]),
+        ("run_log", &["job", "lines", "name", "offset"][..]),
         ("sweep_plan", &["name", "sweep"][..]),
         ("sweep_create", &["name", "sweep"][..]),
         ("sweep_preflight", &["name", "sweep"][..]),
@@ -1235,6 +1256,8 @@ impl CaseRunner for FixtureRunner {
             results_dir: dir,
             checks: serde_json::from_value(checks).unwrap(),
             host: Some("box".to_owned()),
+            np: None,
+            stopped_at: None,
         })
     }
 }
@@ -2513,6 +2536,8 @@ impl CaseRunner for FollowRunner {
             results_dir: dir,
             checks: serde_json::from_value(checks).unwrap(),
             host: Some("box".to_owned()),
+            np: None,
+            stopped_at: None,
         })
     }
 }
@@ -2887,7 +2912,7 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
     let tar = results_tar(&root);
     let mut s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
     store_cavity(&mut s);
-    let calls: [(&str, Value); 28] = [
+    let calls: [(&str, Value); 35] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -2946,6 +2971,16 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
         ),
         ("disk_use", json!({"name": "cavity"})),
         ("prune", json!({"name": "cavity"})),
+        ("queue_list", json!({"name": "cavity"})),
+        ("queue_add", json!({"name": "cavity"})),
+        (
+            "queue_reorder",
+            json!({"name": "cavity", "job": "q-001", "position": 1}),
+        ),
+        ("queue_cancel", json!({"name": "cavity", "job": "q-001"})),
+        ("run_stop", json!({"name": "cavity", "job": "q-001"})),
+        ("run_monitors", json!({"name": "cavity"})),
+        ("run_log", json!({"name": "cavity", "job": "q-001"})),
     ];
     let mut called = std::collections::BTreeSet::new();
     for (tool, arguments) in calls {

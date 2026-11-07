@@ -87,6 +87,8 @@ pub(crate) fn case_run_from(
         results_dir: runs_dir.join(&run_id).join("results"),
         checks,
         host: Some(profile.to_owned()),
+        np: None,
+        stopped_at: None,
     })
 }
 

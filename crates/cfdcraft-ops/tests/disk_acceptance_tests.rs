@@ -518,14 +518,14 @@ fn a_schema_2_file_opens_migrates_and_takes_variants() {
     ]);
     fs::write(&path, bytes).unwrap();
 
-    // It opens with the one note, the study unchanged, and opening writes nothing.
+    // It opens with its notes, the study unchanged, and opening writes nothing.
     let opened = open_document(&path);
     passed(&opened.report);
     let note = opened.report.migration.as_ref().expect("a migration note");
-    assert_eq!((note.from, note.to), (2, 3));
+    assert_eq!((note.from, note.to), (2, 4));
     assert_eq!(opened.report.study_hash.as_deref(), Some(CAVITY_HASH));
     let steps = open(&path).unwrap();
-    assert_eq!(steps.notes.len(), 1);
+    assert_eq!(steps.notes.len(), 2);
     assert_eq!(steps.schema_version, 2);
     assert!(steps.document.artifacts.scenarios.is_empty());
 
@@ -535,7 +535,7 @@ fn a_schema_2_file_opens_migrates_and_takes_variants() {
     assert_eq!(made.report.study_hash.as_deref(), Some(CAVITY_HASH));
     assert!(made.report.migration.is_some());
     let saved = open(&path).unwrap();
-    assert_eq!(saved.schema_version, 3);
+    assert_eq!(saved.schema_version, 4);
     assert!(saved.notes.is_empty());
     assert_eq!(saved.document.artifacts.scenarios.len(), 1);
 

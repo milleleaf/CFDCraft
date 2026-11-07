@@ -110,6 +110,68 @@ const STAGE_PRUNED: &str =
     "The stored {stage} of {run} was pruned to free disk; its key numbers are kept.";
 const PRUNE_REFUSED: &str = "Pruning was refused: {reason}";
 const PRUNE_NOT_REMOVED: &str = "A stored result could not be removed: {reason}";
+const QUEUE_ADDED: &str = "Added {jobs} jobs to the queue; {queued} are waiting.";
+const QUEUE_NOTHING_TO_ADD: &str =
+    "Nothing to add: everything asked for is up to date or already queued.";
+const QUEUE_REFUSED: &str = "The queue request was refused: {reason}";
+const QUEUE_UNKNOWN_JOB: &str = "There is no job {job} in the queue.";
+const QUEUE_NOT_ALLOWED: &str = "Job {job} is {state}, so it cannot be {action}.";
+const QUEUE_REORDERED: &str = "Moved {job} to position {position} among the waiting jobs.";
+const QUEUE_CANCELLED: &str = "Cancelled {job}.";
+const QUEUE_STOP_REQUESTED: &str = "Asked {job} to write its latest results and stop.";
+const QUEUE_DRAIN_STARTED: &str =
+    "Started the queue runner; it keeps running if you close this program.";
+const QUEUE_DRAIN_RUNNING: &str = "The queue runner is already running.";
+const QUEUE_DAMAGED: &str = "The queue file cannot be used: {reason}";
+const JOB_QUEUED: &str = "{job} is waiting.";
+const JOB_STARTING: &str = "{job} is starting on the compute host.";
+const JOB_RUNNING: &str = "{job} is running: {line}";
+const JOB_STOPPING: &str = "{job} is stopping ({cause}).";
+const JOB_FINISHED: &str = "{job} finished and was recorded as {run}.";
+const JOB_STOPPED: &str =
+    "{job} stopped at time {time} and was recorded as {run}; it can be continued.";
+const JOB_FAILED: &str = "{job} failed: {reason}";
+const JOB_CANCELLED: &str = "{job} was cancelled before it started.";
+const JOB_INTERRUPTED: &str = "{job} was interrupted: {reason}";
+const JOB_UNREACHABLE: &str =
+    "The compute host cannot be reached; {job} keeps running there and will be picked up again.";
+const JOB_REATTACHED: &str = "Picked up {job} again where it left off.";
+const CONTINUE_FROM: &str = "Continuing {run} from time {time}.";
+const CONTINUE_REFUSED: &str = "The run cannot be continued: {reason}";
+const PARALLEL_RUN: &str = "Running on {np} processes ({cells} cells).";
+const STOPPED_RUN_NOTE: &str =
+    "{run} is a stopped run (latest time {time}); it holds no finished result.";
+const RUN_DIVERGED: &str = "The run diverged ({code}): {field} reached {value}, over the limit {limit}. It was stopped without writing the unstable fields.";
+const SOLVER_MISSING_FILE: &str = "The solver stopped because a file it needs is missing ({code}). Export the case again, and check that every file the study refers to exists.";
+const SOLVER_NUMERICAL_BLOWUP: &str = "The solution blew up ({code}): the numbers became unstable. Lower the relaxation factors, check the mesh quality, and check the boundary values.";
+const SOLVER_UNKNOWN_TYPE: &str = "The solver does not know a name the case uses ({code}). Remove the raw override or monitor that uses it.";
+const SOLVER_MISSING_KEYWORD: &str = "A required entry is missing in a case file ({code}). Add the entry, or remove the override that replaced a whole block.";
+const SOLVER_LINEAR_NOT_CONVERGED: &str = "A linear solver did not reach its tolerance ({code}). Tighten the settings, improve the mesh, or relax more.";
+const SOLVER_POOR_MESH: &str =
+    "The mesh failed its quality checks ({code}). Refine it or fix the geometry, then run again.";
+const SOLVER_OUT_OF_MEMORY: &str = "The solver ran out of memory ({code}). Use a smaller mesh, or ask for a host with more memory.";
+const SOLVER_DISK_FULL: &str = "The disk on the compute host is full ({code}). Free space there; the disk floor should have stopped the run earlier.";
+const SOLVER_DECOMPOSITION: &str = "The parallel decomposition does not match the case ({code}). Run the decomposition again for the same number of processes.";
+const SOLVER_NOT_ENOUGH_SLOTS: &str = "The parallel run asked for more processes than the host allows ({code}). Lower the number of processes or raise the host's core cap.";
+const SOLVER_SEGFAULT: &str =
+    "The solver crashed ({code}). Report it with the last lines of the log.";
+const SOLVER_UNKNOWN: &str = "The solver stopped with an error this program does not recognise (CFD-SOLVER-099). The last lines of its log:\n{tail}\nCheck the setup and the mesh, then run it again.";
+const DISK_BELOW_FLOOR: &str = "The compute host has {free} GB free, below its floor of {floor} GB, so the run was not started.";
+const DISK_STOPPED: &str = "The run was stopped because free disk on the compute host fell to {free} GB, the floor being {floor} GB. Its latest results were kept.";
+const MONITOR_LINE: &str = "{name}: last {last}, tail mean {mean}, spread {spread}: {state}.";
+const MONITOR_SETTLED: &str = "settled";
+const MONITOR_DRIFTING: &str = "drifting";
+const MONITOR_OSCILLATING: &str = "oscillating";
+const MONITOR_TOO_EARLY: &str = "too early to tell";
+const MONITOR_TOO_FEW_SAMPLES: &str = "too few samples to tell";
+const MASS_BALANCE_LINE: &str = "Mass balance: {state} (imbalance {imbalance} of the inlet flux).";
+const ENERGY_BALANCE_LINE: &str =
+    "Energy balance: {state} (imbalance {imbalance} of the reference).";
+const VERDICT_CONVERGED: &str =
+    "Converged: every monitored quantity has settled and the balances close.";
+const VERDICT_NOT_CONVERGED: &str = "Not converged: {reasons}.";
+const VERDICT_NOT_JUDGED: &str = "Convergence cannot be judged: {reason}.";
+const REASON_MONITOR: &str = "monitor {id} {from} → {to}";
 
 /// Every English source text: the plain templates and both forms of each plural pair.
 pub const SOURCES: &[&str] = &[
@@ -205,6 +267,59 @@ pub const SOURCES: &[&str] = &[
     STAGE_PRUNED,
     PRUNE_REFUSED,
     PRUNE_NOT_REMOVED,
+    QUEUE_ADDED,
+    QUEUE_NOTHING_TO_ADD,
+    QUEUE_REFUSED,
+    QUEUE_UNKNOWN_JOB,
+    QUEUE_NOT_ALLOWED,
+    QUEUE_REORDERED,
+    QUEUE_CANCELLED,
+    QUEUE_STOP_REQUESTED,
+    QUEUE_DRAIN_STARTED,
+    QUEUE_DRAIN_RUNNING,
+    QUEUE_DAMAGED,
+    JOB_QUEUED,
+    JOB_STARTING,
+    JOB_RUNNING,
+    JOB_STOPPING,
+    JOB_FINISHED,
+    JOB_STOPPED,
+    JOB_FAILED,
+    JOB_CANCELLED,
+    JOB_INTERRUPTED,
+    JOB_UNREACHABLE,
+    JOB_REATTACHED,
+    CONTINUE_FROM,
+    CONTINUE_REFUSED,
+    PARALLEL_RUN,
+    STOPPED_RUN_NOTE,
+    RUN_DIVERGED,
+    SOLVER_MISSING_FILE,
+    SOLVER_NUMERICAL_BLOWUP,
+    SOLVER_UNKNOWN_TYPE,
+    SOLVER_MISSING_KEYWORD,
+    SOLVER_LINEAR_NOT_CONVERGED,
+    SOLVER_POOR_MESH,
+    SOLVER_OUT_OF_MEMORY,
+    SOLVER_DISK_FULL,
+    SOLVER_DECOMPOSITION,
+    SOLVER_NOT_ENOUGH_SLOTS,
+    SOLVER_SEGFAULT,
+    SOLVER_UNKNOWN,
+    DISK_BELOW_FLOOR,
+    DISK_STOPPED,
+    MONITOR_LINE,
+    MONITOR_SETTLED,
+    MONITOR_DRIFTING,
+    MONITOR_OSCILLATING,
+    MONITOR_TOO_EARLY,
+    MONITOR_TOO_FEW_SAMPLES,
+    MASS_BALANCE_LINE,
+    ENERGY_BALANCE_LINE,
+    VERDICT_CONVERGED,
+    VERDICT_NOT_CONVERGED,
+    VERDICT_NOT_JUDGED,
+    REASON_MONITOR,
 ];
 
 /// One thing the document layer tells a person. Data only: the sentence is made by
@@ -546,6 +661,174 @@ pub enum Line {
     PruneNotRemoved {
         reason: String,
     },
+    QueueAdded {
+        jobs: String,
+        queued: String,
+    },
+    QueueNothingToAdd,
+    QueueRefused {
+        reason: String,
+    },
+    QueueUnknownJob {
+        job: String,
+    },
+    QueueNotAllowed {
+        job: String,
+        state: String,
+        action: String,
+    },
+    QueueReordered {
+        job: String,
+        position: String,
+    },
+    QueueCancelled {
+        job: String,
+    },
+    QueueStopRequested {
+        job: String,
+    },
+    QueueDrainStarted,
+    QueueDrainRunning,
+    QueueDamaged {
+        reason: String,
+    },
+    JobQueued {
+        job: String,
+    },
+    JobStarting {
+        job: String,
+    },
+    JobRunning {
+        job: String,
+        line: String,
+    },
+    JobStopping {
+        job: String,
+        cause: String,
+    },
+    JobFinished {
+        job: String,
+        run: String,
+    },
+    JobStopped {
+        job: String,
+        run: String,
+        time: String,
+    },
+    JobFailed {
+        job: String,
+        reason: String,
+    },
+    JobCancelled {
+        job: String,
+    },
+    JobInterrupted {
+        job: String,
+        reason: String,
+    },
+    JobUnreachable {
+        job: String,
+    },
+    JobReattached {
+        job: String,
+    },
+    ContinueFrom {
+        run: String,
+        time: String,
+    },
+    ContinueRefused {
+        reason: String,
+    },
+    ParallelRun {
+        np: String,
+        cells: String,
+    },
+    StoppedRunNote {
+        run: String,
+        time: String,
+    },
+    RunDiverged {
+        code: String,
+        field: String,
+        value: String,
+        limit: String,
+    },
+    SolverMissingFile {
+        code: String,
+    },
+    SolverNumericalBlowup {
+        code: String,
+    },
+    SolverUnknownType {
+        code: String,
+    },
+    SolverMissingKeyword {
+        code: String,
+    },
+    SolverLinearNotConverged {
+        code: String,
+    },
+    SolverPoorMesh {
+        code: String,
+    },
+    SolverOutOfMemory {
+        code: String,
+    },
+    SolverDiskFull {
+        code: String,
+    },
+    SolverDecomposition {
+        code: String,
+    },
+    SolverNotEnoughSlots {
+        code: String,
+    },
+    SolverSegfault {
+        code: String,
+    },
+    SolverUnknown {
+        tail: String,
+    },
+    DiskBelowFloor {
+        free: String,
+        floor: String,
+    },
+    DiskStopped {
+        free: String,
+        floor: String,
+    },
+    MonitorLine {
+        name: String,
+        last: String,
+        mean: String,
+        spread: String,
+        state: String,
+    },
+    MonitorSettled,
+    MonitorDrifting,
+    MonitorOscillating,
+    MonitorTooEarly,
+    MonitorTooFewSamples,
+    MassBalanceLine {
+        state: String,
+        imbalance: String,
+    },
+    EnergyBalanceLine {
+        state: String,
+        imbalance: String,
+    },
+    VerdictConverged,
+    VerdictNotConverged {
+        reasons: String,
+    },
+    VerdictNotJudged {
+        reason: String,
+    },
+    ReasonMonitor {
+        id: String,
+        from: String,
+        to: String,
+    },
 }
 
 impl Line {
@@ -642,6 +925,59 @@ impl Line {
             Line::StagePruned { .. } => STAGE_PRUNED,
             Line::PruneRefused { .. } => PRUNE_REFUSED,
             Line::PruneNotRemoved { .. } => PRUNE_NOT_REMOVED,
+            Line::QueueAdded { .. } => QUEUE_ADDED,
+            Line::QueueNothingToAdd => QUEUE_NOTHING_TO_ADD,
+            Line::QueueRefused { .. } => QUEUE_REFUSED,
+            Line::QueueUnknownJob { .. } => QUEUE_UNKNOWN_JOB,
+            Line::QueueNotAllowed { .. } => QUEUE_NOT_ALLOWED,
+            Line::QueueReordered { .. } => QUEUE_REORDERED,
+            Line::QueueCancelled { .. } => QUEUE_CANCELLED,
+            Line::QueueStopRequested { .. } => QUEUE_STOP_REQUESTED,
+            Line::QueueDrainStarted => QUEUE_DRAIN_STARTED,
+            Line::QueueDrainRunning => QUEUE_DRAIN_RUNNING,
+            Line::QueueDamaged { .. } => QUEUE_DAMAGED,
+            Line::JobQueued { .. } => JOB_QUEUED,
+            Line::JobStarting { .. } => JOB_STARTING,
+            Line::JobRunning { .. } => JOB_RUNNING,
+            Line::JobStopping { .. } => JOB_STOPPING,
+            Line::JobFinished { .. } => JOB_FINISHED,
+            Line::JobStopped { .. } => JOB_STOPPED,
+            Line::JobFailed { .. } => JOB_FAILED,
+            Line::JobCancelled { .. } => JOB_CANCELLED,
+            Line::JobInterrupted { .. } => JOB_INTERRUPTED,
+            Line::JobUnreachable { .. } => JOB_UNREACHABLE,
+            Line::JobReattached { .. } => JOB_REATTACHED,
+            Line::ContinueFrom { .. } => CONTINUE_FROM,
+            Line::ContinueRefused { .. } => CONTINUE_REFUSED,
+            Line::ParallelRun { .. } => PARALLEL_RUN,
+            Line::StoppedRunNote { .. } => STOPPED_RUN_NOTE,
+            Line::RunDiverged { .. } => RUN_DIVERGED,
+            Line::SolverMissingFile { .. } => SOLVER_MISSING_FILE,
+            Line::SolverNumericalBlowup { .. } => SOLVER_NUMERICAL_BLOWUP,
+            Line::SolverUnknownType { .. } => SOLVER_UNKNOWN_TYPE,
+            Line::SolverMissingKeyword { .. } => SOLVER_MISSING_KEYWORD,
+            Line::SolverLinearNotConverged { .. } => SOLVER_LINEAR_NOT_CONVERGED,
+            Line::SolverPoorMesh { .. } => SOLVER_POOR_MESH,
+            Line::SolverOutOfMemory { .. } => SOLVER_OUT_OF_MEMORY,
+            Line::SolverDiskFull { .. } => SOLVER_DISK_FULL,
+            Line::SolverDecomposition { .. } => SOLVER_DECOMPOSITION,
+            Line::SolverNotEnoughSlots { .. } => SOLVER_NOT_ENOUGH_SLOTS,
+            Line::SolverSegfault { .. } => SOLVER_SEGFAULT,
+            Line::SolverUnknown { .. } => SOLVER_UNKNOWN,
+            Line::DiskBelowFloor { .. } => DISK_BELOW_FLOOR,
+            Line::DiskStopped { .. } => DISK_STOPPED,
+            Line::MonitorLine { .. } => MONITOR_LINE,
+            Line::MonitorSettled => MONITOR_SETTLED,
+            Line::MonitorDrifting => MONITOR_DRIFTING,
+            Line::MonitorOscillating => MONITOR_OSCILLATING,
+            Line::MonitorTooEarly => MONITOR_TOO_EARLY,
+            Line::MonitorTooFewSamples => MONITOR_TOO_FEW_SAMPLES,
+            Line::MassBalanceLine { .. } => MASS_BALANCE_LINE,
+            Line::EnergyBalanceLine { .. } => ENERGY_BALANCE_LINE,
+            Line::VerdictConverged => VERDICT_CONVERGED,
+            Line::VerdictNotConverged { .. } => VERDICT_NOT_CONVERGED,
+            Line::VerdictNotJudged { .. } => VERDICT_NOT_JUDGED,
+            Line::ReasonMonitor { .. } => REASON_MONITOR,
         }
     }
 
@@ -824,6 +1160,94 @@ impl Line {
                 vec![("blobs", s(blobs)), ("bytes", s(bytes))]
             }
             Line::StagePruned { stage, run } => vec![("stage", s(stage)), ("run", s(run))],
+            Line::QueueAdded { jobs, queued } => vec![("jobs", s(jobs)), ("queued", s(queued))],
+            Line::QueueNothingToAdd | Line::QueueDrainStarted | Line::QueueDrainRunning => {
+                Vec::new()
+            }
+            Line::QueueRefused { reason }
+            | Line::QueueDamaged { reason }
+            | Line::ContinueRefused { reason } => vec![("reason", s(reason))],
+            Line::QueueUnknownJob { job }
+            | Line::QueueCancelled { job }
+            | Line::QueueStopRequested { job }
+            | Line::JobQueued { job }
+            | Line::JobStarting { job }
+            | Line::JobCancelled { job }
+            | Line::JobUnreachable { job }
+            | Line::JobReattached { job } => vec![("job", s(job))],
+            Line::QueueNotAllowed { job, state, action } => {
+                vec![("job", s(job)), ("state", s(state)), ("action", s(action))]
+            }
+            Line::QueueReordered { job, position } => {
+                vec![("job", s(job)), ("position", s(position))]
+            }
+            Line::JobRunning { job, line } => vec![("job", s(job)), ("line", s(line))],
+            Line::JobStopping { job, cause } => vec![("job", s(job)), ("cause", s(cause))],
+            Line::JobFinished { job, run } => vec![("job", s(job)), ("run", s(run))],
+            Line::JobStopped { job, run, time } => {
+                vec![("job", s(job)), ("run", s(run)), ("time", s(time))]
+            }
+            Line::JobFailed { job, reason } | Line::JobInterrupted { job, reason } => {
+                vec![("job", s(job)), ("reason", s(reason))]
+            }
+            Line::ContinueFrom { run, time } | Line::StoppedRunNote { run, time } => {
+                vec![("run", s(run)), ("time", s(time))]
+            }
+            Line::ParallelRun { np, cells } => vec![("np", s(np)), ("cells", s(cells))],
+            Line::RunDiverged {
+                code,
+                field,
+                value,
+                limit,
+            } => vec![
+                ("code", s(code)),
+                ("field", s(field)),
+                ("value", s(value)),
+                ("limit", s(limit)),
+            ],
+            Line::SolverMissingFile { code }
+            | Line::SolverNumericalBlowup { code }
+            | Line::SolverUnknownType { code }
+            | Line::SolverMissingKeyword { code }
+            | Line::SolverLinearNotConverged { code }
+            | Line::SolverPoorMesh { code }
+            | Line::SolverOutOfMemory { code }
+            | Line::SolverDiskFull { code }
+            | Line::SolverDecomposition { code }
+            | Line::SolverNotEnoughSlots { code }
+            | Line::SolverSegfault { code } => vec![("code", s(code))],
+            Line::SolverUnknown { tail } => vec![("tail", s(tail))],
+            Line::DiskBelowFloor { free, floor } | Line::DiskStopped { free, floor } => {
+                vec![("free", s(free)), ("floor", s(floor))]
+            }
+            Line::MonitorLine {
+                name,
+                last,
+                mean,
+                spread,
+                state,
+            } => vec![
+                ("name", s(name)),
+                ("last", s(last)),
+                ("mean", s(mean)),
+                ("spread", s(spread)),
+                ("state", s(state)),
+            ],
+            Line::MonitorSettled
+            | Line::MonitorDrifting
+            | Line::MonitorOscillating
+            | Line::MonitorTooEarly
+            | Line::MonitorTooFewSamples
+            | Line::VerdictConverged => Vec::new(),
+            Line::MassBalanceLine { state, imbalance }
+            | Line::EnergyBalanceLine { state, imbalance } => {
+                vec![("state", s(state)), ("imbalance", s(imbalance))]
+            }
+            Line::VerdictNotConverged { reasons } => vec![("reasons", s(reasons))],
+            Line::VerdictNotJudged { reason } => vec![("reason", s(reason))],
+            Line::ReasonMonitor { id, from, to } => {
+                vec![("id", s(id)), ("from", s(from)), ("to", s(to))]
+            }
         }
     }
 
@@ -1117,6 +1541,158 @@ impl Line {
             },
             Line::PruneNotRemoved {
                 reason: t("permission denied"),
+            },
+            Line::QueueAdded {
+                jobs: t("3"),
+                queued: t("3"),
+            },
+            Line::QueueNothingToAdd,
+            Line::QueueRefused {
+                reason: t("the queue is full"),
+            },
+            Line::QueueUnknownJob { job: t("q-009") },
+            Line::QueueNotAllowed {
+                job: t("q-003"),
+                state: t("running"),
+                action: t("reordered"),
+            },
+            Line::QueueReordered {
+                job: t("q-004"),
+                position: t("1"),
+            },
+            Line::QueueCancelled { job: t("q-005") },
+            Line::QueueStopRequested { job: t("q-003") },
+            Line::QueueDrainStarted,
+            Line::QueueDrainRunning,
+            Line::QueueDamaged {
+                reason: t("a line is not valid"),
+            },
+            Line::JobQueued { job: t("q-003") },
+            Line::JobStarting { job: t("q-003") },
+            Line::JobRunning {
+                job: t("q-003"),
+                line: t("Time = 120"),
+            },
+            Line::JobStopping {
+                job: t("q-003"),
+                cause: t("stop requested"),
+            },
+            Line::JobFinished {
+                job: t("q-003"),
+                run: t("run-4"),
+            },
+            Line::JobStopped {
+                job: t("q-003"),
+                run: t("run-4"),
+                time: t("1200"),
+            },
+            Line::JobFailed {
+                job: t("q-003"),
+                reason: t("the solver exited with an error"),
+            },
+            Line::JobCancelled { job: t("q-005") },
+            Line::JobInterrupted {
+                job: t("q-003"),
+                reason: t("the queue runner was stopped"),
+            },
+            Line::JobUnreachable { job: t("q-003") },
+            Line::JobReattached { job: t("q-003") },
+            Line::ContinueFrom {
+                run: t("run-4"),
+                time: t("1200"),
+            },
+            Line::ContinueRefused {
+                reason: t("it is not a stopped run"),
+            },
+            Line::ParallelRun {
+                np: t("4"),
+                cells: t("40000"),
+            },
+            Line::StoppedRunNote {
+                run: t("run-4"),
+                time: t("1200"),
+            },
+            Line::RunDiverged {
+                code: t("CFD-RUN-004"),
+                field: t("Ux"),
+                value: t("5200"),
+                limit: t("1e4"),
+            },
+            Line::SolverMissingFile {
+                code: t("CFD-SOLVER-001"),
+            },
+            Line::SolverNumericalBlowup {
+                code: t("CFD-SOLVER-002"),
+            },
+            Line::SolverUnknownType {
+                code: t("CFD-SOLVER-003"),
+            },
+            Line::SolverMissingKeyword {
+                code: t("CFD-SOLVER-004"),
+            },
+            Line::SolverLinearNotConverged {
+                code: t("CFD-SOLVER-005"),
+            },
+            Line::SolverPoorMesh {
+                code: t("CFD-SOLVER-006"),
+            },
+            Line::SolverOutOfMemory {
+                code: t("CFD-SOLVER-007"),
+            },
+            Line::SolverDiskFull {
+                code: t("CFD-SOLVER-008"),
+            },
+            Line::SolverDecomposition {
+                code: t("CFD-SOLVER-009"),
+            },
+            Line::SolverNotEnoughSlots {
+                code: t("CFD-SOLVER-010"),
+            },
+            Line::SolverSegfault {
+                code: t("CFD-SOLVER-011"),
+            },
+            Line::SolverUnknown {
+                tail: t("cannot open file system/fvSolution | FOAM exiting"),
+            },
+            Line::DiskBelowFloor {
+                free: t("8"),
+                floor: t("20"),
+            },
+            Line::DiskStopped {
+                free: t("19"),
+                floor: t("20"),
+            },
+            Line::MonitorLine {
+                name: t("probe_1.Ux"),
+                last: t("0.0123"),
+                mean: t("0.0121"),
+                spread: t("0.0004"),
+                state: t("settled"),
+            },
+            Line::MonitorSettled,
+            Line::MonitorDrifting,
+            Line::MonitorOscillating,
+            Line::MonitorTooEarly,
+            Line::MonitorTooFewSamples,
+            Line::MassBalanceLine {
+                state: t("closes"),
+                imbalance: t("0.2 %"),
+            },
+            Line::EnergyBalanceLine {
+                state: t("does not close"),
+                imbalance: t("7 %"),
+            },
+            Line::VerdictConverged,
+            Line::VerdictNotConverged {
+                reasons: t("monitor probe_1 drifting"),
+            },
+            Line::VerdictNotJudged {
+                reason: t("no monitors are defined"),
+            },
+            Line::ReasonMonitor {
+                id: t("probe_1"),
+                from: t("none"),
+                to: t("x 0.05 m, y 0.05 m, velocity"),
             },
         ]
     }

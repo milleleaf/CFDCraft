@@ -17,8 +17,8 @@ mod verify;
 
 pub use plan::{Item, PlanError, pending, plan_update};
 pub use record::{
-    BlobUse, Check, Output, Provenance, RunRecord, find_run, latest_mesh, latest_result,
-    newest_mesh_output, newest_result_output, next_run_id,
+    BlobUse, Check, Checkpoint, ContinuedFrom, Outcome, Output, Provenance, RunRecord, find_run,
+    latest_mesh, latest_result, newest_mesh_output, newest_result_output, next_run_id,
 };
 pub use status::{StageState, Status, status, status_for};
 pub use verify::{MAX_RUNS, RunsError, is_plain_name, redact_hosts, verify_runs};

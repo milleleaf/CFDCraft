@@ -1,0 +1,29 @@
+[package]
+name = "cfdcraft-drain"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-assess = { path = "../cfdcraft-assess", version = "=0.1.0" }
+cfdcraft-backend-esi = { path = "../cfdcraft-backend-esi", version = "=0.1.0" }
+cfdcraft-dictedit = { path = "../cfdcraft-dictedit", version = "=0.1.0" }
+cfdcraft-doc = { path = "../cfdcraft-doc", version = "=0.1.0" }
+cfdcraft-executor = { path = "../cfdcraft-executor", version = "=0.1.0" }
+cfdcraft-logscan = { path = "../cfdcraft-logscan", version = "=0.1.0" }
+cfdcraft-ops = { path = "../cfdcraft-ops", version = "=0.1.0" }
+cfdcraft-queue = { path = "../cfdcraft-queue", version = "=0.1.0" }
+cfdcraft-remote = { path = "../cfdcraft-remote", version = "=0.1.0" }
+cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
+cfdcraft-settle = { path = "../cfdcraft-settle", version = "=0.1.0" }
+cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+cfdcraft-text = { path = "../cfdcraft-text", version = "=0.1.0" }
+craft-atomic = { workspace = true }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+cfdcraft-capture = { path = "../cfdcraft-capture", version = "=0.1.0" }
+cfdcraft-scenarios = { path = "../cfdcraft-scenarios", version = "=0.1.0" }
+cfdcraft-sweep = { path = "../cfdcraft-sweep", version = "=0.1.0" }

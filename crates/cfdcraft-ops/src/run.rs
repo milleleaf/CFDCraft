@@ -12,6 +12,7 @@ use crate::{
 };
 use cfdcraft_backend_esi::{
     CaseTree, Dialect, EvidenceExpectations, RunEvidence, SmokeExpectations, Verdict, dialect,
+    evidence::{PartialExpectations, judge_partial},
     judge_run, judge_smoke, write_to_disk,
 };
 use cfdcraft_bench_ghia::GhiaTable;
@@ -441,7 +442,7 @@ fn final_fields_present(results: &Path, end_time: f64) -> bool {
 
 /// Judge a finished run from its logs and output directories. The solver's exit status takes no
 /// part in it.
-fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> EvidenceReport {
+pub fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> EvidenceReport {
     let (block, mesh, solver, times) = read_evidence(results);
     let evidence = RunEvidence {
         block_mesh_log: &block,
@@ -495,6 +496,74 @@ fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> EvidenceRe
     };
     EvidenceReport {
         verdict: verdict.to_owned(),
+        reasons,
+    }
+}
+
+/// Judge a run that reached its end on the evidence that it finished: every log ends, nothing is
+/// fatal, the final time was reached, the mesh is good, the residuals are well formed and the final
+/// fields are there. There is no residual limit. Whether the run converged is a separate verdict.
+/// The verdict word is `passed` or `failed`.
+pub fn judge_finished_results(results: &Path, r: &ResolvedStudy) -> EvidenceReport {
+    let mut report = judge_results(results, r, RunMode::Smoke);
+    if report.verdict == "smoke_passed" {
+        report.verdict = "passed".to_owned();
+    }
+    report
+}
+
+/// Judge a run that was stopped on request at `time`: every log ends, nothing is fatal, the mesh is
+/// good, the residuals are well formed, the last logged time is the newest time folder, and that
+/// folder holds a non-empty `U` and `p`. There is no residual limit and no end time to reach. The
+/// verdict word is `passed` or `failed`.
+pub fn judge_stopped_results(results: &Path, r: &ResolvedStudy, time: &str) -> EvidenceReport {
+    let (block, mesh, solver, times) = read_evidence(results);
+    let evidence = RunEvidence {
+        block_mesh_log: &block,
+        check_mesh_log: &mesh,
+        solver_log: &solver,
+        time_directories: &times,
+    };
+    let cells = r
+        .mesh
+        .cells_x
+        .checked_mul(r.mesh.cells_y)
+        .and_then(|x| x.checked_mul(r.mesh.cells_z));
+    let mut reasons = Vec::new();
+    match cells {
+        None => reasons.push("the study's cell count overflows".to_owned()),
+        Some(cell_count) => {
+            let expected = PartialExpectations {
+                end_time: r.solver.end_time,
+                cell_count,
+                domain_volume: r.domain.length_x * r.domain.length_y * r.domain.length_z,
+            };
+            if let Verdict::Failed(found) = judge_partial(&evidence, &expected) {
+                reasons.extend(found);
+            }
+        }
+    }
+    // The time becomes part of a path, so only a plain decimal number is used as one.
+    let plain = !time.is_empty()
+        && time.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        && time.bytes().any(|c| c.is_ascii_digit());
+    let filled = |name: &str| {
+        plain
+            && std::fs::metadata(results.join(time).join(name))
+                .is_ok_and(|m| m.is_file() && m.len() > 0)
+    };
+    if !(filled("U") && filled("p")) {
+        reasons.push(format!(
+            "the U and p field files of the stopped time {time} are missing or empty"
+        ));
+    }
+    EvidenceReport {
+        verdict: if reasons.is_empty() {
+            "passed"
+        } else {
+            "failed"
+        }
+        .to_owned(),
         reasons,
     }
 }

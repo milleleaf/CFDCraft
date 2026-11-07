@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use crate::bundle::{Bundle, read_all, walk_dirs};
+use crate::monitors::monitor_names;
 use crate::{CaptureError, FILE_CAP};
 
 /// The folder below `base` (relative to `results`) whose name, read as a number, is the end time.
@@ -77,12 +78,22 @@ pub fn result_bundle_limited(
         format!("postProcessing/centreline/{centre}/vertical_U.xy"),
         format!("postProcessing/centreline/{centre}/horizontal_U.xy"),
     ];
-    // The flux field is optional; when something is there it must be a plain file.
-    let phi = format!("{end}/phi");
-    match fs::symlink_metadata(results.join(&phi)) {
-        Ok(_) => names.push(phi),
+    push_if_present(results, format!("{end}/phi"), &mut names)?;
+    names.extend(monitor_names(results)?);
+    read_all(results, names, file_cap)
+}
+
+/// Adds `rel` to `names` when something is there; whatever is there must then be a plain file,
+/// which the read that follows checks.
+pub(crate) fn push_if_present(
+    results: &Path,
+    rel: String,
+    names: &mut Vec<String>,
+) -> Result<(), CaptureError> {
+    match fs::symlink_metadata(results.join(&rel)) {
+        Ok(_) => names.push(rel),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    read_all(results, names, file_cap)
+    Ok(())
 }

@@ -14,13 +14,13 @@ endTime 5000.0;
 deltaT 1;
 writeControl timeStep;
 writeInterval 500.0;
-purgeWrite 0;
+purgeWrite 2;
 writeFormat ascii;
 writePrecision 12;
 writeCompression off;
 timeFormat general;
 timePrecision 12;
-runTimeModifiable false;
+runTimeModifiable true;
 
 functions
 {
@@ -51,5 +51,91 @@ functions
                 nPoints 64;
             }
         );
+    }
+    probe_1
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.05 0.05 0.025)
+        );
+        fields (U);
+    }
+    probe_2
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.025 0.025 0.025)
+        );
+        fields (U);
+    }
+    probe_3
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.07500000000000001 0.025 0.025)
+        );
+        fields (U);
+    }
+    probe_4
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.025 0.07500000000000001 0.025)
+        );
+        fields (U);
+    }
+    probe_5
+    {
+        type probes;
+        libs (sampling);
+        writeControl timeStep;
+        writeInterval 1;
+        probeLocations
+        (
+            (0.07500000000000001 0.07500000000000001 0.025)
+        );
+        fields (U);
+    }
+    balance_movingWall
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name movingWall;
+        operation sum;
+        fields (phi);
+    }
+    balance_fixedWalls
+    {
+        type surfaceFieldValue;
+        libs (fieldFunctionObjects);
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        regionType patch;
+        name fixedWalls;
+        operation sum;
+        fields (phi);
     }
 }

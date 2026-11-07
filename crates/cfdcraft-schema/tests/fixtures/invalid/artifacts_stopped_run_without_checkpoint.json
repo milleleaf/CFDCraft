@@ -1,0 +1,98 @@
+{
+  "blobs": [],
+  "links": [],
+  "runs": [
+    {
+      "id": "run-1",
+      "provenance": {
+        "geometry_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "mesh_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "mesh_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "settings": {
+          "monitors": {
+            "centreline_u_sample_count": 64
+          },
+          "solver": {
+            "write_interval": {
+              "unit": "s",
+              "value": 500
+            },
+            "end_time": {
+              "unit": "s",
+              "value": 5000
+            },
+            "solver": "SimpleLaminar"
+          },
+          "mesh": {
+            "cells_z": 1,
+            "cells_y": 128,
+            "cells_x": 128
+          },
+          "boundary_conditions": {
+            "walls": {
+              "kind": "NoSlipWall",
+              "faces": [
+                "XMin",
+                "XMax",
+                "YMin"
+              ]
+            },
+            "lid": {
+              "velocity": {
+                "unit": "m/s",
+                "value": 0.1
+              },
+              "kind": "MovingWall",
+              "faces": [
+                "YMax"
+              ]
+            }
+          },
+          "fluid": {
+            "kinematic_viscosity": {
+              "unit": "m2/s",
+              "value": 0.0001
+            }
+          },
+          "domain": {
+            "length_z": {
+              "unit": "m",
+              "value": 0.05
+            },
+            "length_y": {
+              "unit": "m",
+              "value": 0.1
+            },
+            "length_x": {
+              "unit": "m",
+              "value": 0.1
+            }
+          },
+          "schema_version": 1
+        },
+        "tool": {
+          "image_digest": "sha256:aa",
+          "dialect": "esi-v2512",
+          "sidecar_lock": null,
+          "writer_version": "0.1.0"
+        },
+        "host": "box"
+      },
+      "checks": [
+        {
+          "name": "solver finished",
+          "passed": true,
+          "detail": "the log ends normally"
+        }
+      ],
+      "key_numbers": {
+        "solver.iterations": 1000
+      },
+      "outcome": {
+        "stopped": {
+          "at_time": "12"
+        }
+      }
+    }
+  ]
+}

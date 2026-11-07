@@ -9,7 +9,10 @@ use cfdcraft_diskuse::DiskUse;
 use cfdcraft_doc::{open, store_dir};
 use cfdcraft_ops::disk_ops::{disk_use, prune};
 use cfdcraft_ops::scenario_ops::{LabelUpdate, scenario_label, scenario_set};
-use cfdcraft_ops::{ExitClass, PruneData, Report, Repro, solve_document, solve_scenario};
+use cfdcraft_ops::{
+    ExitClass, PruneData, Report, Repro, StatusData, scenario_status, solve_document,
+    solve_scenario,
+};
 use cfdcraft_scenarios::Override;
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
@@ -370,4 +373,91 @@ fn the_study_itself_is_pinned_when_its_base_record_says_so() {
     for kept in [found.mesh, found.result] {
         assert!(stored(&path, &kept));
     }
+}
+
+fn stage_states(report: &Report) -> (String, String) {
+    match &report.repro {
+        Some(Repro::Status(data)) => {
+            let data: &StatusData = data.as_ref();
+            (data.mesh.state.clone(), data.result.state.clone())
+        }
+        other => panic!("expected the status, found {other:?}"),
+    }
+}
+
+#[test]
+fn a_pinned_variant_keeps_the_results_it_shares_with_another_by_key() {
+    let dir = scratch("prune-shared-key");
+    let path = new_document(&dir, "cavity", CAVITY);
+    let mut runner = FixtureRunner::new(&dir.join("runs"));
+    runner.shifts = vec![0.0];
+    passed(&solve_document(&path, &mut runner).report);
+    // The same lid speed the study has: the variant's keys equal the study's, nothing is solved
+    // for it, and no run record carries its name.
+    passed(&scenario_set(&path, "twin", Some("base"), &[set(LID, json!(0.1))], None).report);
+    pin(&path, "twin");
+    let runs = open(&path).unwrap().document.artifacts.runs;
+    assert_eq!(runs.len(), 1);
+    let mesh = runs[0].mesh.as_ref().unwrap().blob;
+    let result = runs[0].result.as_ref().unwrap().blob;
+
+    let done = prune(&path, None, true);
+    passed(&done.report);
+    let data = pruning(&done.report);
+    assert!(data.plan.remove.is_empty());
+    assert_eq!(data.plan.kept_pinned, 2);
+    assert_eq!(done.line, Some(Line::PruneNothing));
+    assert!(open(&path).unwrap().document.artifacts.pruned.is_empty());
+    for kept in [mesh, result] {
+        assert!(stored(&path, &kept));
+    }
+    let status = scenario_status(&path, Some("twin"));
+    assert_eq!(
+        stage_states(&status.report),
+        ("fresh".to_owned(), "fresh".to_owned())
+    );
+}
+
+#[test]
+fn a_store_that_cannot_be_opened_is_refused_and_nothing_is_recorded() {
+    let path = solved("prune-no-store");
+    fs::remove_dir_all(store_dir(&path)).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let done = prune(&path, None, true);
+    assert_eq!(done.report.class(), ExitClass::Infrastructure);
+    assert_eq!(codes(&done.report), ["CFD-DISK-002"]);
+    assert!(!pruning(&done.report).applied);
+    assert!(open(&path).unwrap().document.artifacts.pruned.is_empty());
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+/// A save that cannot be made must find every stored result still there: the record is written
+/// before the first file is removed.
+#[cfg(unix)]
+#[test]
+fn a_document_that_cannot_be_saved_loses_no_stored_result() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = solved("prune-unsaveable");
+    let all = blobs(&path).all();
+    let before = fs::read(&path).unwrap();
+    let folder = path.parent().unwrap().to_owned();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+    let writable = fs::File::create(folder.join("probe")).is_ok();
+
+    let done = prune(&path, None, true);
+
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    if writable {
+        // the folder permissions are not enforced (running as the super user)
+        let _ = fs::remove_file(folder.join("probe"));
+        return;
+    }
+    assert_eq!(done.report.class(), ExitClass::StudyInvalid);
+    assert_eq!(codes(&done.report), ["CFD-DOC-009"]);
+    for hash in &all {
+        assert!(stored(&path, hash));
+    }
+    assert_eq!(fs::read(&path).unwrap(), before);
 }

@@ -53,7 +53,10 @@ fn every_leaf_of_the_resolved_study_is_a_recovered_fact_or_on_the_evidence_only_
         let missed = uncovered_leaves(&leaves(&study), &expected_facts(&study));
         assert_eq!(missed, Vec::<String>::new());
     }
-    assert_eq!(EVIDENCE_ONLY, ["/schema_version", "/solver/convergence"]);
+    assert_eq!(
+        EVIDENCE_ONLY,
+        ["/schema_version", "/solver/convergence", "/monitors/settle"]
+    );
 }
 
 #[test]
@@ -154,4 +157,105 @@ fn settings_are_named_in_the_words_the_diagnostics_use() {
     ] {
         assert_eq!(setting_label(pointer), words, "{pointer}");
     }
+}
+
+/// The cavity with probes, a line, surfaces and settle tolerances listed.
+fn cavity_with_monitors() -> ResolvedStudy {
+    let mut value: serde_json::Value = serde_json::from_str(CAVITY).unwrap();
+    value["monitors"]["probes"] = serde_json::json!({
+        "centre": {"x": {"value": 0.05, "unit": "m"}, "y": {"value": 0.04, "unit": "m"}, "field": "pressure"}
+    });
+    value["monitors"]["lines"] = serde_json::json!({
+        "mid": {
+            "x0": {"value": 0.0, "unit": "m"}, "y0": {"value": 0.05, "unit": "m"},
+            "x1": {"value": 0.1, "unit": "m"}, "y1": {"value": 0.05, "unit": "m"},
+            "samples": 16, "field": "velocity"
+        }
+    });
+    value["monitors"]["surfaces"] = serde_json::json!({
+        "lidflux": {"boundary": "lid", "quantity": "flux"},
+        "wallp": {"boundary": "walls", "quantity": "pressure_average"}
+    });
+    value["monitors"]["settle"] = serde_json::json!({"tail_fraction": 0.5});
+    resolved(&value.to_string())
+}
+
+#[test]
+fn the_default_probes_are_expected_facts_with_no_source_leaf() {
+    let study = resolved(CAVITY);
+    let facts = expected_facts(&study);
+    let probe_facts: Vec<_> = facts
+        .iter()
+        .filter(|e| e.key.starts_with("/monitors/probe/"))
+        .collect();
+    assert_eq!(probe_facts.len(), 15);
+    assert!(probe_facts.iter().all(|e| e.source_pointers.is_empty()));
+    let x = facts
+        .iter()
+        .find(|e| e.key == "/monitors/probe/2/x")
+        .unwrap();
+    assert_eq!(x.value, FactValue::Number(0.025));
+    assert_eq!(x.setting, "probe 2 x");
+    let field = facts
+        .iter()
+        .find(|e| e.key == "/monitors/probe/5/field")
+        .unwrap();
+    assert_eq!(field.value, FactValue::Text("velocity".into()));
+}
+
+#[test]
+fn listed_monitors_are_expected_facts_covered_by_their_list() {
+    let study = cavity_with_monitors();
+    let facts = expected_facts(&study);
+    let want = |key: &str| facts.iter().find(|e| e.key == key).unwrap();
+    assert_eq!(want("/monitors/probe/1/y").value, FactValue::Number(0.04));
+    assert_eq!(
+        want("/monitors/probe/1/field").value,
+        FactValue::Text("pressure".into())
+    );
+    assert_eq!(want("/monitors/line/1/samples").value, FactValue::Count(16));
+    assert_eq!(want("/monitors/line/1/x1").setting, "line 1 x1");
+    assert_eq!(
+        want("/monitors/surface/1/kind").value,
+        FactValue::Text("moving wall".into())
+    );
+    assert_eq!(
+        want("/monitors/surface/1/kind").setting,
+        "surface 1 boundary kind"
+    );
+    assert_eq!(
+        want("/monitors/surface/2/quantity").value,
+        FactValue::Text("pressure_average".into())
+    );
+    assert_eq!(
+        want("/monitors/probe/1/x").source_pointers,
+        ["/monitors/probes"]
+    );
+    assert_eq!(
+        want("/monitors/line/1/y0").source_pointers,
+        ["/monitors/lines"]
+    );
+    assert_eq!(
+        want("/monitors/surface/2/kind").source_pointers,
+        ["/monitors/surfaces"]
+    );
+    assert!(
+        !facts
+            .iter()
+            .any(|e| e.key.starts_with("/monitors/probe/2/"))
+    );
+    let missed = uncovered_leaves(&leaves(&study), &facts);
+    assert_eq!(missed, Vec::<String>::new());
+}
+
+#[test]
+fn a_monitor_value_that_differs_is_reported_in_the_monitors_words() {
+    let study = cavity_with_monitors();
+    let mut facts = perfect(&study);
+    facts.get_mut("/monitors/line/1/samples").unwrap().value = FactValue::Count(8);
+    facts.remove("/monitors/probe/1/x");
+    let found = check_roundtrip(&Canned(Ok(facts)), &[], &study);
+    let settings: Vec<_> = found.iter().map(|d| d.setting.as_str()).collect();
+    assert_eq!(settings, ["line 1 samples", "probe 1 x"]);
+    assert!(found.iter().all(|d| d.code == "CFD-RT-001"));
 }

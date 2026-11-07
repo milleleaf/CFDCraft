@@ -3,6 +3,7 @@
 //! order and reports through the same [`Report`].
 
 pub mod cases;
+pub mod convergence;
 pub mod disk_ops;
 pub mod documents;
 pub mod ghia;
@@ -11,6 +12,8 @@ pub mod inspect;
 pub mod jobs;
 pub mod keys;
 pub mod prepare;
+pub mod queue_file;
+pub mod queue_ops;
 pub mod reasons;
 pub mod registry;
 pub mod report;
@@ -38,14 +41,15 @@ pub use jobs::{
     plan_scenario_job_with, solve_document, solve_scenario,
 };
 pub use keys::{stage_keys, tool_identity};
-pub use prepare::{Prepared, prepare};
+pub use prepare::{Prepared, prepare, prepare_with_options};
+pub use queue_ops::{AddRequest, CONTINUE_REFUSED};
 pub use reasons::{change_line, reason_parts, reason_text, stale_line, stale_sentence};
 pub use registry::{ResultOutcome, RunRegistry, StartOutcome, Status};
 pub use report::{Artifact, EvidenceReport, ExitClass, HolderInfo, InfraReport, Report, RunInfo};
 pub use repro::{
-    ComparisonData, DiffData, PlanData, PointCheck, PreflightData, ProvenanceData, PruneData,
-    RawView, Repro, ResultData, RunData, RunSummary, RunsData, ScenarioData, ScenarioSummary,
-    ScenariosData, StageStatus, StatusData, SweepData, UpdateData, UpdatedItem,
+    ComparisonData, DiffData, JobView, PlanData, PointCheck, PreflightData, ProvenanceData,
+    PruneData, QueueData, RawView, Repro, ResultData, RunData, RunSummary, RunsData, ScenarioData,
+    ScenarioSummary, ScenariosData, StageStatus, StatusData, SweepData, UpdateData, UpdatedItem,
 };
 pub use run::{Begun, Finished, RunMode, RunRequest, begin, execute, run_study};
 pub use update::{plan_update_report, update_documents};

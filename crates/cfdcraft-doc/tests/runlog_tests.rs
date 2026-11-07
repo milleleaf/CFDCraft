@@ -70,6 +70,11 @@ fn record_for(id: &str, study: &Study) -> RunRecord {
         }],
         key_numbers: KeyNumbers::from([("solver.iterations".to_owned(), 120.0)]),
         comparison: None,
+        continued_from: None,
+        outcome: cfdcraft_runs::Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 

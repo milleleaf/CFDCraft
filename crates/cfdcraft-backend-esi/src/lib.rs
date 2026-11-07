@@ -5,6 +5,7 @@ pub mod dialect;
 pub mod evidence;
 pub mod export;
 pub mod guard;
+pub mod monitors;
 pub mod raw;
 pub mod reader;
 pub mod transport;
@@ -22,12 +23,13 @@ pub use evidence::{
 /// the writer emits cannot leave results made before it looking up to date. A file that does not
 /// shape the written case (the safety scan, the reader, the judging of a run) is deliberately not
 /// in the list.
-pub const WRITER_SOURCES: [(&str, &str); 8] = [
+pub const WRITER_SOURCES: [(&str, &str); 9] = [
     ("block_mesh.rs", include_str!("block_mesh.rs")),
     ("case.rs", include_str!("case.rs")),
     ("control_dict.rs", include_str!("control_dict.rs")),
     ("export.rs", include_str!("export.rs")),
     ("lib.rs", include_str!("lib.rs")),
+    ("monitors.rs", include_str!("monitors.rs")),
     ("raw.rs", include_str!("raw.rs")),
     ("transport.rs", include_str!("transport.rs")),
     (

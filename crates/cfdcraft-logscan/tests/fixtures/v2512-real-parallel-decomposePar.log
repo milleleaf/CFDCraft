@@ -1,0 +1,74 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2512                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _87ed40d2-20251219 OPENFOAM=2512 version=2512
+Arch   : "LSB;label=32;scalar=64"
+Exec   : decomposePar -force
+Date   : Nov 02 2026
+Time   : 12:57:40
+Host   : redacted
+PID    : redacted
+I/O    : uncollated
+Case   : /w
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+memory pool : not available
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+
+
+Decomposing mesh
+
+Create mesh
+
+Calculating distribution of cells
+Decomposition method scotch [2] (region region0)
+
+Finished decomposition in 0.03 s
+
+Calculating original mesh data
+
+Distributing cells to processors
+
+Distributing faces to processors
+
+Distributing points to processors
+
+Constructing processor meshes
+
+Processor 0
+    Number of cells = 44964
+    Number of points = 90834
+    Number of faces shared with processor 1 = 305
+    Number of processor patches = 1
+    Number of processor faces = 305
+    Number of boundary faces = 90527
+
+Processor 1
+    Number of cells = 45036
+    Number of points = 90980
+    Number of faces shared with processor 0 = 305
+    Number of processor patches = 1
+    Number of processor faces = 305
+    Number of boundary faces = 90673
+
+Number of processor faces = 305
+Max number of cells = 45036 (0.08% above average 45000)
+Max number of processor patches = 1 (0% above average 1)
+Max number of faces between processors = 305 (0% above average 305)
+
+Time = 0
+
+Processor 0: field transfer
+Processor 1: field transfer
+
+End
+

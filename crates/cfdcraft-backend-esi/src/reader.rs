@@ -678,13 +678,22 @@ fn control_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), Re
             );
         }
     }
-    // The centreline profiles are the two sampled sets of the `centreline` function object.
     let Some(functions) = doc.top("functions") else {
         return Ok(());
     };
-    let Some(centreline) = sub(&doc.block(functions)?.entries, "centreline") else {
-        return Ok(());
-    };
+    let functions = doc.block(functions)?;
+    if let Some(centreline) = sub(&functions.entries, "centreline") {
+        centreline_facts(doc, centreline, facts)?;
+    }
+    monitor_facts(doc, functions, facts)
+}
+
+/// The centreline profiles are the two sampled sets of the `centreline` function object.
+fn centreline_facts(
+    doc: &Doc,
+    centreline: &Entry,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
     let Some(sets) = sub(&doc.block(centreline)?.entries, "sets") else {
         return Ok(());
     };
@@ -705,6 +714,228 @@ fn control_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), Re
             );
         }
     }
+    Ok(())
+}
+
+/// The kind and number of a function object named `probe_<n>`, `line_<n>` or `surface_<n>`. Any
+/// other name (the centreline, the balances) is not a monitor of the study.
+fn monitor_name(key: &str) -> Option<(&str, &str)> {
+    let (kind, n) = key.split_once('_')?;
+    let counted = parse_count(n).is_some_and(|v| v >= 1 && v.to_string() == n);
+    (counted && matches!(kind, "probe" | "line" | "surface")).then_some((kind, n))
+}
+
+/// The probes, lines and surfaces of the `functions` block. A recognised object with a missing or
+/// malformed entry is an error; the names a study gave its monitors are not in the case.
+fn monitor_facts(
+    doc: &Doc,
+    functions: &Block,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
+    for entry in &functions.entries {
+        let Some((kind, n)) = monitor_name(&entry.key) else {
+            continue;
+        };
+        let block = doc.block(entry)?;
+        match kind {
+            "probe" => probe_facts(doc, entry, block, n, facts)?,
+            "line" => line_facts(doc, entry, block, n, facts)?,
+            _ => surface_facts(doc, entry, block, n, facts)?,
+        }
+    }
+    Ok(())
+}
+
+fn required<'a>(
+    doc: &Doc,
+    owner: &Entry,
+    block: &'a Block,
+    key: &str,
+) -> Result<&'a Entry, ReadError> {
+    sub(&block.entries, key).ok_or_else(|| {
+        doc.err(
+            owner.sp,
+            format!("\"{}\" has no \"{key}\" entry", owner.key),
+        )
+    })
+}
+
+/// The one name an entry such as `fields (U);` lists.
+fn listed_word<'a>(doc: &Doc, entry: &'a Entry) -> Result<&'a Atom, ReadError> {
+    match doc.list(entry, b'(')?.items.as_slice() {
+        [Item::Atom(atom)] => Ok(atom),
+        _ => Err(doc.err(
+            entry.sp,
+            format!("\"{}\" should list exactly one name", entry.key),
+        )),
+    }
+}
+
+/// The monitored field of a probe or line, as the study words it.
+fn monitor_field(doc: &Doc, owner: &Entry, block: &Block) -> Result<Fact, ReadError> {
+    let entry = required(doc, owner, block, "fields")?;
+    let atom = listed_word(doc, entry)?;
+    let word = match atom.text.as_str() {
+        "U" => "velocity",
+        "p" => "pressure",
+        other => {
+            return Err(doc.err(atom.sp, format!("\"{other}\" is not a monitored field")));
+        }
+    };
+    Ok(fact(
+        FactValue::Text(word.into()),
+        vec![doc.span(atom.sp)],
+        doc.span(entry.sp),
+    ))
+}
+
+fn probe_facts(
+    doc: &Doc,
+    owner: &Entry,
+    block: &Block,
+    n: &str,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
+    let locations = required(doc, owner, block, "probeLocations")?;
+    let outer = doc.list(locations, b'(')?;
+    let [Item::List(point)] = outer.items.as_slice() else {
+        return Err(doc.err(outer.sp, "a probe should list exactly one location"));
+    };
+    let [x, y, _] = doc.triple(point)?;
+    for (axis, num) in [("x", &x), ("y", &y)] {
+        facts.insert(
+            format!("/monitors/probe/{n}/{axis}"),
+            fact(
+                FactValue::Number(num.v),
+                vec![doc.span(num.sp)],
+                doc.span(locations.sp),
+            ),
+        );
+    }
+    facts.insert(
+        format!("/monitors/probe/{n}/field"),
+        monitor_field(doc, owner, block)?,
+    );
+    Ok(())
+}
+
+/// The entry `key (a b c);` of a sampled line and its three numbers.
+fn point_of<'a>(
+    doc: &Doc,
+    owner: &Entry,
+    block: &'a Block,
+    key: &str,
+) -> Result<(&'a Entry, [Num; 3]), ReadError> {
+    let entry = required(doc, owner, block, key)?;
+    let numbers = doc.triple(doc.list(entry, b'(')?)?;
+    Ok((entry, numbers))
+}
+
+fn line_facts(
+    doc: &Doc,
+    owner: &Entry,
+    block: &Block,
+    n: &str,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
+    let sets = required(doc, owner, block, "sets")?;
+    let named = doc.named_blocks(sets)?;
+    let [(_, line)] = named.as_slice() else {
+        return Err(doc.err(sets.sp, "a line object should hold exactly one set"));
+    };
+    let (start, [x0, y0, _]) = point_of(doc, owner, line, "start")?;
+    let (end, [x1, y1, _]) = point_of(doc, owner, line, "end")?;
+    for (name, num, entry) in [
+        ("x0", &x0, start),
+        ("y0", &y0, start),
+        ("x1", &x1, end),
+        ("y1", &y1, end),
+    ] {
+        facts.insert(
+            format!("/monitors/line/{n}/{name}"),
+            fact(
+                FactValue::Number(num.v),
+                vec![doc.span(num.sp)],
+                doc.span(entry.sp),
+            ),
+        );
+    }
+    let points = required(doc, owner, line, "nPoints")?;
+    let word = doc.word(points)?;
+    facts.insert(
+        format!("/monitors/line/{n}/samples"),
+        fact(
+            FactValue::Count(doc.count(word)?),
+            vec![doc.span(word.sp)],
+            doc.span(points.sp),
+        ),
+    );
+    facts.insert(
+        format!("/monitors/line/{n}/field"),
+        monitor_field(doc, owner, block)?,
+    );
+    Ok(())
+}
+
+/// What a boundary of the patch with this written name is, in the study's words.
+fn patch_kind_name(patch: &str) -> Option<&'static str> {
+    Some(kind_name(match patch {
+        "inlet" => BoundaryKind::VelocityInlet,
+        "outlet" => BoundaryKind::PressureOutlet,
+        "movingWall" => BoundaryKind::MovingWall,
+        "fixedWalls" => BoundaryKind::NoSlipWall,
+        "slipWalls" => BoundaryKind::SlipWall,
+        "symmetry" => BoundaryKind::Symmetry,
+        _ => return None,
+    }))
+}
+
+fn surface_facts(
+    doc: &Doc,
+    owner: &Entry,
+    block: &Block,
+    n: &str,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
+    let name = required(doc, owner, block, "name")?;
+    let patch = doc.word(name)?;
+    let kind = patch_kind_name(&patch.text).ok_or_else(|| {
+        doc.err(
+            patch.sp,
+            format!("\"{}\" is not a patch of the case", patch.text),
+        )
+    })?;
+    facts.insert(
+        format!("/monitors/surface/{n}/kind"),
+        fact(
+            FactValue::Text(kind.into()),
+            vec![doc.span(patch.sp)],
+            doc.span(name.sp),
+        ),
+    );
+    let operation_entry = required(doc, owner, block, "operation")?;
+    let operation = doc.word(operation_entry)?;
+    let field_entry = required(doc, owner, block, "fields")?;
+    let field = listed_word(doc, field_entry)?;
+    let quantity = match (operation.text.as_str(), field.text.as_str()) {
+        ("sum", "phi") => "flux",
+        ("areaAverage", "p") => "pressure_average",
+        ("areaIntegrate", "p") => "pressure_integral",
+        (op, f) => {
+            return Err(doc.err(
+                operation_entry.sp,
+                format!("the operation \"{op}\" on \"{f}\" is not a monitored quantity"),
+            ));
+        }
+    };
+    facts.insert(
+        format!("/monitors/surface/{n}/quantity"),
+        fact(
+            FactValue::Text(quantity.into()),
+            vec![doc.span(operation.sp), doc.span(field.sp)],
+            doc.span(operation_entry.sp),
+        ),
+    );
     Ok(())
 }
 

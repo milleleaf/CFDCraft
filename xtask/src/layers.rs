@@ -7,8 +7,9 @@ use toml::Value;
 /// the wasm-clean rule bans tokio/ssh/egui in the core). The document crates are held to the
 /// same discipline: they stay off compute, UI and transport code so the per-crate CI gate
 /// stays fast and a browser viewer can reuse them. The keys, compare, runs and capture crates
-/// stay pure or off compute for the same reason, and so do the scenario, sweep, disk-use and
-/// dictionary-editing crates. A crate that is not listed is unconstrained.
+/// stay pure or off compute for the same reason, and so do the scenario, sweep, disk-use,
+/// dictionary-editing, queue, log-scanning, monitor-reading, settling and assessing crates. A
+/// crate that is not listed is unconstrained.
 const RULES: &[(&str, &[&str])] = &[
     (
         "cfdcraft-model",
@@ -76,6 +77,7 @@ const RULES: &[(&str, &[&str])] = &[
             "cfdcraft-model",
             "cfdcraft-migrate",
             "cfdcraft-doc",
+            "cfdcraft-queue",
             "jsonschema",
             "schemars",
             "serde_json",
@@ -105,6 +107,7 @@ const RULES: &[(&str, &[&str])] = &[
             "cfdcraft-keys",
             "cfdcraft-compare",
             "cfdcraft-model",
+            "cfdcraft-settle",
             "cfdcraft-store",
             "serde",
             "serde_json",
@@ -144,6 +147,27 @@ const RULES: &[(&str, &[&str])] = &[
         ],
     ),
     ("cfdcraft-dictedit", &["thiserror"]),
+    (
+        "cfdcraft-queue",
+        &["serde", "serde_json", "schemars", "thiserror"],
+    ),
+    ("cfdcraft-logscan", &["serde", "schemars", "thiserror"]),
+    ("cfdcraft-monitors", &["serde", "schemars", "thiserror"]),
+    (
+        "cfdcraft-settle",
+        &["serde", "schemars", "thiserror", "serde_json"],
+    ),
+    (
+        "cfdcraft-assess",
+        &[
+            "cfdcraft-logscan",
+            "cfdcraft-monitors",
+            "cfdcraft-settle",
+            "serde",
+            "schemars",
+            "thiserror",
+        ],
+    ),
 ];
 
 /// Assert the dependency graph respects the layering: every crate listed in `RULES`
@@ -284,6 +308,11 @@ mod tests {
             ("cfdcraft-sweep", "cfdcraft-model"),
             ("cfdcraft-diskuse", "zip"),
             ("cfdcraft-dictedit", "serde"),
+            ("cfdcraft-queue", "cfdcraft-model"),
+            ("cfdcraft-logscan", "serde_json"),
+            ("cfdcraft-monitors", "cfdcraft-store"),
+            ("cfdcraft-settle", "cfdcraft-logscan"),
+            ("cfdcraft-assess", "cfdcraft-model"),
         ] {
             let root = named_workspace(name, &deps_of(&[foreign]));
             let error = check_layers(&root).unwrap_err();
@@ -337,7 +366,23 @@ mod tests {
                 "cfdcraft-sweep",
                 "cfdcraft-diskuse",
                 "cfdcraft-dictedit",
+                "cfdcraft-queue",
+                "cfdcraft-logscan",
+                "cfdcraft-monitors",
+                "cfdcraft-settle",
+                "cfdcraft-assess",
             ]
         );
+    }
+
+    #[test]
+    fn runs_may_use_settle_and_schema_may_use_queue() {
+        for (name, dep) in [
+            ("cfdcraft-runs", "cfdcraft-settle"),
+            ("cfdcraft-schema", "cfdcraft-queue"),
+        ] {
+            let root = named_workspace(name, &deps_of(&[dep]));
+            assert!(check_layers(&root).is_ok(), "{name} rejected {dep}");
+        }
     }
 }

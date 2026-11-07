@@ -26,6 +26,15 @@ fn file<'a>(tree: &'a CaseTree, name: &str) -> &'a [u8] {
         .unwrap()
         .bytes
 }
+/// Compares written bytes with a golden file; a difference prints the whole actual text so it can
+/// be pasted into the golden file as it is.
+fn assert_same(name: &str, actual: &[u8], golden: &[u8]) {
+    assert!(
+        actual == golden,
+        "{name} differs from its golden file; the actual text is:\n{}",
+        String::from_utf8_lossy(actual)
+    );
+}
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -65,11 +74,10 @@ fn schema_0_and_schema_1_cavity_compile_to_the_same_golden() {
         let tree = compile(&resolve_json(json), Dialect::EsiV2512).unwrap();
         assert_eq!(tree.files.len(), 8);
         for f in &tree.files {
-            assert_eq!(
-                f.bytes,
-                std::fs::read(golden.join(&f.rel_path)).unwrap(),
-                "{}",
-                f.rel_path.display()
+            assert_same(
+                &f.rel_path.display().to_string(),
+                &f.bytes,
+                &std::fs::read(golden.join(&f.rel_path)).unwrap(),
             );
         }
     }
@@ -126,11 +134,10 @@ fn golden_cases_have_exact_files_and_bytes() {
         actual.sort();
         assert_eq!(actual, walk(&golden, &golden), "{dir}");
         for f in &tree.files {
-            assert_eq!(
+            assert_same(
+                &format!("{dir}/{}", f.rel_path.display()),
                 &f.bytes,
                 &std::fs::read(golden.join(&f.rel_path)).unwrap(),
-                "{dir}/{}",
-                f.rel_path.display()
             );
             assert!(!String::from_utf8_lossy(&f.bytes).contains("2026-"));
         }

@@ -16,11 +16,33 @@ const STEPS: [(&str, &str); 3] = [
     ("simpleFoam", "log.simpleFoam"),
 ];
 
-/// The only script a case runs. `dirname "$0"` works for `./Allrun` and for `sh Allrun`, where the
-/// `${0%/*}` form does not.
+const HEADER: &str = "#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\n";
+
+/// The only script a serial case runs. `dirname "$0"` works for `./Allrun` and for `sh Allrun`,
+/// where the `${0%/*}` form does not.
 pub fn allrun_script() -> String {
-    let mut text = String::from("#!/bin/sh\ncd \"$(dirname \"$0\")\" || exit 1\n");
+    let mut text = String::from(HEADER);
     for (command, log) in STEPS {
+        text.push_str(&format!("{command} > {log} 2>&1 || exit 1\n"));
+    }
+    text
+}
+
+/// The script for `np` processes. One process is exactly `allrun_script()`; more decompose after
+/// the mesh checks, run the solver in parallel and reconstruct the latest time.
+pub fn allrun_script_for(np: u32) -> String {
+    if np <= 1 {
+        return allrun_script();
+    }
+    let solver = format!("mpirun -np {np} simpleFoam -parallel");
+    let mut text = String::from(HEADER);
+    for (command, log) in [
+        ("blockMesh", "log.blockMesh"),
+        ("checkMesh", "log.checkMesh"),
+        ("decomposePar -force", "log.decomposePar"),
+        (solver.as_str(), "log.simpleFoam"),
+        ("reconstructPar -latestTime", "log.reconstructPar"),
+    ] {
         text.push_str(&format!("{command} > {log} 2>&1 || exit 1\n"));
     }
     text
@@ -28,7 +50,13 @@ pub fn allrun_script() -> String {
 
 /// Deterministic: no date, no version, one line per paragraph.
 pub fn readme_text(study_hash: &str) -> String {
-    let lines = [
+    readme_text_for(study_hash, 1)
+}
+
+/// The README for a case run on `np` processes; one process is `readme_text`.
+pub fn readme_text_for(study_hash: &str, np: u32) -> String {
+    let parallel = (np > 1).then(|| format!("This case runs on {np} processes: the container needs `--cpus {np}`, and the results of a parallel run can differ from a serial one in the last digits. The decomposition and reconstruction steps write `log.decomposePar` and `log.reconstructPar`."));
+    let mut lines = vec![
         "# Exported case".to_string(),
         "This directory is a complete OpenFOAM case with an `Allrun` script. It runs without CFDCraft.".into(),
         format!("Study hash: `{study_hash}`"),
@@ -50,19 +78,27 @@ pub fn readme_text(study_hash: &str) -> String {
         "## Trade marks".into(),
         ACKNOWLEDGEMENT.into(),
     ];
+    if let Some(paragraph) = parallel {
+        lines.insert(9, paragraph);
+    }
     lines.join("\n\n") + "\n"
 }
 
 /// The compiled files in their original order, then `Allrun` and `README.md`.
 pub fn export_tree(tree: &CaseTree, study_hash: &str) -> CaseTree {
+    export_tree_for(tree, study_hash, 1)
+}
+
+/// `export_tree` for a case written for `np` processes.
+pub fn export_tree_for(tree: &CaseTree, study_hash: &str, np: u32) -> CaseTree {
     let mut files = tree.files.clone();
     files.push(CaseFile {
         rel_path: "Allrun".into(),
-        bytes: allrun_script().into_bytes(),
+        bytes: allrun_script_for(np).into_bytes(),
     });
     files.push(CaseFile {
         rel_path: "README.md".into(),
-        bytes: readme_text(study_hash).into_bytes(),
+        bytes: readme_text_for(study_hash, np).into_bytes(),
     });
     CaseTree { files }
 }

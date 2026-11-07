@@ -239,6 +239,11 @@ fn add_tagged_run(path: &std::path::Path, tag: &str, blob: &[u8]) {
         checks: Vec::new(),
         key_numbers: KeyNumbers::new(),
         comparison: None,
+        continued_from: None,
+        outcome: cfdcraft_runs::Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     };
     document.add_run(record).unwrap();
     cfdcraft_doc::save(&document, path).unwrap();

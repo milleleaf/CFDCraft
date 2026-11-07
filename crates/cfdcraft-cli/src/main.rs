@@ -303,6 +303,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Print the monitored quantities, the balances and the verdict of a recorded run or of a job.
+    Monitors {
+        doc: PathBuf,
+        /// The recorded run to show, made again from its stored result.
+        #[arg(long)]
+        run: Option<String>,
+        /// The queued job to show, as `queue watch` does; by default the active or newest job.
+        #[arg(long)]
+        job: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Queue jobs for a study file, run them in the background and watch them.
+    Queue {
+        #[command(subcommand)]
+        action: QueueAction,
+    },
     /// Serve the typed operations to an agent over MCP on standard input and output.
     Mcp {
         /// The directory that holds studies, cases and runs. Created if it is absent.
@@ -315,6 +333,10 @@ enum Commands {
         profile: String,
         #[arg(long, default_value = "hosts.toml")]
         hosts: PathBuf,
+        /// Run solves inside the server, as before, so they stop when it stops; by default they
+        /// are queued and run by a runner that goes on after the server ends.
+        #[arg(long)]
+        attached_jobs: bool,
     },
 }
 #[derive(Subcommand)]
@@ -414,6 +436,122 @@ enum SweepAction {
         doc: PathBuf,
         /// The sweep to check.
         sweep: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
+enum QueueAction {
+    /// Put jobs in the queue: the study, a variant, every point of a sweep, or a run to continue.
+    Add {
+        doc: PathBuf,
+        /// Queue this variant instead of the study itself; base is the study.
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Queue every point of this stored sweep, in point order.
+        #[arg(long)]
+        sweep: Option<String>,
+        /// Queue the continuation of this stopped run.
+        #[arg(long = "continue")]
+        continue_run: Option<String>,
+        /// Make a result that was pruned again; otherwise a pruned result is left alone.
+        #[arg(long)]
+        remake_pruned: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the jobs of the queue in the order they start, one line each.
+    List {
+        doc: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move a waiting job to a place among the waiting jobs.
+    Reorder {
+        doc: PathBuf,
+        /// The job to move, for example q-003.
+        job: String,
+        /// The place to move it to among the waiting jobs; 1 starts first.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        to: u32,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cancel a job: a waiting one ends at once, a running one is asked to stop.
+    Cancel {
+        doc: PathBuf,
+        /// The job to cancel, for example q-002.
+        job: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask a running job to write its latest results and stop.
+    Stop {
+        doc: PathBuf,
+        /// The job to stop, for example q-001.
+        job: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start the runner that advances the queue and return at once; it goes on after this
+    /// terminal is closed.
+    Drain {
+        doc: PathBuf,
+        /// The ssh key file for the compute host. It is read to connect and never printed.
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long, default_value = "box")]
+        profile: String,
+        #[arg(long, default_value = "hosts.toml")]
+        hosts: PathBuf,
+        /// The folder for the tunnel sockets; by default a short folder of the system's.
+        #[arg(long)]
+        socket_dir: Option<PathBuf>,
+        /// Run the queue in this process and return when it has been idle for a while.
+        #[arg(long)]
+        foreground: bool,
+        /// With --foreground, end after this many idle looks, five seconds apart; the default is 12.
+        #[arg(long)]
+        idle_exit: Option<u32>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the monitored quantities, the balances and the verdict of a job; nothing reaches the
+    /// compute host.
+    Watch {
+        doc: PathBuf,
+        /// The job to watch, for example q-001; by default the active or newest job.
+        #[arg(long)]
+        job: Option<String>,
+        /// Show it again every few seconds until the job has ended.
+        #[arg(long)]
+        follow: bool,
+        /// With --follow, the seconds between two looks.
+        #[arg(long, default_value_t = 5)]
+        poll: u64,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a piece of the solver log of a job, with host paths hidden, and where the next piece
+    /// begins; nothing reaches the compute host.
+    Log {
+        doc: PathBuf,
+        /// The job whose log to read, for example q-001.
+        job: String,
+        /// The byte to start from; the next offset of the previous piece.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        /// The most lines to print.
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -648,16 +786,80 @@ fn run() {
             apply,
             json,
         } => cmd::disk::prune_results(&doc, &scenarios, apply, json),
+        Commands::Monitors {
+            doc,
+            run,
+            job,
+            json,
+        } => cmd::watch::table(&doc, run.as_deref(), job.as_deref(), json),
+        Commands::Queue { action } => match action {
+            QueueAction::Add {
+                doc,
+                scenario,
+                sweep,
+                continue_run,
+                remake_pruned,
+                json,
+            } => cmd::queue::add(&cmd::queue::AddArgs {
+                doc,
+                scenario,
+                sweep,
+                continue_run,
+                remake_pruned,
+                json,
+            }),
+            QueueAction::List { doc, json } => cmd::queue::list(&doc, json),
+            QueueAction::Reorder { doc, job, to, json } => {
+                cmd::queue::reorder(&doc, &job, to, json)
+            }
+            QueueAction::Cancel { doc, job, json } => cmd::queue::cancel(&doc, &job, json),
+            QueueAction::Stop { doc, job, json } => cmd::queue::stop(&doc, &job, json),
+            QueueAction::Watch {
+                doc,
+                job,
+                follow,
+                poll,
+                json,
+            } => cmd::watch::watch(&doc, job.as_deref(), follow, poll, json),
+            QueueAction::Log {
+                doc,
+                job,
+                offset,
+                lines,
+                json,
+            } => cmd::watch::log_of(&doc, &job, offset, lines, json),
+            QueueAction::Drain {
+                doc,
+                key,
+                profile,
+                hosts,
+                socket_dir,
+                foreground,
+                idle_exit,
+                json,
+            } => cmd::queue::drain(&cmd::queue::DrainArgs {
+                doc,
+                key,
+                profile,
+                hosts,
+                socket_dir,
+                foreground,
+                idle_exit,
+                json,
+            }),
+        },
         Commands::Mcp {
             workspace,
             key,
             profile,
             hosts,
+            attached_jobs,
         } => cfdcraft_mcp::serve_stdio_blocking(cfdcraft_mcp::McpConfig {
             workspace,
             key,
             hosts,
             profile,
+            queued_jobs: !attached_jobs,
         })
         .map_err(Into::into),
     };

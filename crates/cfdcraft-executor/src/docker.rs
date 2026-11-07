@@ -12,6 +12,9 @@ pub enum RunCommand {
     /// `sh ./Allrun` from the uploaded case. The `cd /w` is required: the image
     /// entrypoint resets the working directory to the user's home.
     Allrun,
+    /// The same script under `timeout`, so a detached container ends on its own
+    /// when nobody is left to stop it. The grace period before a kill is 30 s.
+    AllrunTimed { cap_seconds: u64 },
 }
 
 /// An image reference pinned by digest plus one allowlisted command.
@@ -50,6 +53,16 @@ impl RunSpec {
         })
     }
 
+    /// Like `allrun`, wrapped in `timeout` for `cap_seconds` (1 to 86400).
+    pub fn allrun_timed(image: &str, cap_seconds: u64) -> Result<Self, String> {
+        if !(1..=86400).contains(&cap_seconds) {
+            return Err("the time cap must be 1 to 86400 seconds".into());
+        }
+        let mut spec = Self::allrun(image)?;
+        spec.command = RunCommand::AllrunTimed { cap_seconds };
+        Ok(spec)
+    }
+
     pub fn image(&self) -> &str {
         &self.image
     }
@@ -58,9 +71,12 @@ impl RunSpec {
         self.command
     }
 
-    fn script(&self) -> &'static str {
+    fn script(&self) -> String {
         match self.command {
-            RunCommand::Allrun => "cd /w && sh ./Allrun",
+            RunCommand::Allrun => "cd /w && sh ./Allrun".into(),
+            RunCommand::AllrunTimed { cap_seconds } => {
+                format!("cd /w && timeout -k 30 {cap_seconds} sh ./Allrun")
+            }
         }
     }
 }
@@ -93,19 +109,7 @@ pub fn run_args(
     name: &str,
     spec: &RunSpec,
 ) -> Result<Vec<String>, String> {
-    p.validate().map_err(|e| e.to_string())?;
-    if !name.starts_with(&p.container_prefix)
-        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err("invalid owned container name".into());
-    }
-    if !remote.starts_with(&(p.work_dir.clone() + "/"))
-        || !remote
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/-_".contains(c))
-    {
-        return Err("invalid project work directory".into());
-    }
+    check_names(p, remote, name)?;
     Ok(vec![
         "run".into(),
         "--rm".into(),
@@ -129,6 +133,77 @@ pub fn run_args(
         spec.image().into(),
         "bash".into(),
         "-lc".into(),
-        spec.script().into(),
+        spec.script(),
+    ])
+}
+
+/// The profile, the container name and the remote folder, checked before any of
+/// them becomes part of a command.
+fn check_names(p: &HostProfile, remote: &str, name: &str) -> Result<(), String> {
+    p.validate().map_err(|e| e.to_string())?;
+    if !name.starts_with(&p.container_prefix)
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("invalid owned container name".into());
+    }
+    if !remote.starts_with(&(p.work_dir.clone() + "/"))
+        || !remote
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/-_".contains(c))
+    {
+        return Err("invalid project work directory".into());
+    }
+    Ok(())
+}
+
+/// The arguments of a container that outlives its client: it is not removed
+/// when it exits, is labelled with its run id and document so it can be found
+/// again, and is capped to `np` CPUs.
+pub fn detached_args(
+    p: &HostProfile,
+    remote: &str,
+    name: &str,
+    doc: &str,
+    np: u32,
+    spec: &RunSpec,
+) -> Result<Vec<String>, String> {
+    check_names(p, remote, name)?;
+    if doc.is_empty()
+        || doc.len() > 40
+        || !doc.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err("invalid document label".into());
+    }
+    if np == 0 || np > p.core_cap {
+        return Err("invalid process count".into());
+    }
+    Ok(vec![
+        "run".into(),
+        "-d".into(),
+        "--pull=never".into(),
+        "--name".into(),
+        name.into(),
+        "--label".into(),
+        format!("cfdcraft.run={name}"),
+        "--label".into(),
+        format!("cfdcraft.doc={doc}"),
+        "--cpus".into(),
+        np.to_string(),
+        "--memory".into(),
+        format!("{}g", p.memory_gb),
+        "--memory-swap".into(),
+        format!("{}g", p.memory_gb),
+        "--pids-limit".into(),
+        "256".into(),
+        "--network".into(),
+        "none".into(),
+        "--user".into(),
+        format!("{0}:{0}", p.remote_user_uid),
+        "-v".into(),
+        format!("{remote}:/w"),
+        spec.image().into(),
+        "bash".into(),
+        "-lc".into(),
+        spec.script(),
     ])
 }

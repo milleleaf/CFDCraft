@@ -11,6 +11,13 @@
 #     OpenSSH does with standard input, output and error that are not terminals: mark them
 #     non-blocking for the whole session and put them back at the end. They are shared with the
 #     process that started ssh, so a caller that lets ssh inherit its own pipes sees them change.
+#   - $CFC_TEST_BOX_REAL=1 makes the box real: `mkdir` and `tar -xf - -C` really make and fill folders
+#     under $CFC_TEST_ROOT/box, and any other command that mentions the work directory runs under sh
+#     after the same rewrite. A command that starts with `df -Pk` prints one line whose fourth column is
+#     $CFC_TEST_DF_KB when that is set. Without the variable the behaviour is as described above.
+real() {
+    exec sh -c "$(printf '%s' "$1" | sed "s#/data/cfdcraft/work#$CFC_TEST_ROOT/box#g")"
+}
 for arg do
     if [ "$arg" = -N ]; then tunnel=1; fi
     case "$arg" in *:/var/run/docker.sock) socket=${arg%:/var/run/docker.sock};; esac
@@ -37,8 +44,8 @@ case "$last" in
         exec sh -c "$cmd";;
     uptime) printf 'load average: 0.1, 0.1, 0.1\n';;
     'id -u') printf '1000\n';;
-    mkdir*) :;;
-    'tar -xf'*) cat > /dev/null;;
+    mkdir*) if [ "${CFC_TEST_BOX_REAL:-}" = 1 ]; then real "$last"; fi;;
+    'tar -xf'*) if [ "${CFC_TEST_BOX_REAL:-}" = 1 ]; then real "$last"; fi; cat > /dev/null;;
     'tar -C'*)
         if [ -n "${CFC_TEST_SSH_NONBLOCK:-}" ]; then
             perl -MFcntl -e '
@@ -55,5 +62,14 @@ case "$last" in
             ' "$CFC_TEST_SSH_NONBLOCK"
         fi
         cat "${CFC_TEST_RESULTS_TAR:-$CFC_TEST_ROOT/empty.tar}";;
+    'df -Pk'*)
+        if [ -n "${CFC_TEST_DF_KB:-}" ]; then
+            printf 'fake 100000000 1 %s 1%% /\n' "$CFC_TEST_DF_KB"
+        elif [ "${CFC_TEST_BOX_REAL:-}" = 1 ]; then real "$last"
+        else printf 'unexpected ssh command: %s\n' "$last" >&2; exit 90
+        fi;;
+    */data/cfdcraft/work*)
+        if [ "${CFC_TEST_BOX_REAL:-}" = 1 ]; then real "$last"; fi
+        printf 'unexpected ssh command: %s\n' "$last" >&2; exit 90;;
     *) printf 'unexpected ssh command: %s\n' "$last" >&2; exit 90;;
 esac

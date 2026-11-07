@@ -363,3 +363,49 @@ fn a_sweep_survives_a_json_round_trip() {
     extra["parameters"][0]["target"]["kind"] = json!("mystery");
     assert!(serde_json::from_value::<Sweep>(extra).is_err());
 }
+
+#[test]
+fn a_setting_below_another_parameters_setting_is_refused() {
+    let named = |name: &str, setting: &str| {
+        let mut p = one(setting, list(&[1.0]));
+        p.name = name.to_owned();
+        p
+    };
+    for (first, second) in [
+        ("/wind", "/wind/x"),
+        ("/wind/x", "/wind"),
+        ("/wind/x", "/wind/x"),
+    ] {
+        let s = sweep(vec![named("a", first), named("b", second)]);
+        let error = check_sweep(&s).unwrap_err();
+        assert!(
+            matches!(error, SweepError::BadSetting { ref name, .. } if name == "b"),
+            "{first} then {second}: {error:?}"
+        );
+        assert!(points(&s).is_err());
+    }
+    // A longer name that only starts with the same letters is another setting.
+    let s = sweep(vec![named("a", "/wind/x"), named("b", "/wind/xy")]);
+    assert!(check_sweep(&s).is_ok());
+    // A direction aims at two settings, and a parameter below one of them is refused too.
+    let s = sweep(vec![
+        direction("d", 1.0, 0.0, list(&[0.0])),
+        named("b", "/wind/x/value"),
+    ]);
+    assert!(matches!(
+        check_sweep(&s).unwrap_err(),
+        SweepError::BadSetting { .. }
+    ));
+}
+
+#[test]
+fn a_direction_whose_component_overflows_is_refused_not_written_as_null() {
+    let s = sweep(vec![direction("wind_dir", 1.7e308, 1.7e308, list(&[45.0]))]);
+    // The base vector is finite and the angle is fine; the turned vector is not.
+    assert!(check_sweep(&s).is_ok());
+    let error = points(&s).unwrap_err();
+    assert!(
+        matches!(error, SweepError::BadValues { ref name, .. } if name == "wind_dir"),
+        "{error:?}"
+    );
+}

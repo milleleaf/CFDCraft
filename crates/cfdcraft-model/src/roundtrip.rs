@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::{
     Diagnostic, Location, ResolvedStudy,
     diagnostics::{kind_name, pointer_token, setting_label, side_name},
-    study::Face,
+    study::{Face, MonitorField, SurfaceQuantity},
 };
 
 /// The kind written for the front and back faces, which every two-dimensional case leaves empty.
@@ -23,10 +23,11 @@ pub const EMPTY_KIND: &str = "empty";
 /// - `/schema_version` is carried by the study hash; no case file records it.
 /// - `/solver/convergence` is read only by the evidence judge. The written solver settings use a
 ///   constant tolerance with no residual control, so the limits cannot be recovered from the case.
+/// - `/monitors/settle` holds tolerances for judging a finished run; no case file carries them.
 ///
 /// Settings the study does not parameterise (schemes, solver choices, relaxation) are covered by
 /// the golden case bytes, not by facts.
-pub const EVIDENCE_ONLY: &[&str] = &["/schema_version", "/solver/convergence"];
+pub const EVIDENCE_ONLY: &[&str] = &["/schema_version", "/solver/convergence", "/monitors/settle"];
 
 /// A written file, by path relative to the case root with `/` separators.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,101 @@ fn expected(key: String, value: FactValue, source_pointers: Vec<String>) -> Expe
     }
 }
 
+/// A monitor fact. `listed` is the study list that holds the monitor, or `None` for the default
+/// probes, which the resolved study does not hold.
+fn monitor_fact(key: String, value: FactValue, listed: Option<&str>) -> Expected {
+    let setting = key_label(&key);
+    Expected {
+        key,
+        value,
+        source_pointers: listed.map_or_else(Vec::new, |pointer| vec![pointer.to_owned()]),
+        setting,
+    }
+}
+
+fn field_word(field: MonitorField) -> &'static str {
+    match field {
+        MonitorField::Velocity => "velocity",
+        MonitorField::Pressure => "pressure",
+    }
+}
+
+fn quantity_word(quantity: SurfaceQuantity) -> &'static str {
+    match quantity {
+        SurfaceQuantity::Flux => "flux",
+        SurfaceQuantity::PressureAverage => "pressure_average",
+        SurfaceQuantity::PressureIntegral => "pressure_integral",
+    }
+}
+
+/// The number a function-object name ends with: `probe_3` gives `3`.
+fn monitor_number(fo: &str) -> &str {
+    fo.rsplit('_').next().unwrap_or(fo)
+}
+
+/// The probes, lines and surfaces the case must watch. The names are positions, so a monitor is
+/// found by its number and the study's label stays out of the case.
+fn monitor_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
+    let plan = study.monitor_plan();
+    let listed = |list: &'static str| (!plan.defaulted).then_some(list);
+    for probe in &plan.probes {
+        let n = monitor_number(&probe.fo);
+        let from = listed("/monitors/probes");
+        for (axis, value) in [("x", probe.x), ("y", probe.y)] {
+            out.push(monitor_fact(
+                format!("/monitors/probe/{n}/{axis}"),
+                FactValue::Number(value),
+                from,
+            ));
+        }
+        out.push(monitor_fact(
+            format!("/monitors/probe/{n}/field"),
+            FactValue::Text(field_word(probe.field).into()),
+            from,
+        ));
+    }
+    for line in &plan.lines {
+        let n = monitor_number(&line.fo);
+        let from = listed("/monitors/lines");
+        for (name, value) in [
+            ("x0", line.x0),
+            ("y0", line.y0),
+            ("x1", line.x1),
+            ("y1", line.y1),
+        ] {
+            out.push(monitor_fact(
+                format!("/monitors/line/{n}/{name}"),
+                FactValue::Number(value),
+                from,
+            ));
+        }
+        out.push(monitor_fact(
+            format!("/monitors/line/{n}/samples"),
+            FactValue::Count(line.samples),
+            from,
+        ));
+        out.push(monitor_fact(
+            format!("/monitors/line/{n}/field"),
+            FactValue::Text(field_word(line.field).into()),
+            from,
+        ));
+    }
+    for surface in &plan.surfaces {
+        let n = monitor_number(&surface.fo);
+        let from = listed("/monitors/surfaces");
+        out.push(monitor_fact(
+            format!("/monitors/surface/{n}/kind"),
+            FactValue::Text(kind_name(surface.kind).into()),
+            from,
+        ));
+        out.push(monitor_fact(
+            format!("/monitors/surface/{n}/quantity"),
+            FactValue::Text(quantity_word(surface.quantity).into()),
+            from,
+        ));
+    }
+}
+
 /// Every fact the written case must hold for `study`, sorted by key.
 pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
     let mut out = Vec::new();
@@ -182,6 +278,7 @@ pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
             vec!["/monitors/centreline_u_sample_count".into()],
         ));
     }
+    monitor_facts(study, &mut out);
     for (name, boundary) in &study.boundary_conditions {
         let base = format!("/boundary_conditions/{}", pointer_token(name));
         for face in &boundary.faces {
@@ -419,6 +516,8 @@ fn key_label(key: &str) -> String {
         _ => {
             if let Some(axis) = key.strip_prefix("/domain/origin_") {
                 format!("domain origin in {axis}")
+            } else if let Some(words) = monitor_key_label(key) {
+                words
             } else if key.starts_with("/boundary_conditions/by_face/Z") {
                 if key.contains("/ZMin/") {
                     "front face boundary kind".into()
@@ -436,4 +535,20 @@ fn key_label(key: &str) -> String {
             }
         }
     }
+}
+
+/// `/monitors/probe/2/x` reads as `probe 2 x`; a surface's `kind` is its boundary kind.
+fn monitor_key_label(key: &str) -> Option<String> {
+    let rest = key.strip_prefix("/monitors/")?;
+    let mut parts = rest.split('/');
+    let (kind @ ("probe" | "line" | "surface"), Some(n), Some(member), None) =
+        (parts.next()?, parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let member = match member {
+        "kind" => "boundary kind",
+        other => other,
+    };
+    Some(format!("{kind} {n} {member}"))
 }

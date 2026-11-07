@@ -131,6 +131,41 @@
       ],
       "type": "object"
     },
+    "LineMonitor": {
+      "additionalProperties": false,
+      "description": "A straight line of evenly spaced samples; `samples` counts the points, ends included.",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "samples": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x0": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "x1": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y0": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y1": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "x0",
+        "y0",
+        "x1",
+        "y1",
+        "samples",
+        "field"
+      ],
+      "type": "object"
+    },
     "MeshSpec": {
       "additionalProperties": false,
       "properties": {
@@ -157,17 +192,79 @@
       ],
       "type": "object"
     },
+    "MonitorField": {
+      "description": "The field a probe or line reads.",
+      "enum": [
+        "velocity",
+        "pressure"
+      ],
+      "type": "string"
+    },
     "Monitors": {
       "additionalProperties": false,
+      "description": "What to watch while the solver runs. Every monitor is keyed by the user's own label; the\nlabel is shown to people and never written into a case (the case names monitors by their\nposition). Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`. A study that lists no probe, line or\nsurface is watched at five default velocity points.",
       "properties": {
         "centreline_u_sample_count": {
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "lines": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LineMonitor"
+          },
+          "description": "Straight sample lines, at most 8.",
+          "type": "object"
+        },
+        "probes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Probe"
+          },
+          "description": "Point probes, at most 16.",
+          "type": "object"
+        },
+        "settle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SettleSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How steady a monitored quantity must be to count as settled. It judges a run and does not\nchange what is run."
+        },
+        "surfaces": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SurfaceMonitor"
+          },
+          "description": "Integrals over a named boundary, at most 8.",
+          "type": "object"
         }
       },
       "required": [
         "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "Probe": {
+      "additionalProperties": false,
+      "description": "A point in the plane of the case (the case is flat, so a point has x and y only).",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "x": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "field"
       ],
       "type": "object"
     },
@@ -225,6 +322,46 @@
       ],
       "type": "object"
     },
+    "SettleSettings": {
+      "additionalProperties": false,
+      "description": "Optional tolerances for judging a monitored quantity settled. A member left out uses the\nbuilt-in value.",
+      "properties": {
+        "drift_rel": {
+          "description": "The largest drift across the tail, relative to its mean (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spread_rel": {
+          "description": "The largest spread of the tail, relative to its mean (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tail_floor": {
+          "description": "The fewest iterations the judged tail may hold (5 to 100000).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tail_fraction": {
+          "description": "The share of the iterations, counted from the end, that is judged (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "SolverControl": {
       "additionalProperties": false,
       "properties": {
@@ -258,6 +395,43 @@
         "SimpleLaminar"
       ],
       "type": "string"
+    },
+    "SurfaceMonitor": {
+      "additionalProperties": false,
+      "description": "A quantity integrated over one boundary of the study, named by its label.",
+      "properties": {
+        "boundary": {
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/SurfaceQuantity"
+        }
+      },
+      "required": [
+        "boundary",
+        "quantity"
+      ],
+      "type": "object"
+    },
+    "SurfaceQuantity": {
+      "description": "What a surface monitor reports over its boundary.",
+      "oneOf": [
+        {
+          "const": "flux",
+          "description": "The volumetric flux through the boundary.",
+          "type": "string"
+        },
+        {
+          "const": "pressure_average",
+          "description": "The area-averaged pressure on the boundary.",
+          "type": "string"
+        },
+        {
+          "const": "pressure_integral",
+          "description": "The area-integrated pressure on the boundary.",
+          "type": "string"
+        }
+      ]
     },
     "Unit": {
       "enum": [

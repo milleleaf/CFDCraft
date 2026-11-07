@@ -313,6 +313,53 @@ fn only_the_listed_libraries_may_be_loaded() {
 }
 
 #[test]
+fn the_allowed_libraries_are_exactly_four_names() {
+    libs_rows(&[
+        ("libs (sampling);", None),
+        ("libs (\"libsampling.so\");", None),
+        ("libs (fieldFunctionObjects);", None),
+        ("libs (\"libfieldFunctionObjects.so\");", None),
+        ("libs (sampling fieldFunctionObjects);", None),
+        (
+            "libs (libfieldFunctionObjects);",
+            Some("libfieldFunctionObjects"),
+        ),
+        (
+            "libs (\"fieldFunctionObjects.so\");",
+            Some("fieldFunctionObjects.so"),
+        ),
+        ("libs (\"libsamplingg.so\");", Some("libsamplingg.so")),
+        ("libs (FieldFunctionObjects);", Some("FieldFunctionObjects")),
+    ]);
+}
+
+#[test]
+fn a_flux_object_with_the_allowed_library_passes() {
+    for libs in [
+        "libs (fieldFunctionObjects);",
+        "libs (\"libfieldFunctionObjects.so\");",
+    ] {
+        let text = format!(
+            "functions\n{{\n    balance_inlet\n    {{\n        type surfaceFieldValue;\n        {libs}\n        regionType patch;\n        name inlet;\n        operation sum;\n        fields (phi);\n    }}\n}}\n"
+        );
+        assert_eq!(one("system/controlDict", &text), vec![], "{libs}");
+    }
+}
+
+#[test]
+fn any_other_library_is_still_refused() {
+    for (libs, entry) in [
+        ("libs (utilityFunctionObjects);", "utilityFunctionObjects"),
+        ("libs (\"libmyFunctions.so\");", "libmyFunctions.so"),
+        ("libs (sampling fieldFunctionObjects extra);", "extra"),
+    ] {
+        let text = format!("a 1;\nb 2;\n{libs}\n");
+        let r = one("system/controlDict", &text);
+        assert_eq!(codes(&r), vec![(3, entry, "CFD-GUARD-004")], "{libs}");
+    }
+}
+
+#[test]
 fn includes_must_be_literal_relative_paths_inside_the_case() {
     for ok in ["#include \"defs/common\"", "#include defs"] {
         assert_eq!(one("system/x", &format!("{ok}\n")), vec![], "{ok}");

@@ -53,6 +53,46 @@ pub struct Provenance {
     pub host: Option<String>,
 }
 
+/// The run a continued run took its starting state from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContinuedFrom {
+    /// The id of the earlier run.
+    pub run: String,
+    /// The solver time it started from, as plain decimal text.
+    pub time: String,
+}
+
+/// The latest written time of a stopped run, kept so a later run can start from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    /// The solver time written, as plain decimal text.
+    pub time: String,
+    /// The hash of the stored blob.
+    pub blob: ContentHash,
+    /// The size of the stored blob in bytes.
+    pub size: u64,
+}
+
+/// How a run ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// The run went to its end.
+    #[default]
+    Complete,
+    /// The run was stopped on request at this solver time.
+    Stopped { at_time: String },
+}
+
+impl Outcome {
+    /// Whether the run went to its end; a complete outcome is not written out.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Outcome::Complete)
+    }
+}
+
 /// One run. A record is never edited after it is appended to the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +122,21 @@ pub struct RunRecord {
     /// For a rerun, how it compares with the run it repeats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
+    /// For a continued run, the run and time it started from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<ContinuedFrom>,
+    /// How the run ended; absent means it went to its end.
+    #[serde(default, skip_serializing_if = "Outcome::is_complete")]
+    pub outcome: Outcome,
+    /// For a stopped run, the latest written time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<Checkpoint>,
+    /// The convergence verdict made when the run was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<cfdcraft_settle::Verdict>,
+    /// The number of processes the run used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub np: Option<u32>,
 }
 
 /// One stored blob a record names.
@@ -96,7 +151,7 @@ pub struct BlobUse {
 }
 
 impl RunRecord {
-    /// Every blob this record names: the mesh first, then the result.
+    /// Every blob this record names: the mesh first, then the result, then the checkpoint.
     pub fn blob_uses(&self) -> Vec<BlobUse> {
         let mesh = self.mesh.as_ref().map(|o| BlobUse {
             hash: o.blob,
@@ -108,7 +163,12 @@ impl RunRecord {
             size: o.size,
             stage: Stage::Result,
         });
-        mesh.into_iter().chain(result).collect()
+        let checkpoint = self.checkpoint.as_ref().map(|c| BlobUse {
+            hash: c.blob,
+            size: c.size,
+            stage: Stage::Result,
+        });
+        mesh.into_iter().chain(result).chain(checkpoint).collect()
     }
 }
 

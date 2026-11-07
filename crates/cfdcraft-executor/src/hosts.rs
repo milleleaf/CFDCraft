@@ -1,6 +1,14 @@
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path};
 
+/// The most CPUs a profile may name. The limits here exist to protect a shared machine.
+pub const MAX_CPUS: u32 = 8;
+/// The most memory, in GB, a profile may name. The limits here exist to protect a shared machine.
+pub const MAX_MEMORY_GB: u32 = 16;
+/// The longest wall clock, in seconds, a profile may name. The limits here exist to protect a
+/// shared machine.
+pub const MAX_WALL_CLOCK_SECONDS: u64 = 86_400;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostProfile {
@@ -14,6 +22,23 @@ pub struct HostProfile {
     pub load_threshold: f64,
     pub container_prefix: String,
     pub remote_user_uid: u32,
+    /// How many cores one run may use at most (`1..=cpus`).
+    #[serde(default = "default_core_cap")]
+    pub core_cap: u32,
+    /// Free disk, in GB, the host must keep (`1..=2000`).
+    #[serde(default = "default_min_free_gb")]
+    pub min_free_gb: u32,
+    /// Remove a run's own folder on the host once its results are recorded (default off).
+    #[serde(default)]
+    pub clean_run_dirs: bool,
+}
+
+fn default_core_cap() -> u32 {
+    1
+}
+
+fn default_min_free_gb() -> u32 {
+    20
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,13 +80,17 @@ impl HostProfile {
             || self.container_prefix != "cfdcraft-"
             || self.concurrency != 1
             || self.cpus == 0
-            || self.cpus > 2
+            || self.cpus > MAX_CPUS
             || self.memory_gb == 0
-            || self.memory_gb > 8
+            || self.memory_gb > MAX_MEMORY_GB
             || self.wall_clock_seconds == 0
-            || self.wall_clock_seconds > 3600
+            || self.wall_clock_seconds > MAX_WALL_CLOCK_SECONDS
             || !self.load_threshold.is_finite()
             || self.load_threshold <= 0.0
+            || self.core_cap == 0
+            || self.core_cap > self.cpus
+            || self.min_free_gb == 0
+            || self.min_free_gb > 2000
         {
             return Err(PreflightError::InvalidProfile(
                 "a plain ssh target, the project directory, caps and concurrency required".into(),

@@ -19,7 +19,14 @@ const DEPTH_MAX: usize = 16;
 /// Most refusals returned for one file; a final refusal says the list was cut.
 pub const REFUSALS_MAX: usize = 1000;
 /// Library names a case may load, bare. Extending this list is a reviewed change to this constant.
-const ALLOWED_LIBS: [&str; 2] = ["sampling", "libsampling.so"];
+/// `sampling` holds the probes and sets; `fieldFunctionObjects` holds the flux and average
+/// function objects that watch the patches.
+const ALLOWED_LIBS: [&str; 4] = [
+    "sampling",
+    "libsampling.so",
+    "fieldFunctionObjects",
+    "libfieldFunctionObjects.so",
+];
 
 /// Which kind of construct a refusal is about. `code()` is stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

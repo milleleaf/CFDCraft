@@ -19,10 +19,14 @@ use serde::{Deserialize, Serialize};
 mod diff;
 pub mod recipe;
 
-pub use diff::{Axis, Change, Residual, ToolPart, diff_mesh, diff_result, raw_text};
+pub use diff::{
+    Axis, Change, Residual, ToolPart, diff_mesh, diff_result, line_text, probe_text, raw_text,
+    surface_text,
+};
 pub use recipe::{
-    BoundaryRecipe, CellsRecipe, FluidRecipe, GeometryRecipe, MeshRecipe, MonitorsRecipe,
-    PatchRecipe, ResultRecipe, SolverRecipe, StageKeys, StageRecipes,
+    BoundaryRecipe, CellsRecipe, FluidRecipe, GeometryRecipe, LineRecipe, MeshRecipe,
+    MonitorsRecipe, PatchRecipe, ProbeRecipe, ResultRecipe, SolverRecipe, StageKeys, StageRecipes,
+    SurfaceRecipe,
 };
 
 /// Everything about the tools that can change an output without the study changing.

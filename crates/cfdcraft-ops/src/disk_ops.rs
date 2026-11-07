@@ -4,9 +4,9 @@
 //!
 //! Nothing here runs by itself and no other operation removes a stored result. [`prune`] is a dry
 //! run unless `apply` is set. An applied prune removes only results that no pinned variant's run
-//! names and, when it is given variants, that no variant outside them names. It records the
-//! removed hashes in the pruned list of the artifact index and changes no run record, so the key
-//! numbers of every run stay.
+//! names or its current stage keys resolve to and, when it is given variants, that no variant
+//! outside them names. It records the removed hashes in the pruned list of the artifact index and
+//! changes no run record, so the key numbers of every run stay.
 //!
 //! Finding codes of this family: 001 a variant named for pruning does not exist (class 2); 002 a
 //! stored result could not be removed (class 4). A report names variants by id and never the path
@@ -18,6 +18,7 @@ use std::path::Path;
 use cfdcraft_diskuse::{BlobHold, plan_prune};
 use cfdcraft_doc::{Document, Opened, Stamp, open_stamped, save_if_unchanged, store_dir};
 use cfdcraft_keys::Stage;
+use cfdcraft_runs::{latest_mesh, latest_result};
 use cfdcraft_scenarios::BASE;
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
@@ -28,6 +29,7 @@ use crate::documents::{
 use crate::jobs::open_refusal;
 use crate::report::{ExitClass, Report};
 use crate::repro::{PruneData, Repro};
+use crate::scenario_ops::keys_of;
 
 const DISK: &str = "disk";
 const PRUNE: &str = "prune";
@@ -82,6 +84,35 @@ fn holds(document: &Document) -> Vec<BlobHold> {
     holds
 }
 
+/// The stored results the current stage keys of each pinned variant resolve to, found the way a
+/// status finds them: a stage is fresh when any run holds its key, so a pinned variant whose keys
+/// equal another variant's stands on that variant's results although none of its own runs names
+/// them. Pinning the variant keeps those results too.
+fn pinned_holds(document: &Document) -> Vec<BlobHold> {
+    let runs = &document.artifacts.runs;
+    let mut holds = Vec::new();
+    for id in pinned(document) {
+        let Some(keys) = keys_of(document, &id) else {
+            continue;
+        };
+        let found = [
+            latest_mesh(runs, keys.mesh).map(|(run, out)| (run, out.blob, out.size, Stage::Mesh)),
+            latest_result(runs, keys.result)
+                .map(|(run, out)| (run, out.blob, out.size, Stage::Result)),
+        ];
+        for (run, hash, size, stage) in found.into_iter().flatten() {
+            holds.push(BlobHold {
+                run: run.id.clone(),
+                scenario: id.clone(),
+                hash,
+                size,
+                stage,
+            });
+        }
+    }
+    holds
+}
+
 /// The ids of the variants (and `base`) whose record says they are pinned.
 fn pinned(document: &Document) -> BTreeSet<String> {
     document
@@ -127,11 +158,12 @@ pub fn disk_use(path: &Path) -> DocOutcome {
 /// the scope and none of them is pinned. Without `apply` this is a dry run: the plan and the bytes
 /// it would free are reported and nothing is changed.
 ///
-/// With `apply` the files are removed first, in the order of the plan, stopping at the first one
-/// that cannot be removed, and the document is saved after with the hashes of what went (a file
-/// that was already gone counts as pruned too). A removal that fails is reported as an
-/// infrastructure failure (class 4) and the document records only what really went, so the same
-/// prune can be run again.
+/// With `apply` the hashes about to be removed are recorded first, and only when that save
+/// succeeds (the document is unchanged since it was read) are the files removed, in the order of
+/// the plan, stopping at the first one that cannot be removed. A file that was already gone counts
+/// as pruned too. A store that cannot be opened is refused before anything is recorded. A removal
+/// that fails is reported as an infrastructure failure (class 4) and the hashes that were not
+/// removed are taken back out of the record, so the same prune can be run again.
 pub fn prune(path: &Path, scope: Option<&[String]>, apply: bool) -> DocOutcome {
     let (opened, stamp) = match load(PRUNE, path) {
         Ok(loaded) => loaded,
@@ -157,8 +189,10 @@ pub fn prune(path: &Path, scope: Option<&[String]>, apply: bool) -> DocOutcome {
         return refused(PRUNE, problem(("CFD-DISK-001", line)));
     }
 
+    let mut named = holds(&document);
+    named.extend(pinned_holds(&document));
     let mut plan = plan_prune(
-        &holds(&document),
+        &named,
         &pinned(&document),
         &pruned(&document),
         wanted.as_ref(),
@@ -184,27 +218,57 @@ pub fn prune(path: &Path, scope: Option<&[String]>, apply: bool) -> DocOutcome {
         };
     }
 
-    // Files first, the record after: a crash in between leaves files gone that the next run finds
-    // already absent and records.
-    let store = Store::open(store_dir(path)).ok();
-    let mut gone: Vec<ContentHash> = Vec::new();
+    if plan.remove.is_empty() {
+        return DocOutcome {
+            report: report(plan, true, false, Vec::new()),
+            line: Some(Line::PruneNothing),
+        };
+    }
+    // A store that cannot be opened (a document moved without it, a share that is not mounted)
+    // removes nothing, so nothing is recorded either.
+    let Ok(store) = Store::open(store_dir(path)) else {
+        let reason = "the result store beside the document cannot be opened".to_owned();
+        let found = problem(("CFD-DISK-002", Line::PruneNotRemoved { reason }));
+        let mut failed = report(plan, false, false, vec![found]);
+        failed.set_class(ExitClass::Infrastructure);
+        return DocOutcome {
+            report: failed,
+            line: None,
+        };
+    };
+
+    // The record first, the files after: the save is refused when the document changed since it
+    // was read, and then nothing has been removed, so a run record saved in between can never
+    // name a result that was removed under it. Ceiling: a crash after the save leaves files that
+    // are recorded as pruned and still on disk, and a later prune does not retry them.
+    let mut merged: Vec<ContentHash> = document
+        .artifacts
+        .pruned
+        .iter()
+        .copied()
+        .chain(plan.remove.iter().map(|item| item.hash))
+        .collect();
+    merged.sort();
+    merged.dedup();
+    document.artifacts.pruned = merged;
+    if let Err(e) = save_if_unchanged(&document, path, stamp) {
+        return refused(PRUNE, problem(not_written(path, e)));
+    }
+
     let mut done = Vec::new();
     let mut failure: Option<String> = None;
+    let mut waiting: BTreeSet<ContentHash> = BTreeSet::new();
     for item in std::mem::take(&mut plan.remove) {
-        let outcome = match &store {
-            Some(store) => store.remove(&item.hash),
-            None => Ok(false),
-        };
-        match outcome {
-            Ok(removed) => {
-                gone.push(item.hash);
-                if removed {
-                    done.push(item);
-                }
-            }
+        if failure.is_some() {
+            waiting.insert(item.hash);
+            continue;
+        }
+        match store.remove(&item.hash) {
+            Ok(true) => done.push(item),
+            Ok(false) => {}
             Err(error) => {
                 failure = Some(format!("the result {}: {error}", item.hash));
-                break;
+                waiting.insert(item.hash);
             }
         }
     }
@@ -213,26 +277,24 @@ pub fn prune(path: &Path, scope: Option<&[String]>, apply: bool) -> DocOutcome {
         .fold(0u64, |sum, item| sum.saturating_add(item.size));
     plan.remove = done;
 
-    let saved = !gone.is_empty();
-    if saved {
-        let mut merged: Vec<ContentHash> = document
-            .artifacts
-            .pruned
-            .iter()
-            .copied()
-            .chain(gone)
-            .collect();
-        merged.sort();
-        merged.dedup();
-        document.artifacts.pruned = merged;
-        if let Err(e) = save_if_unchanged(&document, path, stamp) {
-            return refused(PRUNE, problem(not_written(path, e)));
-        }
-    }
-
     if let Some(reason) = failure {
-        let found = problem(("CFD-DISK-002", Line::PruneNotRemoved { reason }));
-        let mut failed = report(plan, true, saved, vec![found]);
+        // Take what was not removed back out of the record, from the file as it is now, so the
+        // same prune can be run again.
+        let undone = open_stamped(path)
+            .map_err(|e| e.to_string())
+            .and_then(|(now, fresh)| {
+                let mut again = now.document;
+                again
+                    .artifacts
+                    .pruned
+                    .retain(|hash| !waiting.contains(hash));
+                save_if_unchanged(&again, path, fresh).map_err(|e| e.to_string())
+            });
+        let mut diagnostics = vec![problem(("CFD-DISK-002", Line::PruneNotRemoved { reason }))];
+        if let Err(e) = undone {
+            diagnostics.push(problem(not_written(path, e)));
+        }
+        let mut failed = report(plan, true, true, diagnostics);
         failed.set_class(ExitClass::Infrastructure);
         return DocOutcome {
             report: failed,
@@ -248,7 +310,7 @@ pub fn prune(path: &Path, scope: Option<&[String]>, apply: bool) -> DocOutcome {
         }
     };
     DocOutcome {
-        report: report(plan, true, saved, Vec::new()),
+        report: report(plan, true, true, Vec::new()),
         line: Some(line),
     }
 }

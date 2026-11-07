@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use cfdcraft_model::{BoundaryKind, Face, RawOverride, ResolvedStudy};
+use cfdcraft_model::{
+    BoundaryKind, Face, MonitorField, RawOverride, ResolvedStudy, SurfaceQuantity,
+};
 use cfdcraft_store::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -90,9 +92,45 @@ pub struct SolverRecipe {
     pub convergence_u: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// A probe the case writes: where it reads and what, never what the user called it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProbeRecipe {
+    pub x: f64,
+    pub y: f64,
+    pub field: MonitorField,
+}
+
+/// A sampled line the case writes, ends in metres.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LineRecipe {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub samples: u64,
+    pub field: MonitorField,
+}
+
+/// A surface integral the case writes. It names the kind of boundary, as the mesh does, so two
+/// boundaries of one kind with different names give the same entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SurfaceRecipe {
+    pub kind: BoundaryKind,
+    pub quantity: SurfaceQuantity,
+}
+
+/// What the case watches: the centreline sample count and the planned monitors in plan order,
+/// the default probes included, with no label and no settle tolerance. A list that is empty is
+/// left out of the text.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MonitorsRecipe {
     pub centreline_u_sample_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<ProbeRecipe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<LineRecipe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<SurfaceRecipe>,
 }
 
 /// What made a result: the mesh by key, and everything the solver was given.
@@ -170,6 +208,7 @@ impl StageRecipes {
             },
             raw: mesh_raw,
         };
+        let plan = resolved.monitor_plan();
         let result = ResultRecipe {
             tool: tool.clone(),
             mesh_key: mesh.key(),
@@ -196,6 +235,35 @@ impl StageRecipes {
             },
             monitors: MonitorsRecipe {
                 centreline_u_sample_count: resolved.monitors.centreline_u_sample_count,
+                probes: plan
+                    .probes
+                    .iter()
+                    .map(|p| ProbeRecipe {
+                        x: p.x,
+                        y: p.y,
+                        field: p.field,
+                    })
+                    .collect(),
+                lines: plan
+                    .lines
+                    .iter()
+                    .map(|l| LineRecipe {
+                        x0: l.x0,
+                        y0: l.y0,
+                        x1: l.x1,
+                        y1: l.y1,
+                        samples: l.samples,
+                        field: l.field,
+                    })
+                    .collect(),
+                surfaces: plan
+                    .surfaces
+                    .iter()
+                    .map(|s| SurfaceRecipe {
+                        kind: s.kind,
+                        quantity: s.quantity,
+                    })
+                    .collect(),
             },
             raw: resolved.raw_overrides.clone(),
         };

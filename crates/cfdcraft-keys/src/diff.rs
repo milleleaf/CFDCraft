@@ -10,10 +10,12 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cfdcraft_model::RawOverride;
+use cfdcraft_model::{BoundaryKind, MonitorField, RawOverride, SurfaceQuantity};
 
 use crate::ToolIdentity;
-use crate::recipe::{BoundaryRecipe, MeshRecipe, ResultRecipe};
+use crate::recipe::{
+    BoundaryRecipe, LineRecipe, MeshRecipe, ProbeRecipe, ResultRecipe, SurfaceRecipe,
+};
 
 /// One of the three domain axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,6 +127,15 @@ pub enum Change {
     },
     /// A raw override in a mesh dictionary differs, so the mesh differs.
     RawMesh,
+    /// A monitor, named by its place in its list (`probe_2`, `line_1`, `surface_3`), that was
+    /// added, moved, changed or removed. A side is the monitor's one-line description, with
+    /// positions in metres (see [`probe_text`], [`line_text`] and [`surface_text`]), or `None`
+    /// when the monitor is absent there; the ops text says `none` for it.
+    Monitor {
+        id: String,
+        from: Option<String>,
+        to: Option<String>,
+    },
 }
 
 /// A raw override as one line of text: `<backend> <file> <entry> = <value>`.
@@ -136,6 +147,70 @@ pub fn raw_text(raw: &RawOverride) -> String {
         raw.entry,
         raw.value
     )
+}
+
+fn field_word(field: MonitorField) -> &'static str {
+    match field {
+        MonitorField::Velocity => "velocity",
+        MonitorField::Pressure => "pressure",
+    }
+}
+
+/// A probe as one line: `x 0.05 m, y 0.05 m, velocity`.
+pub fn probe_text(p: &ProbeRecipe) -> String {
+    format!("x {} m, y {} m, {}", p.x, p.y, field_word(p.field))
+}
+
+/// A line as one line: `from (0, 0.05) m to (0.1, 0.05) m, 64 samples, velocity`.
+pub fn line_text(l: &LineRecipe) -> String {
+    format!(
+        "from ({}, {}) m to ({}, {}) m, {} samples, {}",
+        l.x0,
+        l.y0,
+        l.x1,
+        l.y1,
+        l.samples,
+        field_word(l.field)
+    )
+}
+
+/// A surface monitor as one line: `flux on movingWall`. The patch word is the name the written
+/// case gives a boundary of that kind.
+pub fn surface_text(s: &SurfaceRecipe) -> String {
+    let quantity = match s.quantity {
+        SurfaceQuantity::Flux => "flux",
+        SurfaceQuantity::PressureAverage => "pressure average",
+        SurfaceQuantity::PressureIntegral => "pressure integral",
+    };
+    let patch = match s.kind {
+        BoundaryKind::VelocityInlet => "inlet",
+        BoundaryKind::PressureOutlet => "outlet",
+        BoundaryKind::MovingWall => "movingWall",
+        BoundaryKind::NoSlipWall => "fixedWalls",
+        BoundaryKind::SlipWall => "slipWalls",
+        BoundaryKind::Symmetry => "symmetry",
+    };
+    format!("{quantity} on {patch}")
+}
+
+/// One change per place in the list where the two lists differ or one is missing.
+fn monitor_list<T: PartialEq>(
+    prefix: &str,
+    old: &[T],
+    new: &[T],
+    text: fn(&T) -> String,
+    out: &mut Vec<Change>,
+) {
+    for i in 0..old.len().max(new.len()) {
+        let (from, to) = (old.get(i), new.get(i));
+        if from != to {
+            out.push(Change::Monitor {
+                id: format!("{prefix}_{}", i + 1),
+                from: from.map(text),
+                to: to.map(text),
+            });
+        }
+    }
 }
 
 fn tool_changes(old: &ToolIdentity, new: &ToolIdentity, out: &mut Vec<Change>) {
@@ -242,7 +317,7 @@ fn boundary_changes(
 
 /// The changes between two result recipes, in a fixed order: tool parts, the mesh, viscosity,
 /// boundaries by label, end time, write interval, the two convergence limits, sample count,
-/// raw overrides by label. Empty exactly when the recipes are equal.
+/// raw overrides by label, then the monitors (probes, lines, surfaces) by place. Empty exactly when the recipes are equal.
 pub fn diff_result(old: &ResultRecipe, new: &ResultRecipe) -> Vec<Change> {
     let mut out = Vec::new();
     tool_changes(&old.tool, &new.tool, &mut out);
@@ -307,5 +382,15 @@ pub fn diff_result(old: &ResultRecipe, new: &ResultRecipe) -> Vec<Change> {
             });
         }
     }
+    let (om, nm) = (&old.monitors, &new.monitors);
+    monitor_list("probe", &om.probes, &nm.probes, probe_text, &mut out);
+    monitor_list("line", &om.lines, &nm.lines, line_text, &mut out);
+    monitor_list(
+        "surface",
+        &om.surfaces,
+        &nm.surfaces,
+        surface_text,
+        &mut out,
+    );
     out
 }

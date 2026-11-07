@@ -3,6 +3,7 @@
 //! Nothing here is specific to one operating system.
 #![allow(dead_code)]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -109,6 +110,13 @@ pub struct FixtureRunner {
     /// The cell count of the folder the call at this place (counted from 1) writes instead of the
     /// one the study gives, so the mesh it leaves differs from that of other calls.
     pub cells_on_call: Option<(usize, u64)>,
+    /// Write the probe and balance files a run with monitors leaves, with probes that level off.
+    pub monitors: bool,
+    /// Report every call as a run stopped on request at this time: the folder holds that latest
+    /// time instead of the end time.
+    pub stopped_at: Option<String>,
+    /// The number of processes every call reports.
+    pub np: Option<u32>,
 }
 
 impl FixtureRunner {
@@ -124,8 +132,50 @@ impl FixtureRunner {
             last_study: None,
             fail_on: None,
             cells_on_call: None,
+            monitors: false,
+            stopped_at: None,
+            np: None,
         }
     }
+}
+
+/// The probe files of the five default probes of the cavity, with values that level off, and the
+/// flux files of its two patches. Numbers are written with twelve decimals so the text is the same
+/// everywhere.
+pub fn write_monitor_files(dir: &Path) {
+    for index in 0..5_i32 {
+        let mut text = "# Probe 0 (0.05 0.05 0.025)\n#       Probe 0\n#          Time\n".to_owned();
+        for step in 1..=300_i32 {
+            let t = f64::from(step);
+            let ux = 0.01 * f64::from(index + 1) + 1e-5 / t;
+            let uy = -0.02 * f64::from(index + 1) + 1e-5 / t;
+            let _ = writeln!(text, "{step} ({ux:.12} {uy:.12} 0)");
+        }
+        let folder = dir.join(format!("postProcessing/probe_{}/0", index + 1));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("U"), text).unwrap();
+    }
+    for patch in ["movingWall", "fixedWalls"] {
+        let text = format!(
+            "# Region type : patch {patch}\n# Faces       : 128\n# Area        : 0.005\n# Time        sum(phi)\n1 0.000000000000\n2 0.000000000000\n"
+        );
+        let folder = dir.join(format!("postProcessing/balance_{patch}/0"));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("surfaceFieldValue.dat"), text).unwrap();
+    }
+}
+
+/// The folder a run stopped on request leaves: the cavity's fixture results with the latest time
+/// `time` in place of the end time, and its monitor files.
+pub fn write_stopped(dir: &Path, time: u64) {
+    let spec = FixtureSpec {
+        end_time: time,
+        cells: 16384,
+        samples: 64,
+        shift: 0.0,
+    };
+    write_results(dir, &spec).unwrap();
+    write_monitor_files(dir);
 }
 
 fn number(study: &Value, path: &[&str]) -> Option<f64> {
@@ -160,8 +210,12 @@ impl CaseRunner for FixtureRunner {
             Some((call, cells)) if call == self.calls => cells,
             _ => cell("cells_x") * cell("cells_y") * cell("cells_z"),
         };
+        let end_time = match &self.stopped_at {
+            Some(time) => time.parse().unwrap(),
+            None => 5000,
+        };
         let spec = FixtureSpec {
-            end_time: 5000,
+            end_time,
             cells,
             samples: 64,
             // The cavity at its first speed gives the plain ramp.
@@ -169,6 +223,9 @@ impl CaseRunner for FixtureRunner {
         };
         let dir = self.root.join(format!("call-{}", self.calls));
         write_results(&dir, &spec).unwrap();
+        if self.monitors {
+            write_monitor_files(&dir);
+        }
         if let Some(omitted) = self.omit {
             fs::remove_file(dir.join(omitted)).unwrap();
         }
@@ -188,6 +245,8 @@ impl CaseRunner for FixtureRunner {
             results_dir: dir,
             checks,
             host: Some("fixture-host".to_owned()),
+            np: self.np,
+            stopped_at: self.stopped_at.clone(),
         })
     }
 }
@@ -306,6 +365,11 @@ pub fn add_mesh_only_run(path: &Path) {
         checks: Vec::new(),
         key_numbers: KeyNumbers::new(),
         comparison: None,
+        continued_from: None,
+        outcome: cfdcraft_runs::Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     };
     document.add_run(record).unwrap();
     cfdcraft_doc::save(&document, path).unwrap();

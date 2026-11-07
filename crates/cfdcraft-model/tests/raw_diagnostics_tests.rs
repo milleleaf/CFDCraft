@@ -213,5 +213,5 @@ fn the_new_codes_are_listed() {
         assert!(is_known_code(&format!("CFD-RAW-00{n}")), "{n}");
     }
     assert!(!is_known_code("CFD-RAW-008"));
-    assert_eq!(CODES.len(), 56);
+    assert_eq!(CODES.len(), 71);
 }

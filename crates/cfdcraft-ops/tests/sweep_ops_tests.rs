@@ -533,3 +533,22 @@ fn the_reports_name_no_path() {
         assert!(!json.contains("cavity.cfdcraft"), "{json}");
     }
 }
+
+#[test]
+fn a_planned_sweep_is_refused_for_a_setting_pointer_a_create_refuses() {
+    let (_dir, path) = cavity_document("swp-bad-pointer");
+    let before = snapshot(&path);
+    for setting in [
+        "/boundary_conditions//lid",
+        "/mesh/cells~2x",
+        "/a/b/c/d/e/f/g/h/i/j/k/l/m",
+    ] {
+        let bad = sweep("bad", "base", vec![number("p", setting, &[1.0, 2.0])]);
+        let planned = sweep_plan(&path, &bad);
+        refused_with(&planned, "CFD-SCN-002");
+        let created = sweep_create(&path, &bad);
+        refused_with(&created, "CFD-SCN-002");
+        assert_eq!(message(&planned), message(&created));
+    }
+    assert_eq!(snapshot(&path), before);
+}

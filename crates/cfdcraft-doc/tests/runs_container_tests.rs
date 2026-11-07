@@ -105,6 +105,11 @@ fn record(id: &str) -> RunRecord {
         }],
         key_numbers: KeyNumbers::from([("solver.iterations".to_owned(), 120.0)]),
         comparison: None,
+        continued_from: None,
+        outcome: cfdcraft_runs::Outcome::Complete,
+        checkpoint: None,
+        verdict: None,
+        np: None,
     }
 }
 
@@ -156,14 +161,15 @@ fn a_document_with_runs_saves_and_opens_equal() {
 }
 
 #[test]
-fn a_schema_1_file_opens_with_two_notes_and_no_runs() {
+fn a_schema_1_file_opens_with_three_notes_and_no_runs() {
     let bytes = file_with_artifacts(1, &json!({"blobs": [], "links": []}));
     let opened = from_bytes(&bytes).unwrap();
 
     assert_eq!(opened.schema_version, 1);
-    assert_eq!(opened.notes.len(), 2);
+    assert_eq!(opened.notes.len(), 3);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (1, 2));
     assert_eq!((opened.notes[1].from, opened.notes[1].to), (2, 3));
+    assert_eq!((opened.notes[2].from, opened.notes[2].to), (3, 4));
     assert!(opened.document.artifacts.runs.is_empty());
     assert_eq!(opened.document.study, cavity());
 }
@@ -180,7 +186,7 @@ fn a_schema_1_file_saved_back_becomes_the_current_schema() {
 }
 
 #[test]
-fn a_schema_0_file_opens_with_three_notes() {
+fn a_schema_0_file_opens_with_four_notes() {
     let bytes = archive(vec![
         ("manifest.json", manifest(0), DEFLATE),
         ("study.json", CAVITY_V0.as_bytes().to_vec(), DEFLATE),
@@ -189,7 +195,7 @@ fn a_schema_0_file_opens_with_three_notes() {
 
     assert_eq!(opened.schema_version, 0);
     let pairs: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
-    assert_eq!(pairs, vec![(0, 1), (1, 2), (2, 3)]);
+    assert_eq!(pairs, vec![(0, 1), (1, 2), (2, 3), (3, 4)]);
     assert_eq!(opened.document.study, cavity());
 }
 

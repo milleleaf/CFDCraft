@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+cfdcraft-drain = { path = "../cfdcraft-drain", version = "=0.1.0" }
 cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
 cfdcraft-executor = { path = "../cfdcraft-executor", version = "=0.1.0" }
 cfdcraft-ops = { path = "../cfdcraft-ops", version = "=0.1.0" }

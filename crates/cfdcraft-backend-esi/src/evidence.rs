@@ -75,14 +75,15 @@ fn fatal(log: &str, label: &str, reasons: &mut Vec<String>) {
         reasons.push(format!("{label}: non-finite number in log"));
     }
 }
+/// The last non-empty line must be `End`. A parallel run prints one `Finalising parallel run`
+/// line after it, which is skipped.
 fn ends(log: &str, label: &str, reasons: &mut Vec<String>) {
-    if log
-        .lines()
-        .rev()
-        .find(|s| !s.trim().is_empty())
-        .map(str::trim)
-        != Some("End")
-    {
+    let mut lines = log.lines().rev().map(str::trim).filter(|s| !s.is_empty());
+    let mut last = lines.next();
+    if last == Some("Finalising parallel run") {
+        last = lines.next();
+    }
+    if last != Some("End") {
         reasons.push(format!("{label}: missing terminal End marker"));
     }
 }
@@ -244,6 +245,62 @@ pub fn judge_smoke(e: &RunEvidence<'_>, expected: &SmokeExpectations) -> Verdict
         expected.domain_volume,
         None,
     )
+}
+
+/// What a run that was stopped on request must show. There is no residual limit and no end time to
+/// reach: the run was cut short on purpose.
+pub struct PartialExpectations {
+    pub end_time: f64,
+    pub cell_count: u64,
+    pub domain_volume: f64,
+}
+
+/// Judges a run that was stopped on request. It proves the stop was clean (every log ends, nothing
+/// fatal, a good mesh, well formed residuals, and the last logged time is the newest time folder
+/// and lies in `(0, end_time]`). It proves nothing about convergence, so its result must never be
+/// stored or shown as a finished run.
+pub fn judge_partial(e: &RunEvidence<'_>, expected: &PartialExpectations) -> Verdict {
+    let mut reasons = Vec::new();
+    for (name, log) in [
+        ("blockMesh", e.block_mesh_log),
+        ("checkMesh", e.check_mesh_log),
+        ("simpleFoam", e.solver_log),
+    ] {
+        ends(log, name, &mut reasons);
+        fatal(log, name, &mut reasons);
+    }
+    let newest = e
+        .time_directories
+        .iter()
+        .copied()
+        .filter(|t| t.is_finite())
+        .max_by(f64::total_cmp);
+    match final_time(e.solver_log) {
+        Some(t)
+            if t.is_finite()
+                && t > 0.0
+                && (t <= expected.end_time || close(t, expected.end_time)) =>
+        {
+            if !newest.is_some_and(|d| close(d, t)) {
+                reasons.push(format!(
+                    "outputs: newest time directory {newest:?} differs from the last logged time {t}"
+                ));
+            }
+        }
+        Some(t) => reasons.push(format!(
+            "solver: last logged time {t} is not above zero and within {}",
+            expected.end_time
+        )),
+        None => reasons.push("solver: no logged time".into()),
+    }
+    mesh(
+        e.check_mesh_log,
+        Some(expected.cell_count),
+        Some(expected.domain_volume),
+        &mut reasons,
+    );
+    residuals(e.solver_log, None, &mut reasons);
+    verdict(reasons)
 }
 
 /// Combined-log compatibility entry point. Real executions must use `judge_run` to prove every step and output directory.

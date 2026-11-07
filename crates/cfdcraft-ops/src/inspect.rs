@@ -372,6 +372,7 @@ pub fn run_result(path: &Path, run: Option<&str>) -> DocOutcome {
         checks: record.checks.clone(),
         key_numbers: record.key_numbers.clone(),
         comparison: record.comparison.clone(),
+        convergence: record.verdict.clone(),
     };
     DocOutcome {
         report: loaded

@@ -171,6 +171,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-assess"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-logscan",
+ "cfdcraft-monitors",
+ "cfdcraft-settle",
+ "schemars",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-backend-esi"
 version = "0.1.0"
 dependencies = [
@@ -202,14 +214,20 @@ dependencies = [
 name = "cfdcraft-cli"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-backend-esi",
  "cfdcraft-capture",
  "cfdcraft-compare",
  "cfdcraft-doc",
+ "cfdcraft-drain",
+ "cfdcraft-executor",
  "cfdcraft-mcp",
  "cfdcraft-model",
  "cfdcraft-ops",
+ "cfdcraft-queue",
+ "cfdcraft-remote",
  "cfdcraft-runs",
  "cfdcraft-scenarios",
+ "cfdcraft-settle",
  "cfdcraft-store",
  "cfdcraft-sweep",
  "cfdcraft-text",
@@ -268,6 +286,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-drain"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-assess",
+ "cfdcraft-backend-esi",
+ "cfdcraft-capture",
+ "cfdcraft-dictedit",
+ "cfdcraft-doc",
+ "cfdcraft-executor",
+ "cfdcraft-logscan",
+ "cfdcraft-ops",
+ "cfdcraft-queue",
+ "cfdcraft-remote",
+ "cfdcraft-runs",
+ "cfdcraft-scenarios",
+ "cfdcraft-settle",
+ "cfdcraft-store",
+ "cfdcraft-sweep",
+ "cfdcraft-text",
+ "craft-atomic",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-executor"
 version = "0.1.0"
 dependencies = [
@@ -290,9 +334,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-logscan"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-mcp"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-drain",
  "cfdcraft-executor",
  "cfdcraft-model",
  "cfdcraft-ops",
@@ -328,9 +382,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-monitors"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-ops"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-assess",
  "cfdcraft-backend-esi",
  "cfdcraft-bench-ghia",
  "cfdcraft-capture",
@@ -340,9 +404,12 @@ dependencies = [
  "cfdcraft-executor",
  "cfdcraft-keys",
  "cfdcraft-model",
+ "cfdcraft-monitors",
  "cfdcraft-pack",
+ "cfdcraft-queue",
  "cfdcraft-runs",
  "cfdcraft-scenarios",
+ "cfdcraft-settle",
  "cfdcraft-store",
  "cfdcraft-sweep",
  "cfdcraft-text",
@@ -350,6 +417,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror",
  "zip",
 ]
 
@@ -368,12 +436,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-queue"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-remote"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-executor",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-runs"
 version = "0.1.0"
 dependencies = [
  "cfdcraft-compare",
  "cfdcraft-keys",
  "cfdcraft-model",
+ "cfdcraft-settle",
  "cfdcraft-store",
  "schemars",
  "serde",
@@ -401,10 +488,21 @@ dependencies = [
  "cfdcraft-doc",
  "cfdcraft-migrate",
  "cfdcraft-model",
+ "cfdcraft-queue",
  "jsonschema",
  "schemars",
  "serde_json",
  "zip",
+]
+
+[[package]]
+name = "cfdcraft-settle"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

@@ -76,7 +76,7 @@ fn an_older_file_opens_migrated_and_says_what_changed() {
     );
     assert_eq!(opened.document.artifacts, ArtifactIndex::default());
     assert_eq!(opened.schema_version, 0);
-    assert_eq!(opened.notes.len(), 3);
+    assert_eq!(opened.notes.len(), 4);
     let first = &opened.notes[0];
     assert_eq!((first.from, first.to), (0, 1));
     assert!(first.summary.contains("lid") && first.summary.contains("walls"));
@@ -86,6 +86,24 @@ fn an_older_file_opens_migrated_and_says_what_changed() {
     let third = &opened.notes[2];
     assert_eq!((third.from, third.to), (2, 3));
     assert!(third.summary.contains("variants"));
+    let fourth = &opened.notes[3];
+    assert_eq!((fourth.from, fourth.to), (3, 4));
+    assert!(fourth.summary.contains("stopped and continued"));
+}
+
+#[test]
+fn a_schema_3_file_opens_with_one_plain_note_and_nothing_else_changes() {
+    let bytes = archive(vec![
+        ("manifest.json", manifest(json!(3)), DEFLATE),
+        ("study.json", CAVITY.as_bytes().to_vec(), DEFLATE),
+    ]);
+    let opened = from_bytes(&bytes).unwrap();
+
+    assert_eq!(opened.schema_version, 3);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (3, 4));
+    assert_eq!(opened.document.study, Study::from_json(CAVITY).unwrap());
+    assert_eq!(opened.document.artifacts, ArtifactIndex::default());
 }
 
 #[test]

@@ -332,6 +332,7 @@ pub fn save_document(study_json: &str, out: &Path, replace: bool) -> DocOutcome 
 
 /// The document that replaces the study file `out`: the one in it, with only the study changed,
 /// and the stamp of the bytes it was read from.
+#[allow(clippy::result_large_err)]
 fn replacement(study: Study, out: &Path) -> Result<(Document, Stamp), Finding> {
     let (opened, stamp) = open_stamped(out).map_err(|e| read_failure(&e, out))?;
     if opened.packed_entries > 0 {

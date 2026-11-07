@@ -5,5 +5,7 @@ pub mod run;
 pub mod tunnel;
 
 pub use hosts::HostProfile;
-pub use lock::Holder;
-pub use run::{Job, RunConfig, RunError, RunOutcome};
+pub use lock::{Holder, ReleaseOutcome};
+pub use run::{
+    Job, RunConfig, RunError, RunOutcome, Stage, Started, checked, output_bounded, text_bounded,
+};

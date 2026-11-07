@@ -10,7 +10,7 @@ use std::path::Path;
 
 use cfdcraft_backend_esi::Dialect;
 use cfdcraft_doc::{Document, Stamp, open, open_stamped, save_if_unchanged};
-use cfdcraft_keys::{Change, StageRecipes, ToolIdentity, diff_mesh, diff_result};
+use cfdcraft_keys::{Change, StageKeys, StageRecipes, ToolIdentity, diff_mesh, diff_result};
 use cfdcraft_model::{Diagnostic, MigrationNote, Severity, Study, diagnose, has_errors, resolve};
 use cfdcraft_runs::is_plain_name;
 use cfdcraft_scenarios::{
@@ -178,6 +178,14 @@ fn recipes_of(study: &Study, tool: &ToolIdentity) -> Option<StageRecipes> {
     }
     let resolved = resolve(study).ok()?;
     Some(StageRecipes::from_resolved(&resolved, tool))
+}
+
+/// The stage keys the variant `id` (or `base`) makes now, as a status asks for them, or none when
+/// its study cannot be built.
+pub(crate) fn keys_of(document: &Document, id: &str) -> Option<StageKeys> {
+    let study = effective_study(&document.study, &document.artifacts.scenarios, id).ok()?;
+    let tool = tool_identity(Dialect::EsiV2512);
+    recipes_of(&study, &tool).map(|recipes| recipes.keys())
 }
 
 /// One line of the list, and the effective study it was made from when that could be built.

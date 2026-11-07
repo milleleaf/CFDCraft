@@ -8,7 +8,7 @@ use crate::{
     Quantity, Study,
     diagnostics::{Capabilities, Diagnostic, diagnose, has_errors, render_text},
     raw::RawOverride,
-    study::{BoundaryKind, Convergence, Face},
+    study::{BoundaryKind, Convergence, Face, MonitorField, SettleSettings, SurfaceQuantity},
     units::to_si,
 };
 
@@ -63,10 +63,103 @@ pub struct ResolvedSolver {
     pub convergence: Convergence,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+/// The monitors in SI. Each list is in label order and left out when empty, and `settle` when
+/// absent, so a study that lists none keeps its canonical text and hash.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ResolvedMonitors {
     pub centreline_u_sample_count: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub probes: Vec<ResolvedProbe>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<ResolvedLine>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<ResolvedSurface>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settle: Option<SettleSettings>,
 }
+
+/// A probe with its position in metres.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ResolvedProbe {
+    pub label: String,
+    pub x: f64,
+    pub y: f64,
+    pub field: MonitorField,
+}
+
+/// A line with its ends in metres.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ResolvedLine {
+    pub label: String,
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub samples: u64,
+    pub field: MonitorField,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ResolvedSurface {
+    pub label: String,
+    pub boundary: String,
+    pub quantity: SurfaceQuantity,
+}
+
+/// What a run watches, with the names the written case gives each monitor. A name counts from 1
+/// in label order within its kind and never comes from the label text, so a label cannot reach a
+/// case. `label` is the study's own label, for people only; the default probes have none.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MonitorPlan {
+    pub probes: Vec<PlannedProbe>,
+    pub lines: Vec<PlannedLine>,
+    pub surfaces: Vec<PlannedSurface>,
+    /// True when the study lists no monitor and the plan holds the five default probes.
+    pub defaulted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlannedProbe {
+    /// Function-object name: `probe_1`, `probe_2`, ...
+    pub fo: String,
+    pub label: Option<String>,
+    pub x: f64,
+    pub y: f64,
+    pub field: MonitorField,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlannedLine {
+    /// Function-object name: `line_1`, `line_2`, ...
+    pub fo: String,
+    pub label: Option<String>,
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub samples: u64,
+    pub field: MonitorField,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlannedSurface {
+    /// Function-object name: `surface_1`, `surface_2`, ...
+    pub fo: String,
+    pub label: Option<String>,
+    pub boundary: String,
+    /// What the named boundary is, which decides the patch the case writes for it.
+    pub kind: BoundaryKind,
+    pub quantity: SurfaceQuantity,
+}
+
+/// Where the default probes sit, as fractions of the domain's x and y lengths.
+const DEFAULT_PROBES: [(f64, f64); 5] = [
+    (0.5, 0.5),
+    (0.25, 0.25),
+    (0.75, 0.25),
+    (0.25, 0.75),
+    (0.75, 0.75),
+];
 
 /// A study the checks refuse. `Display` is the rendered findings.
 #[derive(Debug, Error, PartialEq)]
@@ -108,6 +201,82 @@ pub fn speed_from_vector(kind: BoundaryKind, face: Face, vector: [f64; 3]) -> Op
 }
 
 impl ResolvedStudy {
+    /// The monitors a run watches. A study that lists none is watched at five default velocity
+    /// probes; the defaults are computed here and never written into the resolved study, so the
+    /// study keeps its hash.
+    pub fn monitor_plan(&self) -> MonitorPlan {
+        let m = &self.monitors;
+        if m.probes.is_empty() && m.lines.is_empty() && m.surfaces.is_empty() {
+            let probes = DEFAULT_PROBES
+                .iter()
+                .enumerate()
+                .map(|(i, (fx, fy))| PlannedProbe {
+                    fo: format!("probe_{}", i + 1),
+                    label: None,
+                    x: fx * self.domain.length_x,
+                    y: fy * self.domain.length_y,
+                    field: MonitorField::Velocity,
+                })
+                .collect();
+            return MonitorPlan {
+                probes,
+                lines: Vec::new(),
+                surfaces: Vec::new(),
+                defaulted: true,
+            };
+        }
+        let probes = m
+            .probes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| PlannedProbe {
+                fo: format!("probe_{}", i + 1),
+                label: Some(p.label.clone()),
+                x: p.x,
+                y: p.y,
+                field: p.field,
+            })
+            .collect();
+        let lines = m
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| PlannedLine {
+                fo: format!("line_{}", i + 1),
+                label: Some(l.label.clone()),
+                x0: l.x0,
+                y0: l.y0,
+                x1: l.x1,
+                y1: l.y1,
+                samples: l.samples,
+                field: l.field,
+            })
+            .collect();
+        // A boundary the study lacks cannot reach here (`resolve` refuses it); the numbering is
+        // taken before the filter so a name never shifts.
+        let surfaces = m
+            .surfaces
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let kind = self.boundary_conditions.get(&s.boundary)?.kind;
+                Some(PlannedSurface {
+                    fo: format!("surface_{}", i + 1),
+                    label: Some(s.label.clone()),
+                    boundary: s.boundary.clone(),
+                    kind,
+                    quantity: s.quantity,
+                })
+            })
+            .collect();
+        MonitorPlan {
+            probes,
+            lines,
+            surfaces,
+            defaulted: false,
+        }
+    }
+
     /// The lid speed (m/s along +x) of a study with exactly one moving wall on the top face.
     pub fn lid_velocity(&self) -> Option<f64> {
         let mut walls = self
@@ -172,6 +341,42 @@ pub fn resolve(study: &Study) -> Result<ResolvedStudy, ResolveError> {
         },
         monitors: ResolvedMonitors {
             centreline_u_sample_count: study.monitors.centreline_u_sample_count,
+            probes: study
+                .monitors
+                .probes
+                .iter()
+                .map(|(label, p)| ResolvedProbe {
+                    label: label.clone(),
+                    x: si(&p.x),
+                    y: si(&p.y),
+                    field: p.field,
+                })
+                .collect(),
+            lines: study
+                .monitors
+                .lines
+                .iter()
+                .map(|(label, l)| ResolvedLine {
+                    label: label.clone(),
+                    x0: si(&l.x0),
+                    y0: si(&l.y0),
+                    x1: si(&l.x1),
+                    y1: si(&l.y1),
+                    samples: l.samples,
+                    field: l.field,
+                })
+                .collect(),
+            surfaces: study
+                .monitors
+                .surfaces
+                .iter()
+                .map(|(label, s)| ResolvedSurface {
+                    label: label.clone(),
+                    boundary: s.boundary.clone(),
+                    quantity: s.quantity,
+                })
+                .collect(),
+            settle: study.monitors.settle,
         },
         raw_overrides: study.raw_overrides.clone(),
     })

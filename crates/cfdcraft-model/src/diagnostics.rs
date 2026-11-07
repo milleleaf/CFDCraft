@@ -166,6 +166,36 @@ pub const CODES: &[(&str, &str)] = &[
         "CFD-RAW-007",
         "the written case has no such file or block for a raw override, raised by the writer",
     ),
+    ("CFD-MON-001", "a monitor label breaks the naming rule"),
+    ("CFD-MON-002", "a probe or line point is outside the domain"),
+    (
+        "CFD-MON-003",
+        "a line has fewer than 2 or more than 2000 samples, or no length",
+    ),
+    (
+        "CFD-MON-004",
+        "a surface monitor names a boundary the study does not have",
+    ),
+    ("CFD-MON-005", "the study has too many monitors of a kind"),
+    ("CFD-MON-006", "a settle setting is outside its range"),
+    (
+        "CFD-RUN-003",
+        "the solver hit a floating-point trap or a non-finite number",
+    ),
+    ("CFD-RUN-004", "a residual blew up"),
+    ("CFD-RUN-005", "the Courant number is over its limit"),
+    ("CFD-RUN-006", "the continuity error is growing"),
+    (
+        "CFD-RUN-007",
+        "the run was stopped on request and its latest time kept",
+    ),
+    (
+        "CFD-RUN-008",
+        "the run could not be confirmed stopped and was marked interrupted",
+    ),
+    ("CFD-INFRA-007", "a detached start failed"),
+    ("CFD-INFRA-008", "the host state does not match the queue"),
+    ("CFD-INFRA-009", "the compute host stayed unreachable"),
 ];
 // END OF CATALOGUE: code literals below this line are the ones the model emits.
 
@@ -320,6 +350,7 @@ pub fn diagnose(study: &Study, capabilities: &Capabilities) -> Vec<Diagnostic> {
         ));
     }
     values(study, &mut found);
+    monitors(study, &mut found);
     boundaries(study, &mut found);
     face_coverage(study, &mut found);
     domain_consistency(study, &mut found);
@@ -536,6 +567,184 @@ fn values(study: &Study, found: &mut Vec<Diagnostic>) {
             )
             .with_hint("Use 32 or more for a useful profile."),
         );
+    }
+}
+
+const MAX_PROBES: usize = 16;
+const MAX_LINES: usize = 8;
+const MAX_SURFACES: usize = 8;
+const MIN_LINE_SAMPLES: u64 = 2;
+const MAX_LINE_SAMPLES: u64 = 2000;
+/// How far outside the domain a point may sit and still count as on its edge, in metres.
+const EDGE_TOLERANCE: f64 = 1e-12;
+
+/// The SI length of a domain side when it is a finite length; no findings (`values` reports).
+fn side_length(q: &Quantity) -> Option<f64> {
+    let v = si_value(q);
+    (q.unit.dimension() == Dimension::Length && v.is_finite()).then_some(v)
+}
+
+/// One probe or line coordinate: a length, and inside `0..=limit` (the edge counts as inside).
+fn point_in_domain(
+    found: &mut Vec<Diagnostic>,
+    q: &Quantity,
+    what: &str,
+    axis: &str,
+    limit: Option<f64>,
+    pointer: String,
+) -> Option<f64> {
+    let setting = format!("{what} {axis}");
+    let value = quantity(found, q, Dimension::Length, &setting, &pointer)?;
+    if let Some(limit) = limit
+        && !(-EDGE_TOLERANCE..=limit + EDGE_TOLERANCE).contains(&value)
+    {
+        found.push(
+            Diagnostic::error(
+                "CFD-MON-002",
+                setting.clone(),
+                pointer,
+                format!("The {setting} lies outside the domain, which spans 0 to {limit} m."),
+            )
+            .with_hint("Move the point inside the domain, or onto its edge."),
+        );
+    }
+    Some(value)
+}
+
+/// The monitors: plain labels, points inside the domain, sensible lines, known boundaries, a
+/// bounded count and settle tolerances in range. A rejected label is never echoed.
+fn monitors(study: &Study, found: &mut Vec<Diagnostic>) {
+    let m = &study.monitors;
+    let width = side_length(&study.domain.length_x);
+    let height = side_length(&study.domain.length_y);
+    let labels = m
+        .probes
+        .keys()
+        .map(|n| ("probes", n))
+        .chain(m.lines.keys().map(|n| ("lines", n)))
+        .chain(m.surfaces.keys().map(|n| ("surfaces", n)));
+    for (kind, name) in labels {
+        if !valid_boundary_name(name) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-001",
+                    "monitor label",
+                    format!("/monitors/{kind}/{}", pointer_token(name)),
+                    "A monitor label must start with a letter and use only letters, digits, \
+                     hyphens and underscores, up to 32 characters.",
+                )
+                .with_hint("Rename the monitor, for example to \"centre\" or \"lid-flux\"."),
+            );
+        }
+    }
+    for (name, probe) in &m.probes {
+        let base = format!("/monitors/probes/{}", pointer_token(name));
+        let what = format!("probe {}", label(name));
+        point_in_domain(found, &probe.x, &what, "x", width, format!("{base}/x"));
+        point_in_domain(found, &probe.y, &what, "y", height, format!("{base}/y"));
+    }
+    for (name, line) in &m.lines {
+        let base = format!("/monitors/lines/{}", pointer_token(name));
+        let what = format!("line {}", label(name));
+        let x0 = point_in_domain(found, &line.x0, &what, "x0", width, format!("{base}/x0"));
+        let y0 = point_in_domain(found, &line.y0, &what, "y0", height, format!("{base}/y0"));
+        let x1 = point_in_domain(found, &line.x1, &what, "x1", width, format!("{base}/x1"));
+        let y1 = point_in_domain(found, &line.y1, &what, "y1", height, format!("{base}/y1"));
+        if !(MIN_LINE_SAMPLES..=MAX_LINE_SAMPLES).contains(&line.samples) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-003",
+                    format!("{what} samples"),
+                    format!("{base}/samples"),
+                    format!(
+                        "The {what} needs between {MIN_LINE_SAMPLES} and {MAX_LINE_SAMPLES} \
+                         sample points."
+                    ),
+                )
+                .with_hint("Use 16 to 100 for a readable profile."),
+            );
+        }
+        if x0.is_some() && x0 == x1 && y0.is_some() && y0 == y1 {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-003",
+                    what.clone(),
+                    base.clone(),
+                    format!("The {what} starts and ends at the same point, so it has no length."),
+                )
+                .with_hint("Give the line two different ends."),
+            );
+        }
+    }
+    for (name, surface) in &m.surfaces {
+        if !study.boundary_conditions.contains_key(&surface.boundary) {
+            let what = format!("surface {} boundary", label(name));
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-004",
+                    what.clone(),
+                    format!("/monitors/surfaces/{}/boundary", pointer_token(name)),
+                    format!("The {what} is not one of the study's boundaries."),
+                )
+                .with_hint("Name one of the boundary labels of this study."),
+            );
+        }
+    }
+    for (kind, count, limit) in [
+        ("probes", m.probes.len(), MAX_PROBES),
+        ("lines", m.lines.len(), MAX_LINES),
+        ("surfaces", m.surfaces.len(), MAX_SURFACES),
+    ] {
+        if count > limit {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-005",
+                    format!("monitored {kind}"),
+                    format!("/monitors/{kind}"),
+                    format!("The study lists {count} {kind}, but at most {limit} are allowed."),
+                )
+                .with_hint("Remove the ones you no longer need."),
+            );
+        }
+    }
+    if let Some(settle) = &m.settle {
+        let fraction = |v: Option<f64>| v.map(|v| v > 0.0 && v <= 1.0);
+        for (name, in_range, range) in [
+            (
+                "tail_fraction",
+                fraction(settle.tail_fraction),
+                "above 0 and at most 1",
+            ),
+            (
+                "tail_floor",
+                settle.tail_floor.map(|v| (5..=100_000).contains(&v)),
+                "from 5 to 100000",
+            ),
+            (
+                "spread_rel",
+                fraction(settle.spread_rel),
+                "above 0 and at most 1",
+            ),
+            (
+                "drift_rel",
+                fraction(settle.drift_rel),
+                "above 0 and at most 1",
+            ),
+        ] {
+            if in_range == Some(false) {
+                let pointer = format!("/monitors/settle/{name}");
+                let setting = setting_label(&pointer);
+                found.push(
+                    Diagnostic::error(
+                        "CFD-MON-006",
+                        setting.clone(),
+                        pointer,
+                        format!("The {setting} must be {range}."),
+                    )
+                    .with_hint("Leave it out to use the built-in value."),
+                );
+            }
+        }
     }
 }
 
@@ -1007,6 +1216,16 @@ pub fn setting_label(pointer: &str) -> String {
         ["solver", "convergence", "p"] => "convergence limit for pressure".into(),
         ["solver", "convergence", "U"] => "convergence limit for velocity".into(),
         ["monitors", "centreline_u_sample_count"] => "centreline sample count".into(),
+        ["monitors", "settle", member] => format!("settle {}", member.replace('_', " ")),
+        [
+            "monitors",
+            kind @ ("probes" | "lines" | "surfaces"),
+            name,
+            member,
+        ] => {
+            let noun = kind.trim_end_matches('s');
+            format!("{noun} {} {}", label(name), member.replace('_', " "))
+        }
         ["boundary_conditions", name, "velocity"] => format!("{} velocity", label(name)),
         ["boundary_conditions", name, "kind"] => format!("{} boundary kind", label(name)),
         ["boundary_conditions", name, "faces"] => format!("{} faces", label(name)),

@@ -129,6 +129,11 @@ pub fn change_line(change: &Change) -> Line {
             to: to.clone().unwrap_or_else(|| "none".to_owned()),
         },
         Change::RawMesh => Line::ReasonRawMesh,
+        Change::Monitor { id, from, to } => Line::ReasonMonitor {
+            id: id.clone(),
+            from: from.clone().unwrap_or_else(|| "none".to_owned()),
+            to: to.clone().unwrap_or_else(|| "none".to_owned()),
+        },
     }
 }
 
@@ -354,6 +359,14 @@ mod tests {
                  → esi system/fvSolution relaxationFactors/equations/U = 0.5",
             ),
             (Change::RawMesh, "a raw mesh override changed"),
+            (
+                Change::Monitor {
+                    id: "probe_2".to_owned(),
+                    from: Some("x 0.025 m, y 0.025 m, velocity".to_owned()),
+                    to: Some("x 0.03 m, y 0.025 m, velocity".to_owned()),
+                },
+                "monitor probe_2 x 0.025 m, y 0.025 m, velocity → x 0.03 m, y 0.025 m, velocity",
+            ),
         ];
         for (change, expected) in table {
             assert_eq!(text(&change), expected, "{change:?}");
@@ -383,6 +396,32 @@ mod tests {
         assert_eq!(
             reason_text(&[Change::RawMesh]),
             "a raw mesh override changed"
+        );
+    }
+
+    #[test]
+    fn a_monitor_change_reads_as_its_reason_line() {
+        let added = Change::Monitor {
+            id: "probe_6".to_owned(),
+            from: None,
+            to: Some("x 0.05 m, y 0.05 m, velocity".to_owned()),
+        };
+        assert_eq!(
+            change_line(&added),
+            Line::ReasonMonitor {
+                id: "probe_6".to_owned(),
+                from: "none".to_owned(),
+                to: "x 0.05 m, y 0.05 m, velocity".to_owned(),
+            }
+        );
+        let removed = Change::Monitor {
+            id: "surface_1".to_owned(),
+            from: Some("flux on movingWall".to_owned()),
+            to: None,
+        };
+        assert_eq!(
+            reason_text(&[removed]),
+            "monitor surface_1 flux on movingWall → none"
         );
     }
 

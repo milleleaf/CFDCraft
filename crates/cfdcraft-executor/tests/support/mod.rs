@@ -2,7 +2,9 @@
 //! fake docker. Unix only: the fakes are POSIX sh scripts.
 #![allow(dead_code)]
 
-use cfdcraft_executor::{HostProfile, Job, RunConfig, RunError, RunOutcome, docker::RunSpec};
+use cfdcraft_executor::{
+    HostProfile, Job, RunConfig, RunError, RunOutcome, Started, docker::RunSpec,
+};
 use std::{
     ffi::OsString,
     os::unix::fs::PermissionsExt,
@@ -63,6 +65,14 @@ pub fn new_root(group: &str, tag: &str) -> PathBuf {
     root
 }
 
+/// Like `new_root`, and the fake ssh really makes folders and unpacks uploads in
+/// `box/` (a marker file that `worker` turns into `CFC_TEST_BOX_REAL=1`).
+pub fn new_real_root(group: &str, tag: &str) -> PathBuf {
+    let root = new_root(group, tag);
+    std::fs::write(root.join("box-real"), "1").unwrap();
+    root
+}
+
 pub fn lock_dir(root: &Path) -> PathBuf {
     root.join("box/.cfdcraft-job-lock")
 }
@@ -86,6 +96,9 @@ pub fn worker(root: &Path, worker_test: &str, mode: &str) -> Command {
         .env("CFC_TEST_ROOT", root)
         .env("CFC_TEST_MODE", mode)
         .current_dir(workspace_root());
+    if root.join("box-real").exists() {
+        c.env("CFC_TEST_BOX_REAL", "1");
+    }
     c
 }
 
@@ -135,4 +148,46 @@ pub fn describe(r: &Result<RunOutcome, RunError>) -> String {
         Err(RunError::Setup(m)) => format!("setup {m}"),
         Err(e) => format!("other {e}"),
     }
+}
+
+/// The state, exit status and out-of-memory flag the fake docker holds for a
+/// detached container, or `None` when there is no such container.
+pub fn container_state(root: &Path, name: &str) -> Option<(String, i32, bool)> {
+    let dir = root.join("containers").join(name);
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f))
+            .ok()
+            .map(|t| t.trim().to_string())
+    };
+    Some((
+        read("state")?,
+        read("exit")?.parse().ok()?,
+        read("oom")? == "true",
+    ))
+}
+
+/// The `key=value` labels the fake docker recorded for a detached container.
+pub fn container_labels(root: &Path, name: &str) -> Vec<String> {
+    std::fs::read_to_string(root.join("containers").join(name).join("labels"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Begin a job under the chosen run id and start it detached, with one process.
+pub fn start_detached_job(root: &Path, id: &str, doc: &str) -> Result<Started, RunError> {
+    Job::begin_as(
+        &profile(),
+        &root.join("dummy-key"),
+        RunConfig::from_cwd().unwrap(),
+        id,
+    )?
+    .start_detached(
+        &root.join("case"),
+        &root.join("scratch"),
+        &RunSpec::allrun_timed(TEST_IMAGE, 600).unwrap(),
+        doc,
+        1,
+    )
 }

@@ -19,6 +19,10 @@ use std::{
 pub const BUSY_EXIT: i32 = 75;
 /// Remote exit status: the lock was taken but the holder file could not be written.
 pub const HOLDER_WRITE_FAILED_EXIT: i32 = 74;
+/// Remote exit status of a checked release: the lock names another holder.
+pub const NOT_HOLDER_EXIT: i32 = 76;
+/// Remote exit status of a checked release: there is no lock folder.
+pub const ABSENT_EXIT: i32 = 77;
 /// ssh's own exit status when the connection or login failed.
 pub const SSH_FAILED_EXIT: i32 = 255;
 /// How long past its wall-clock cap a lock may sit before it is called stale.
@@ -142,6 +146,84 @@ pub fn release_command(path: &str) -> Result<String, InvalidHolder> {
         return Err(InvalidHolder("lock path"));
     }
     Ok(format!("rm -f '{path}/holder.json'; rmdir '{path}'"))
+}
+
+/// One remote command that gives the lock back only to the run that holds it:
+/// it removes the holder file and the folder when `holder.json` names `run_id`
+/// (exit 0), leaves everything alone when it names another run (exit
+/// `NOT_HOLDER_EXIT`) and reports a missing folder (exit `ABSENT_EXIT`). The
+/// match includes the closing quote, so an id that is the start of another id
+/// is not the holder.
+pub fn release_checked_command(path: &str, run_id: &str) -> Result<String, InvalidHolder> {
+    if !plain_path(path) {
+        return Err(InvalidHolder("lock path"));
+    }
+    if !all(run_id, |c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(InvalidHolder("run id"));
+    }
+    Ok(format!(
+        "d='{path}'; f='{path}/holder.json'; \
+         if [ ! -d \"$d\" ]; then exit {ABSENT_EXIT}; fi; \
+         if grep -qF '\"run_id\":\"{run_id}\"' \"$f\" 2>/dev/null; then \
+         rm -f \"$f\"; rmdir \"$d\"; exit $?; fi; exit {NOT_HOLDER_EXIT}"
+    ))
+}
+
+/// One remote command that prints the holder file of the lock, if any.
+pub fn holder_command(path: &str) -> Result<String, InvalidHolder> {
+    if !plain_path(path) {
+        return Err(InvalidHolder("lock path"));
+    }
+    Ok(format!("cat '{path}/holder.json' 2>/dev/null"))
+}
+
+/// What a checked release found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseOutcome {
+    /// The lock named this run and was removed.
+    Released,
+    /// The lock names another run (or none); nothing was removed.
+    NotOurs,
+    /// There was no lock.
+    Absent,
+}
+
+/// Give the lock back if `run_id` holds it. A failed connection is an `Ssh`
+/// error, never `NotOurs`.
+pub fn release_checked(
+    p: &HostProfile,
+    key: &Path,
+    path: &str,
+    run_id: &str,
+) -> Result<ReleaseOutcome, RunError> {
+    let cmd = release_checked_command(path, run_id).map_err(|e| RunError::Setup(e.to_string()))?;
+    let (status, _, err) = output_bounded(ssh_command(p, key).arg(cmd), Duration::from_secs(30))?;
+    match status.code() {
+        Some(0) => Ok(ReleaseOutcome::Released),
+        Some(NOT_HOLDER_EXIT) => Ok(ReleaseOutcome::NotOurs),
+        Some(ABSENT_EXIT) => Ok(ReleaseOutcome::Absent),
+        Some(SSH_FAILED_EXIT) => Err(RunError::Ssh {
+            detail: String::from_utf8_lossy(&err).trim().to_string(),
+        }),
+        other => Err(RunError::Setup(format!(
+            "could not release the job lock (exit {}): {}",
+            other.map_or("signal".to_string(), |c| c.to_string()),
+            String::from_utf8_lossy(&err).trim()
+        ))),
+    }
+}
+
+/// The holder of the lock: `None` when there is no lock, no holder file or a
+/// damaged one.
+pub fn read_holder(p: &HostProfile, key: &Path, path: &str) -> Result<Option<Holder>, RunError> {
+    let cmd = holder_command(path).map_err(|e| RunError::Setup(e.to_string()))?;
+    let (status, out, err) = output_bounded(ssh_command(p, key).arg(cmd), Duration::from_secs(30))?;
+    if status.code() == Some(SSH_FAILED_EXIT) {
+        return Err(RunError::Ssh {
+            detail: String::from_utf8_lossy(&err).trim().to_string(),
+        });
+    }
+    Ok(parse_busy_output(&String::from_utf8_lossy(&out)))
 }
 
 /// Holds the remote lock. Dropping it releases the directory unless `release`

@@ -14,7 +14,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// The schema version this build writes and fully understands.
-pub const CURRENT_SCHEMA: u32 = 3;
+pub const CURRENT_SCHEMA: u32 = 4;
 
 /// The members of a document that a migration step may change.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +61,10 @@ pub const STEPS: &[Step] = &[
     Step {
         from: 2,
         apply: v2_to_v3,
+    },
+    Step {
+        from: 3,
+        apply: v3_to_v4,
     },
 ];
 
@@ -117,6 +121,25 @@ fn v2_to_v3(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
             summary: "This file can now hold variants of the study, parameter sweeps and a record \
                       of pruned results. This file has none yet. Nothing else changed."
                 .to_owned(),
+        },
+    ))
+}
+
+/// Schema 4 lets a run record say it was stopped, keep the time it can be continued from, name the
+/// run it was continued from, and carry the verdict on whether its monitored quantities had
+/// settled. Each is optional and an absent one reads as an ordinary complete run, so nothing in the
+/// file changes; the step only moves the number and says so.
+fn v3_to_v4(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
+    Ok((
+        parts,
+        MigrationNote {
+            from: 3,
+            to: 4,
+            summary:
+                "This file can now keep runs that were stopped and continued, and a record of \
+                      whether each result had converged. This file has none yet. Nothing else \
+                      changed."
+                    .to_owned(),
         },
     ))
 }

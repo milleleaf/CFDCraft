@@ -177,8 +177,93 @@ impl Default for Convergence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// What to watch while the solver runs. Every monitor is keyed by the user's own label; the
+/// label is shown to people and never written into a case (the case names monitors by their
+/// position). Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`. A study that lists no probe, line or
+/// surface is watched at five default velocity points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Monitors {
     pub centreline_u_sample_count: u64,
+    /// Point probes, at most 16.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probes: BTreeMap<String, Probe>,
+    /// Straight sample lines, at most 8.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lines: BTreeMap<String, LineMonitor>,
+    /// Integrals over a named boundary, at most 8.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub surfaces: BTreeMap<String, SurfaceMonitor>,
+    /// How steady a monitored quantity must be to count as settled. It judges a run and does not
+    /// change what is run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle: Option<SettleSettings>,
+}
+
+/// The field a probe or line reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorField {
+    Velocity,
+    Pressure,
+}
+
+/// What a surface monitor reports over its boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceQuantity {
+    /// The volumetric flux through the boundary.
+    Flux,
+    /// The area-averaged pressure on the boundary.
+    PressureAverage,
+    /// The area-integrated pressure on the boundary.
+    PressureIntegral,
+}
+
+/// A point in the plane of the case (the case is flat, so a point has x and y only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Probe {
+    pub x: Quantity,
+    pub y: Quantity,
+    pub field: MonitorField,
+}
+
+/// A straight line of evenly spaced samples; `samples` counts the points, ends included.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LineMonitor {
+    pub x0: Quantity,
+    pub y0: Quantity,
+    pub x1: Quantity,
+    pub y1: Quantity,
+    pub samples: u64,
+    pub field: MonitorField,
+}
+
+/// A quantity integrated over one boundary of the study, named by its label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SurfaceMonitor {
+    pub boundary: String,
+    pub quantity: SurfaceQuantity,
+}
+
+/// Optional tolerances for judging a monitored quantity settled. A member left out uses the
+/// built-in value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettleSettings {
+    /// The share of the iterations, counted from the end, that is judged (above 0, up to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_fraction: Option<f64>,
+    /// The fewest iterations the judged tail may hold (5 to 100000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_floor: Option<u64>,
+    /// The largest spread of the tail, relative to its mean (above 0, up to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spread_rel: Option<f64>,
+    /// The largest drift across the tail, relative to its mean (above 0, up to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_rel: Option<f64>,
 }

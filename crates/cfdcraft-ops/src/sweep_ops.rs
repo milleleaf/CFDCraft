@@ -110,14 +110,16 @@ fn open_checked(operation: &str, path: &Path) -> Result<Editing, Box<DocOutcome>
     })
 }
 
-/// The points of `sweep` when the document can take it: the sweep is sound and within the limits,
-/// its base is the study or a listed variant, neither the sweep nor a point is listed already, and
-/// the file would not hold more variants than it may.
+/// The points of `sweep` and the variant list the file would hold with them, when the document can
+/// take it: the sweep is sound and within the limits, its base is the study or a listed variant,
+/// neither the sweep nor a point is listed already, the file would not hold more variants than it
+/// may, and the list passes the checks every stored list passes (so a setting pointer that cannot
+/// be used is refused here, for a plan as for a create).
 fn expand(
     operation: &str,
     document: &Document,
     sweep: &Sweep,
-) -> Result<Vec<Point>, Box<DocOutcome>> {
+) -> Result<(Vec<Point>, Vec<Scenario>), Box<DocOutcome>> {
     let made = points(sweep).map_err(|e| fail(operation, sweep_refusal(&sweep.id, &e)))?;
     let listed: HashSet<&str> = document
         .artifacts
@@ -147,7 +149,16 @@ fn expand(
         );
         return Err(refused_sweep(operation, &sweep.id, reason));
     }
-    Ok(made)
+    let mut list = document.artifacts.scenarios.clone();
+    list.extend(made.iter().map(|point| variant_of(sweep, point)));
+    if let Err(error) = check_scenarios(&list) {
+        let reason = error.to_string();
+        return Err(fail(
+            operation,
+            ("CFD-SCN-002", Line::ScenarioRefused { reason }),
+        ));
+    }
+    Ok((made, list))
 }
 
 /// The variant a point of the sweep is stored as: it descends from the base of the sweep and holds
@@ -201,7 +212,7 @@ pub fn sweep_plan(path: &Path, sweep: &Sweep) -> DocOutcome {
 
 fn plan_inner(path: &Path, sweep: &Sweep) -> Reply {
     let Editing { document, .. } = open_checked(PLAN, path)?;
-    let made = expand(PLAN, &document, sweep)?;
+    let (made, _) = expand(PLAN, &document, sweep)?;
     Ok(DocOutcome {
         report: sweep_report(PLAN, &document, false, sweep, made),
         line: None,
@@ -222,16 +233,7 @@ fn create_inner(path: &Path, sweep: &Sweep) -> Reply {
         stamp,
         migration,
     } = open_checked(CREATE, path)?;
-    let made = expand(CREATE, &document, sweep)?;
-    let mut list = document.artifacts.scenarios.clone();
-    list.extend(made.iter().map(|point| variant_of(sweep, point)));
-    if let Err(error) = check_scenarios(&list) {
-        let reason = error.to_string();
-        return Err(fail(
-            CREATE,
-            ("CFD-SCN-002", Line::ScenarioRefused { reason }),
-        ));
-    }
+    let (made, list) = expand(CREATE, &document, sweep)?;
     document.artifacts.scenarios = list;
     document.artifacts.sweeps.push(sweep.clone());
     save_if_unchanged(&document, path, stamp).map_err(|e| fail(CREATE, not_written(path, e)))?;

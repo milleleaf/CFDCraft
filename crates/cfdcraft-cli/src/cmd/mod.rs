@@ -1,11 +1,45 @@
+pub mod check_case;
 pub mod compile;
+pub mod export;
 pub mod run;
-pub mod validate;
 pub type Error = Box<dyn std::error::Error>;
 
-pub fn read_study(path: &std::path::Path) -> Result<cfdcraft_model::ResolvedStudy, Error> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read study {}: {e}", path.display()))?;
-    let study = cfdcraft_model::Study::from_json(&raw)?;
-    Ok(cfdcraft_model::resolve(&study)?)
+/// Reads a study file and runs `operation` on its text. A file that cannot be read is a finished,
+/// classified report, so the offline verbs answer it the same way as any other invalid input.
+pub fn with_study(
+    path: &std::path::Path,
+    operation: &str,
+    run: impl FnOnce(&str) -> cfdcraft_ops::Report,
+) -> cfdcraft_ops::Report {
+    match std::fs::read_to_string(path) {
+        Ok(text) => run(&text),
+        Err(e) => cfdcraft_ops::Report::from_diagnostics(
+            operation,
+            vec![cfdcraft_ops::cases::cli_problem(format!(
+                "cannot read study {}: {e}",
+                path.display()
+            ))],
+            None,
+        ),
+    }
+}
+
+/// Prints a report and returns the process exit status for it.
+///
+/// With `json` the report is the only thing on stdout and nothing goes to stderr. Otherwise a
+/// passing run prints the study hash and `label: path` on stdout, and every note and finding goes
+/// to stderr.
+pub fn emit(report: &cfdcraft_ops::Report, json: bool, label: &str, path: &std::path::Path) -> i32 {
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        if report.class() == cfdcraft_ops::ExitClass::Passed {
+            if let Some(hash) = &report.study_hash {
+                println!("study hash: {hash}");
+            }
+            println!("{label}: {}", path.display());
+        }
+        eprint!("{}", report.render_text());
+    }
+    i32::from(report.exit_class)
 }

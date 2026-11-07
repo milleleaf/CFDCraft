@@ -1,7 +1,25 @@
 use cfdcraft_model::{Quantity, ResolveError, Study, StudyError, Unit, resolve, units};
 
+/// The (code, pointer) of the first error `resolve` reports.
+fn first_error(study: &Study) -> (String, String) {
+    match resolve(study) {
+        Err(ResolveError::Diagnostics(found)) => (found[0].code.clone(), found[0].pointer.clone()),
+        other => panic!("expected diagnostics, got {other:?}"),
+    }
+}
+
 fn study() -> Study {
-    Study::from_json(include_str!("fixtures/cavity_v0.json")).unwrap()
+    Study::from_json(include_str!("fixtures/cavity_v1.json")).unwrap()
+}
+
+fn lid(study: &mut Study) -> &mut Quantity {
+    study
+        .boundary_conditions
+        .get_mut("lid")
+        .unwrap()
+        .velocity
+        .as_mut()
+        .unwrap()
 }
 
 #[test]
@@ -46,9 +64,12 @@ fn decimal_millimetres_have_identical_si_values_and_hashes() {
 fn every_quantity_is_converted_exactly_once() {
     units::reset_conversion_count();
     let resolved = resolve(&study()).unwrap();
+    // Three lengths, viscosity, lid velocity, end time and write interval.
     assert_eq!(units::conversion_count(), 7);
-    assert_eq!(resolved.nu, 0.0001);
-    assert!((resolved.lid_velocity * resolved.domain.length_x / resolved.nu - 100.0).abs() < 1e-12);
+    let nu = resolved.fluid.kinematic_viscosity;
+    assert_eq!(nu, 0.0001);
+    let lid_velocity = resolved.lid_velocity().unwrap();
+    assert!((lid_velocity * resolved.domain.length_x / nu - 100.0).abs() < 1e-12);
     assert_eq!(resolved.mesh.cells_z, 1);
 }
 
@@ -59,16 +80,22 @@ fn quantity_requires_unit() {
 
 #[test]
 fn unsupported_schema_version_is_typed_and_names_found_value() {
-    let input = include_str!("fixtures/cavity_v0.json")
-        .replace("\"schema_version\": 0", "\"schema_version\": 1");
+    let input = include_str!("fixtures/cavity_v1.json")
+        .replace("\"schema_version\": 1", "\"schema_version\": 2");
     assert!(matches!(
         Study::from_json(&input),
-        Err(StudyError::UnsupportedSchemaVersion { found: 1 })
+        Err(StudyError::UnsupportedSchemaVersion { found: 2 })
     ));
     let error = serde_json::from_str::<Study>(&input)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("UnsupportedSchemaVersion") && error.contains('1'));
+    assert!(error.contains("UnsupportedSchemaVersion") && error.contains('2'));
+}
+
+#[test]
+fn schema_0_input_resolves_identically_through_the_migration() {
+    let old = Study::from_json(include_str!("fixtures/cavity_v0.json")).unwrap();
+    assert_eq!(resolve(&old).unwrap(), resolve(&study()).unwrap());
 }
 
 #[test]
@@ -84,22 +111,28 @@ fn unknown_fields_and_unknown_units_are_rejected() {
 fn wrong_dimensions_are_rejected_instead_of_becoming_silent_si_values() {
     let mut input = study();
     input.domain.length_x.unit = Unit::Second;
-    assert!(matches!(
-        resolve(&input),
-        Err(ResolveError::WrongUnit {
-            field: "domain.length_x",
-            ..
-        })
-    ));
+    assert_eq!(
+        first_error(&input),
+        ("CFD-UNIT-001".to_owned(), "/domain/length_x".to_owned())
+    );
     input = study();
     input.fluid.kinematic_viscosity.unit = Unit::MetrePerSecond;
-    assert!(matches!(
-        resolve(&input),
-        Err(ResolveError::WrongUnit {
-            field: "fluid.kinematic_viscosity",
-            ..
-        })
-    ));
+    assert_eq!(
+        first_error(&input),
+        (
+            "CFD-UNIT-001".to_owned(),
+            "/fluid/kinematic_viscosity".to_owned()
+        )
+    );
+    input = study();
+    lid(&mut input).unit = Unit::Metre;
+    assert_eq!(
+        first_error(&input),
+        (
+            "CFD-UNIT-001".to_owned(),
+            "/boundary_conditions/lid/velocity".to_owned()
+        )
+    );
 }
 
 #[test]
@@ -120,7 +153,7 @@ fn degenerate_physics_and_controls_have_explicit_errors() {
     }
     for invalid in [0.0, -0.0, f64::NAN, f64::INFINITY] {
         let mut input = study();
-        input.boundary_conditions.lid_velocity.value = invalid;
+        lid(&mut input).value = invalid;
         assert!(resolve(&input).is_err());
     }
     for axis in 0..3 {
@@ -148,9 +181,9 @@ fn degenerate_physics_and_controls_have_explicit_errors() {
 #[test]
 fn negative_lid_velocity_is_valid_and_zero_is_not() {
     let mut input = study();
-    input.boundary_conditions.lid_velocity.value = -0.1;
-    assert_eq!(resolve(&input).unwrap().lid_velocity, -0.1);
-    input.boundary_conditions.lid_velocity.value = -0.0;
+    lid(&mut input).value = -0.1;
+    assert_eq!(resolve(&input).unwrap().lid_velocity(), Some(-0.1));
+    lid(&mut input).value = -0.0;
     assert!(resolve(&input).is_err());
 }
 

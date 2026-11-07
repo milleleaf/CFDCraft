@@ -1,6 +1,6 @@
 use cfdcraft_executor::{
     HostProfile,
-    docker::run_args,
+    docker::{RunSpec, run_args},
     hosts::preflight,
     run::{RunError, run_id, wait_bounded},
 };
@@ -9,6 +9,9 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
+
+const TEST_IMAGE: &str =
+    "example/openfoam@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn profile() -> HostProfile {
     HostProfile::load(
@@ -42,7 +45,14 @@ fn preflight_load_boundary_and_foreign_services() {
 #[test]
 fn caps_and_ownership_are_always_on_run_argv() {
     let p = profile();
-    let a = run_args(&p, "/data/cfdcraft/work/cfdcraft-test", "cfdcraft-test").unwrap();
+    let spec = RunSpec::allrun(TEST_IMAGE).unwrap();
+    let a = run_args(
+        &p,
+        "/data/cfdcraft/work/cfdcraft-test",
+        "cfdcraft-test",
+        &spec,
+    )
+    .unwrap();
     for (k, v) in [
         ("--cpus", "2"),
         ("--memory", "8g"),
@@ -54,8 +64,8 @@ fn caps_and_ownership_are_always_on_run_argv() {
         assert_eq!(a[i + 1], v);
     }
     assert!(a.contains(&"--rm".into()));
-    assert!(run_args(&p, "/data/cfdcraft/work/cfdcraft-test", "foreign").is_err());
-    assert!(run_args(&p, "/data/foreign/case", "cfdcraft-test").is_err());
+    assert!(run_args(&p, "/data/cfdcraft/work/cfdcraft-test", "foreign", &spec).is_err());
+    assert!(run_args(&p, "/data/foreign/case", "cfdcraft-test", &spec).is_err());
     assert!(run_id("cavity").unwrap().starts_with("cfdcraft-"));
     assert!(run_id("bad; touch pwned").is_err());
 }

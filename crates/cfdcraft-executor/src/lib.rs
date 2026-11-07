@@ -1,7 +1,9 @@
 pub mod docker;
 pub mod hosts;
+pub mod lock;
 pub mod run;
 pub mod tunnel;
 
 pub use hosts::HostProfile;
-pub use run::{RunError, RunOutcome, run_case};
+pub use lock::Holder;
+pub use run::{Job, RunConfig, RunError, RunOutcome};

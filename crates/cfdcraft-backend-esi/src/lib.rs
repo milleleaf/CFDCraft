@@ -3,11 +3,16 @@ pub mod case;
 pub mod control_dict;
 pub mod dialect;
 pub mod evidence;
+pub mod export;
+pub mod guard;
+pub mod reader;
 pub mod transport;
 
 pub use case::{CaseFile, CaseTree, CompileError, compile, write_to_disk};
 pub use dialect::Dialect;
-pub use evidence::{EvidenceExpectations, RunEvidence, Verdict, judge, judge_run};
+pub use evidence::{
+    EvidenceExpectations, RunEvidence, SmokeExpectations, Verdict, judge, judge_run, judge_smoke,
+};
 
 /// Locale-independent, shortest-round-trip finite scalar representation.
 pub(crate) fn scalar(value: f64) -> String {

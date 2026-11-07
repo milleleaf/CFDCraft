@@ -52,7 +52,16 @@ fn refused_tunnel_cleans_its_socket_directory() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../target/tunnel-test"
     ));
-    let r = Tunnel::open(&p, Path::new("/nonexistent-cfdcraft-test-key"), base);
+    let r = Tunnel::open(
+        &p,
+        Path::new("/nonexistent-cfdcraft-test-key"),
+        base,
+        "refused",
+    );
     assert!(r.is_err());
-    assert!(!base.join(format!("socket-{}", std::process::id())).exists());
+    assert!(
+        !base
+            .join(format!("socket-{}-refused", std::process::id()))
+            .exists()
+    );
 }

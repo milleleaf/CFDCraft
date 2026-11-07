@@ -1,0 +1,41 @@
+#!/bin/sh
+# Fake docker for the executor tests. All state lives under $CFC_TEST_ROOT.
+# $CFC_TEST_MODE picks what `run` and cleanup do:
+#   cleanup-succeeds  run exits 1; stop and rm remove the container
+#   cleanup-fails     run exits 1; stop and rm fail, the container stays
+#   ok                run exits 0 at once
+#   hold              run waits (bounded) until the file `release` exists, then exits 0
+# $CFC_TEST_DOCKER_FAIL, when set to a command name, makes that command fail.
+# Every container name passed to `run` is appended to `names`.
+shift 2
+command=$1
+shift
+printf '%s\n' "$command" >> "$CFC_TEST_ROOT/events"
+if [ "${CFC_TEST_DOCKER_FAIL:-}" = "$command" ]; then
+    printf 'docker: simulated failure\n' >&2
+    exit 1
+fi
+case "$command" in
+    ps) if [ -f "$CFC_TEST_ROOT/running" ]; then cat "$CFC_TEST_ROOT/running"; fi;;
+    run)
+        while [ "$#" -gt 0 ]; do
+            if [ "$1" = --name ]; then shift; printf '%s\n' "$1" > "$CFC_TEST_ROOT/running"; printf '%s\n' "$1" >> "$CFC_TEST_ROOT/names"; break; fi
+            shift
+        done
+        case "$CFC_TEST_MODE" in
+            hold)
+                i=0
+                while [ ! -f "$CFC_TEST_ROOT/release" ] && [ "$i" -lt 300 ]; do
+                    sleep 0.1
+                    i=$((i + 1))
+                done
+                rm -f "$CFC_TEST_ROOT/running"
+                exit 0;;
+            ok) rm -f "$CFC_TEST_ROOT/running"; exit 0;;
+            *) exit 1;;
+        esac;;
+    stop|rm)
+        if [ "$CFC_TEST_MODE" = cleanup-fails ]; then exit 1; fi
+        rm -f "$CFC_TEST_ROOT/running";;
+    *) printf 'unexpected docker command: %s\n' "$command" >&2; exit 91;;
+esac

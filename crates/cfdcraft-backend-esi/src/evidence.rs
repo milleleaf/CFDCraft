@@ -17,6 +17,12 @@ pub struct RunEvidence<'a> {
     pub solver_log: &'a str,
     pub time_directories: &'a [f64],
 }
+/// What a smoke run must have produced. There is deliberately no residual threshold here.
+pub struct SmokeExpectations {
+    pub end_time: f64,
+    pub cell_count: u64,
+    pub domain_volume: f64,
+}
 pub struct EvidenceExpectations {
     pub end_time: f64,
     pub cell_count: u64,
@@ -127,7 +133,8 @@ fn mesh(log: &str, cells: Option<u64>, volume: Option<f64>, reasons: &mut Vec<St
     }
 }
 
-fn residuals(log: &str, p_threshold: f64, u_threshold: f64, reasons: &mut Vec<String>) {
+/// `limits` is `Some((p, U))` for the convergence judge; `None` only checks that residuals are well formed.
+fn residuals(log: &str, limits: Option<(f64, f64)>, reasons: &mut Vec<String>) {
     let mut last = BTreeMap::new();
     let mut seen_time = false;
     for line in log.lines() {
@@ -151,6 +158,13 @@ fn residuals(log: &str, p_threshold: f64, u_threshold: f64, reasons: &mut Vec<St
     if !seen_time {
         reasons.push("solver: no iteration blocks".into());
     }
+    let Some((p_threshold, u_threshold)) = limits else {
+        // Smoke: no limits, but a run that solved nothing in its final iteration never iterated.
+        if seen_time && last.is_empty() {
+            reasons.push("solver: no solved field in the final iteration".into());
+        }
+        return;
+    };
     for (field, threshold) in [("p", p_threshold), ("Ux", u_threshold), ("Uy", u_threshold)] {
         if !threshold.is_finite() || threshold <= 0.0 {
             reasons.push(format!("solver: invalid {field} convergence threshold"));
@@ -168,8 +182,13 @@ fn residuals(log: &str, p_threshold: f64, u_threshold: f64, reasons: &mut Vec<St
     }
 }
 
-/// Judge each step and actual output-directory evidence; the process exit code is deliberately absent.
-pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdict {
+fn judge_evidence(
+    e: &RunEvidence<'_>,
+    end_time: f64,
+    cell_count: u64,
+    domain_volume: f64,
+    limits: Option<(f64, f64)>,
+) -> Verdict {
     let mut reasons = Vec::new();
     for (name, log) in [
         ("blockMesh", e.block_mesh_log),
@@ -179,11 +198,8 @@ pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdic
         ends(log, name, &mut reasons);
         fatal(log, name, &mut reasons);
     }
-    if !final_time(e.solver_log).is_some_and(|t| close(t, expected.end_time)) {
-        reasons.push(format!(
-            "solver: final time differs from {}",
-            expected.end_time
-        ));
+    if !final_time(e.solver_log).is_some_and(|t| close(t, end_time)) {
+        reasons.push(format!("solver: final time differs from {end_time}"));
     }
     let final_dir = e
         .time_directories
@@ -191,25 +207,43 @@ pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdic
         .copied()
         .filter(|t| t.is_finite())
         .max_by(f64::total_cmp);
-    if !final_dir.is_some_and(|t| close(t, expected.end_time)) {
+    if !final_dir.is_some_and(|t| close(t, end_time)) {
         reasons.push(format!(
-            "outputs: final time directory {final_dir:?} differs from {}",
-            expected.end_time
+            "outputs: final time directory {final_dir:?} differs from {end_time}"
         ));
     }
     mesh(
         e.check_mesh_log,
-        Some(expected.cell_count),
-        Some(expected.domain_volume),
+        Some(cell_count),
+        Some(domain_volume),
         &mut reasons,
     );
-    residuals(
-        e.solver_log,
-        expected.p_threshold,
-        expected.u_threshold,
-        &mut reasons,
-    );
+    residuals(e.solver_log, limits, &mut reasons);
     verdict(reasons)
+}
+
+/// Judge each step and actual output-directory evidence; the process exit code is deliberately absent.
+pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdict {
+    judge_evidence(
+        e,
+        expected.end_time,
+        expected.cell_count,
+        expected.domain_volume,
+        Some((expected.p_threshold, expected.u_threshold)),
+    )
+}
+
+/// Smoke verdict: the case loaded and iterated to its end time. It proves nothing about convergence or
+/// correctness, so callers must always label its result as a smoke result and never as a validated one.
+/// Every rule of `judge_run` applies except the residual limits.
+pub fn judge_smoke(e: &RunEvidence<'_>, expected: &SmokeExpectations) -> Verdict {
+    judge_evidence(
+        e,
+        expected.end_time,
+        expected.cell_count,
+        expected.domain_volume,
+        None,
+    )
 }
 
 /// Combined-log compatibility entry point. Real executions must use `judge_run` to prove every step and output directory.
@@ -221,6 +255,6 @@ pub fn judge(log_text: &str, expected_end_time: f64, expected_cell_count: Option
         reasons.push("solver: final time mismatch".into());
     }
     mesh(log_text, expected_cell_count, None, &mut reasons);
-    residuals(log_text, 1e-6, 1e-6, &mut reasons);
+    residuals(log_text, Some((1e-6, 1e-6)), &mut reasons);
     verdict(reasons)
 }

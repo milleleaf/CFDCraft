@@ -1,7 +1,64 @@
 use crate::hosts::HostProfile;
 use std::{collections::HashMap, ffi::OsString, path::Path, process::Command};
 
-pub const IMAGE: &str = "opencfd/openfoam-default@sha256:33fb575aa9980d2bc42fd58c75ae698c489293ba30c991380fe3f899c622f319";
+/// What the container runs. A closed set: no constructor takes a command string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCommand {
+    /// `sh ./Allrun` from the uploaded case. The `cd /w` is required: the image
+    /// entrypoint resets the working directory to the user's home.
+    Allrun,
+}
+
+/// An image reference pinned by digest plus one allowlisted command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSpec {
+    image: String,
+    command: RunCommand,
+}
+
+/// `<repository>@sha256:<64 lowercase hex>`; the repository is lowercase path
+/// components of `[a-z0-9._-]` and carries no tag, port or whitespace.
+fn valid_digest_reference(image: &str) -> bool {
+    let Some((repo, hex)) = image.split_once("@sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && !repo.is_empty()
+        && repo.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with(['.', '-'])
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+        })
+}
+
+impl RunSpec {
+    pub fn allrun(image: &str) -> Result<Self, String> {
+        if !valid_digest_reference(image) {
+            return Err("image must be <repository>@sha256:<64 lowercase hex>".into());
+        }
+        Ok(Self {
+            image: image.into(),
+            command: RunCommand::Allrun,
+        })
+    }
+
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    pub fn command(&self) -> RunCommand {
+        self.command
+    }
+
+    fn script(&self) -> &'static str {
+        match self.command {
+            RunCommand::Allrun => "cd /w && sh ./Allrun",
+        }
+    }
+}
 
 pub fn scrubbed_env() -> HashMap<OsString, OsString> {
     std::env::vars_os()
@@ -23,7 +80,12 @@ pub fn docker_cmd(_p: &HostProfile, socket: &Path, args: &[&str]) -> Command {
     c
 }
 
-pub fn run_args(p: &HostProfile, remote: &str, name: &str) -> Result<Vec<String>, String> {
+pub fn run_args(
+    p: &HostProfile,
+    remote: &str,
+    name: &str,
+    spec: &RunSpec,
+) -> Result<Vec<String>, String> {
     p.validate().map_err(|e| e.to_string())?;
     if !name.starts_with(&p.container_prefix)
         || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -37,5 +99,29 @@ pub fn run_args(p: &HostProfile, remote: &str, name: &str) -> Result<Vec<String>
     {
         return Err("invalid project work directory".into());
     }
-    Ok(vec!["run".into(),"--rm".into(),"--pull=never".into(),"--name".into(),name.into(),"--cpus".into(),p.cpus.to_string(),"--memory".into(),format!("{}g",p.memory_gb),"--memory-swap".into(),format!("{}g",p.memory_gb),"--pids-limit".into(),"256".into(),"--network".into(),"none".into(),"--user".into(),format!("{0}:{0}",p.remote_user_uid),"-v".into(),format!("{remote}:/w"),IMAGE.into(),"bash".into(),"-lc".into(),"cd /w && blockMesh > log.blockMesh 2>&1 && checkMesh > log.checkMesh 2>&1 && simpleFoam > log.simpleFoam 2>&1".into()])
+    Ok(vec![
+        "run".into(),
+        "--rm".into(),
+        "--pull=never".into(),
+        "--name".into(),
+        name.into(),
+        "--cpus".into(),
+        p.cpus.to_string(),
+        "--memory".into(),
+        format!("{}g", p.memory_gb),
+        "--memory-swap".into(),
+        format!("{}g", p.memory_gb),
+        "--pids-limit".into(),
+        "256".into(),
+        "--network".into(),
+        "none".into(),
+        "--user".into(),
+        format!("{0}:{0}", p.remote_user_uid),
+        "-v".into(),
+        format!("{remote}:/w"),
+        spec.image().into(),
+        "bash".into(),
+        "-lc".into(),
+        spec.script().into(),
+    ])
 }

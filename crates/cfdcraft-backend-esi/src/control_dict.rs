@@ -27,10 +27,18 @@ pub fn fv_schemes() -> String {
     )
 }
 
-pub fn fv_solution() -> String {
-    dictionary(
-        "fvSolution",
-        "dictionary",
-        "solvers\n{\n    p\n    {\n        solver PCG;\n        preconditioner DIC;\n        tolerance 1e-10;\n        relTol 0;\n    }\n    U\n    {\n        solver smoothSolver;\n        smoother symGaussSeidel;\n        tolerance 1e-10;\n        relTol 0;\n    }\n}\nSIMPLE\n{\n    nNonOrthogonalCorrectors 0;\n    pRefCell 0;\n    pRefValue 0;\n    consistent no;\n}\nrelaxationFactors\n{\n    fields { p 0.3; }\n    equations { U 0.7; }\n}\n",
-    )
+pub fn fv_solution(open: bool) -> String {
+    // A closed domain has no fixed-pressure boundary, so the pressure level needs a reference.
+    let reference = if open {
+        ""
+    } else {
+        "    pRefCell 0;\n    pRefValue 0;\n"
+    };
+    let body = [
+        "solvers\n{\n    p\n    {\n        solver PCG;\n        preconditioner DIC;\n        tolerance 1e-10;\n        relTol 0;\n    }\n    U\n    {\n        solver smoothSolver;\n        smoother symGaussSeidel;\n        tolerance 1e-10;\n        relTol 0;\n    }\n}\nSIMPLE\n{\n    nNonOrthogonalCorrectors 0;\n",
+        reference,
+        "    consistent no;\n}\nrelaxationFactors\n{\n    fields { p 0.3; }\n    equations { U 0.7; }\n}\n",
+    ]
+    .concat();
+    dictionary("fvSolution", "dictionary", &body)
 }

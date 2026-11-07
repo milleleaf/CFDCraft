@@ -1,120 +1,98 @@
-use super::{Error, read_study, validate};
-use cfdcraft_backend_esi::evidence::{EvidenceExpectations, RunEvidence, Verdict, judge_run};
-use cfdcraft_backend_esi::{Dialect, compile, write_to_disk};
-use cfdcraft_executor::{HostProfile, run::run_id, run_case};
-use std::path::Path;
+use super::Error;
+use cfdcraft_ops::{Finished, Report, RunMode, RunRequest, cases::cli_problem, run_study};
+use std::path::{Path, PathBuf};
 
-pub fn execute(
-    study: &Path,
-    key: &Path,
-    hosts: &Path,
-    profile: &str,
-    with_oracle: bool,
-    tolerance: Option<&Path>,
-) -> Result<i32, Error> {
-    let r = read_study(study)?;
-    let oracle = if with_oracle {
-        let re = r.lid_velocity * r.domain.length_y / r.nu;
-        if (re - 100.0).abs() > 1e-8 || (r.domain.length_x / r.domain.length_y - 1.0).abs() > 1e-10
-        {
-            return Err(format!(
-                "Ghia Re=100 gate requires a square cavity at Re=100; found Re={re}"
-            )
-            .into());
-        }
-        let t = cfdcraft_bench_ghia::GhiaTable::load()?;
-        Some(if let Some(path) = tolerance {
-            t.with_tolerance_file(path)?
-        } else {
-            t
-        })
-    } else {
-        None
-    };
-    let p = HostProfile::load(hosts, profile)?;
-    let tree = compile(&r, Dialect::EsiV2512)?;
-    let work = std::env::current_dir()?
-        .join("target/cfdcraft-runs")
-        .join(run_id("cavity")?);
-    let case = work.join("case");
-    let results = work.join("results");
-    write_to_disk(&tree, &case)?;
-    println!("study hash: {}", cfdcraft_model::canonical_hash(&r));
-    let o = run_case(&p, key, &case, "cavity", &results)?;
-    println!(
-        "remote work: {}\nlocal results: {}\ncontainer: {}\npreflight: {}\nrun duration: {:.3}s\nprocess exit: {:?}",
-        o.remote_dir,
-        o.results_dir.display(),
-        o.container_name,
-        o.preflight_uptime.trim(),
-        o.duration_seconds,
-        o.exit_code
-    );
-    let block = std::fs::read_to_string(results.join("log.blockMesh")).unwrap_or_default();
-    let mesh = std::fs::read_to_string(results.join("log.checkMesh")).unwrap_or_default();
-    let solver = std::fs::read_to_string(results.join("log.simpleFoam")).unwrap_or_default();
-    let times: Vec<f64> = std::fs::read_dir(&results)?
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_string_lossy().parse::<f64>().ok())
+pub struct RunArgs {
+    pub mode: RunMode,
+    pub study: PathBuf,
+    pub key: PathBuf,
+    pub profile: String,
+    pub hosts: PathBuf,
+    pub case_dir: Option<PathBuf>,
+    pub tolerance_override: Option<PathBuf>,
+    pub json: bool,
+}
+
+/// The study file's name as a run label: every character outside `[A-Za-z0-9-]` becomes `-`.
+fn label(study: &Path) -> String {
+    let stem: String = study
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    let cells = r
-        .mesh
-        .cells_x
-        .checked_mul(r.mesh.cells_y)
-        .and_then(|x| x.checked_mul(r.mesh.cells_z))
-        .ok_or("cell count overflow")?;
-    let verdict = judge_run(
-        &RunEvidence {
-            block_mesh_log: &block,
-            check_mesh_log: &mesh,
-            solver_log: &solver,
-            time_directories: &times,
-        },
-        &EvidenceExpectations {
-            end_time: r.solver.end_time,
-            cell_count: cells,
-            domain_volume: r.domain.length_x * r.domain.length_y * r.domain.length_z,
-            p_threshold: r.solver.convergence.p,
-            u_threshold: r.solver.convergence.u,
-        },
-    );
-    let final_fields = times
-        .iter()
-        .find(|&&t| (t - r.solver.end_time).abs() < 1e-6)
-        .and_then(|t| {
-            std::fs::read_dir(&results)
-                .ok()?
-                .filter_map(Result::ok)
-                .find(|e| e.file_name().to_string_lossy().parse::<f64>().ok() == Some(*t))
-        })
-        .is_some_and(|dir| {
-            ["U", "p"].iter().all(|name| {
-                std::fs::metadata(dir.path().join(name)).is_ok_and(|m| m.is_file() && m.len() > 0)
-            })
-        });
-    if !final_fields {
-        println!("evidence verdict: FAILED\n  missing or empty final-time U/p field files");
-        return Ok(1);
+    if stem.is_empty() {
+        "study".to_owned()
+    } else {
+        stem
     }
-    match verdict {
-        Verdict::Failed(reasons) => {
-            println!("evidence verdict: FAILED");
-            for reason in reasons {
-                println!("  {reason}");
-            }
-            return Ok(1);
+}
+
+pub fn execute(args: &RunArgs) -> Result<i32, Error> {
+    let operation = args.mode.operation();
+    let finished = match std::fs::read_to_string(&args.study) {
+        Err(e) => Finished {
+            report: Report::from_diagnostics(
+                operation,
+                vec![cli_problem(format!(
+                    "cannot read study {}: {e}",
+                    args.study.display()
+                ))],
+                None,
+            ),
+            detail: None,
+        },
+        Ok(text) => {
+            let target = std::env::current_dir()?.join("target");
+            let mut request = RunRequest::new(
+                args.mode,
+                &args.key,
+                &args.hosts,
+                &args.profile,
+                target.join("cfdcraft-runs"),
+                target.join("cfdcraft-sockets"),
+            );
+            request.case_dir = args.case_dir.clone();
+            request.tolerance_override = args.tolerance_override.clone();
+            request.label = label(&args.study);
+            run_study(&text, &request)
         }
-        Verdict::Passed => println!("evidence verdict: PASSED"),
-    }
-    if let Some(table) = oracle {
-        return match validate::compare_results(&results, &r, &table) {
-            Ok(code) => Ok(code),
-            Err(error) => {
-                println!("Ghia verdict: FAILED\n  invalid or incomplete sampled output: {error}");
-                Ok(1)
+    };
+    Ok(emit(&finished, args.json))
+}
+
+/// Prints the outcome and returns the exit status. Stdout carries only the public result: the
+/// report as JSON, or the summary. The migration note, findings and the executor's full error text
+/// (which can name the key, the host and remote directories) go to stderr.
+fn emit(finished: &Finished, json: bool) -> i32 {
+    let report = &finished.report;
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        if let Some(hash) = &report.study_hash {
+            println!("study hash: {hash}");
+        }
+        if let Some(run) = &report.run {
+            println!("run: {}", run.run_id);
+            println!("duration: {:.3}s", run.duration_seconds);
+            if let Some(code) = run.process_exit {
+                println!("solver exit status: {code}");
             }
-        };
+        }
+        if let Some(evidence) = &report.evidence {
+            print!("{}", evidence.render_text(report.operation == "smoke"));
+        }
+        if let Some(gate) = &report.gate {
+            print!("{}", gate.render_text());
+        }
+        if let Some(note) = &report.migration {
+            eprintln!("note: {}", note.summary);
+        }
+        eprint!("{}", cfdcraft_model::render_text(&report.diagnostics));
     }
-    Ok(0)
+    if let Some(detail) = &finished.detail {
+        eprintln!("{detail}");
+    }
+    i32::from(report.exit_class)
 }

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "domain": {
+    "length_x": { "value": 1.0, "unit": "m" },
+    "length_y": { "value": 0.1, "unit": "m" },
+    "length_z": { "value": 0.01, "unit": "m" },
+    "open": true
+  },
+  "fluid": {
+    "kinematic_viscosity": { "value": 0.001, "unit": "m2/s" }
+  },
+  "boundary_conditions": {
+    "inlet": {
+      "faces": ["XMin"],
+      "kind": "VelocityInlet",
+      "velocity": { "value": 0.1, "unit": "m/s" }
+    },
+    "outlet": {
+      "faces": ["XMax"],
+      "kind": "PressureOutlet"
+    },
+    "floor": {
+      "faces": ["YMin"],
+      "kind": "NoSlipWall"
+    },
+    "centreline": {
+      "faces": ["YMax"],
+      "kind": "Symmetry"
+    }
+  },
+  "mesh": { "cells_x": 100, "cells_y": 20, "cells_z": 1 },
+  "solver": {
+    "solver": "SimpleLaminar",
+    "end_time": { "value": 60, "unit": "s" },
+    "write_interval": { "value": 60, "unit": "s" },
+    "convergence": { "p": 1e-06, "U": 1e-06 }
+  },
+  "monitors": { "centreline_u_sample_count": 32 }
+}

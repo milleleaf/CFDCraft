@@ -1,0 +1,40 @@
+#!/bin/sh
+# Fake ssh for the executor tests. All state lives under $CFC_TEST_ROOT.
+#   - "-N -L" (the docker socket tunnel) creates the socket file and sleeps.
+#   - Any command that mentions the job lock is run for real with sh, after the
+#     profile's work directory is rewritten to $CFC_TEST_ROOT/box, so the real
+#     atomic mkdir, holder file and exit statuses are what the tests exercise.
+#   - The results download sends $CFC_TEST_RESULTS_TAR when set, else an empty archive.
+#   - $CFC_TEST_FAIL_255, when set, makes any command containing that text
+#     exit 255 like a failed ssh connection.
+for arg do
+    if [ "$arg" = -N ]; then tunnel=1; fi
+    case "$arg" in *:/var/run/docker.sock) socket=${arg%:/var/run/docker.sock};; esac
+    last=$arg
+done
+# Every call is logged, so a test can show that nothing reached the host.
+if [ "${tunnel:-0}" = 1 ]; then printf 'tunnel\n' >> "$CFC_TEST_ROOT/ssh.log"; else printf '%s\n' "$last" >> "$CFC_TEST_ROOT/ssh.log"; fi
+if [ "${tunnel:-0}" = 1 ]; then
+    : > "$socket"
+    exec sleep 30
+fi
+if [ -n "${CFC_TEST_FAIL_255:-}" ]; then
+    case "$last" in
+        *"$CFC_TEST_FAIL_255"*) printf 'ssh: simulated connection failure\n' >&2; exit 255;;
+    esac
+fi
+case "$last" in
+    *.cfdcraft-job-lock*)
+        case "$last" in
+            *mkdir*) ;;
+            *) printf 'unlock\n' >> "$CFC_TEST_ROOT/events";;
+        esac
+        cmd=$(printf '%s' "$last" | sed "s#/data/cfdcraft/work#$CFC_TEST_ROOT/box#g")
+        exec sh -c "$cmd";;
+    uptime) printf 'load average: 0.1, 0.1, 0.1\n';;
+    'id -u') printf '1000\n';;
+    mkdir*) :;;
+    'tar -xf'*) cat > /dev/null;;
+    'tar -C'*) cat "${CFC_TEST_RESULTS_TAR:-$CFC_TEST_ROOT/empty.tar}";;
+    *) printf 'unexpected ssh command: %s\n' "$last" >&2; exit 90;;
+esac

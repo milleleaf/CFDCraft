@@ -9,6 +9,11 @@ thread_local! {
 /// Convert once to SI base units. The resolver owns dimensional validation.
 pub fn to_si(quantity: &Quantity) -> f64 {
     CONVERSIONS.with(|count| count.set(count.get() + 1));
+    si_value(quantity)
+}
+
+/// The same conversion without touching the counter, for checks that only look at a value.
+pub(crate) fn si_value(quantity: &Quantity) -> f64 {
     match quantity.unit {
         // Scale the authored shortest decimal before the single rounding to
         // binary SI. Binary multiplication makes 19.1 mm differ from 0.0191 m.

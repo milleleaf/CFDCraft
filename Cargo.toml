@@ -5,6 +5,8 @@ members = [
     "crates/cfdcraft-model",
     "crates/cfdcraft-backend-esi",
     "crates/cfdcraft-executor",
+    "crates/cfdcraft-ops",
+    "crates/cfdcraft-mcp",
     "crates/cfdcraft-bench-ghia",
     "crates/cfdcraft-cli",
 ]

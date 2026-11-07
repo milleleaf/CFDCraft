@@ -1,0 +1,15 @@
+[package]
+name = "cfdcraft-mcp"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+cfdcraft-executor = { path = "../cfdcraft-executor", version = "=0.1.0" }
+cfdcraft-ops = { path = "../cfdcraft-ops", version = "=0.1.0" }
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "macros", "transport-io"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"

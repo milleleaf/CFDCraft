@@ -1,15 +1,22 @@
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::{Quantity, Study, Unit, quantity::Dimension, study::Convergence, units::to_si};
+use crate::{
+    Quantity, Study,
+    diagnostics::{Capabilities, Diagnostic, diagnose, has_errors, render_text},
+    study::{BoundaryKind, Convergence, Face},
+    units::to_si,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ResolvedStudy {
     pub schema_version: u32,
     pub domain: ResolvedDomain,
-    pub nu: f64,
-    pub lid_velocity: f64,
+    pub fluid: ResolvedFluid,
+    pub boundary_conditions: BTreeMap<String, ResolvedBoundary>,
     pub mesh: ResolvedMesh,
     pub solver: ResolvedSolver,
     pub monitors: ResolvedMonitors,
@@ -20,6 +27,21 @@ pub struct ResolvedDomain {
     pub length_x: f64,
     pub length_y: f64,
     pub length_z: f64,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ResolvedFluid {
+    pub kinematic_viscosity: f64,
+}
+
+/// A boundary in SI: faces sorted and deduplicated, velocity in m/s where the kind has one.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ResolvedBoundary {
+    pub faces: Vec<Face>,
+    pub kind: BoundaryKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub velocity: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -41,173 +63,106 @@ pub struct ResolvedMonitors {
     pub centreline_u_sample_count: u64,
 }
 
+/// A study the checks refuse. `Display` is the rendered findings.
 #[derive(Debug, Error, PartialEq)]
 pub enum ResolveError {
-    #[error("unsupported schema version {found}; supported version is 0")]
-    UnsupportedSchemaVersion { found: u32 },
-    #[error("{field} has incompatible unit {unit:?}; expected {expected}")]
-    WrongUnit {
-        field: &'static str,
-        unit: Unit,
-        expected: &'static str,
-    },
-    #[error("{field} is not finite after SI conversion")]
-    NonFinite { field: &'static str },
-    #[error("{field} must be {requirement}")]
-    Invalid {
-        field: &'static str,
-        requirement: &'static str,
-    },
+    #[error("{}", render_text(.0))]
+    Diagnostics(Vec<Diagnostic>),
 }
 
-fn convert(
-    quantity: &Quantity,
-    dimension: Dimension,
-    field: &'static str,
-    expected: &'static str,
-) -> Result<f64, ResolveError> {
-    if quantity.unit.dimension() != dimension {
-        return Err(ResolveError::WrongUnit {
-            field,
-            unit: quantity.unit,
-            expected,
-        });
-    }
-    let value = to_si(quantity);
-    if !value.is_finite() {
-        return Err(ResolveError::NonFinite { field });
-    }
-    Ok(if value == 0.0 { 0.0 } else { value })
-}
-
-fn positive(value: f64, field: &'static str) -> Result<(), ResolveError> {
-    if value <= 0.0 {
-        Err(ResolveError::Invalid {
-            field,
-            requirement: "greater than zero",
-        })
-    } else {
-        Ok(())
+/// The velocity vector a boundary of `kind` imposes on `face` for a signed `speed`.
+/// An inlet moves along the inward normal; a moving wall moves along +x on the top and bottom
+/// faces and +y on the left and right faces. Other kinds impose no velocity.
+pub fn velocity_vector(kind: BoundaryKind, face: Face, speed: f64) -> [f64; 3] {
+    match (kind, face) {
+        (BoundaryKind::VelocityInlet, Face::XMin) => [speed, 0.0, 0.0],
+        (BoundaryKind::VelocityInlet, Face::XMax) => [-speed, 0.0, 0.0],
+        (BoundaryKind::VelocityInlet, Face::YMin) => [0.0, speed, 0.0],
+        (BoundaryKind::VelocityInlet, Face::YMax) => [0.0, -speed, 0.0],
+        (BoundaryKind::MovingWall, Face::YMin | Face::YMax) => [speed, 0.0, 0.0],
+        (BoundaryKind::MovingWall, Face::XMin | Face::XMax) => [0.0, speed, 0.0],
+        _ => [0.0; 3],
     }
 }
 
-/// Resolve unit-carrying inputs to SI exactly once and validate the recipe.
-pub fn resolve(study: &Study) -> Result<ResolvedStudy, ResolveError> {
-    if study.schema_version != 0 {
-        return Err(ResolveError::UnsupportedSchemaVersion {
-            found: study.schema_version,
-        });
-    }
-    let domain = ResolvedDomain {
-        length_x: convert(
-            &study.domain.length_x,
-            Dimension::Length,
-            "domain.length_x",
-            "length",
-        )?,
-        length_y: convert(
-            &study.domain.length_y,
-            Dimension::Length,
-            "domain.length_y",
-            "length",
-        )?,
-        length_z: convert(
-            &study.domain.length_z,
-            Dimension::Length,
-            "domain.length_z",
-            "length",
-        )?,
+/// Inverse of [`velocity_vector`]: the signed speed, or `None` when the kind carries no speed
+/// or the vector has a component off the axis the kind allows on that face.
+pub fn speed_from_vector(kind: BoundaryKind, face: Face, vector: [f64; 3]) -> Option<f64> {
+    let (axis, sign) = match (kind, face) {
+        (BoundaryKind::VelocityInlet, Face::XMin) => (0, 1.0),
+        (BoundaryKind::VelocityInlet, Face::XMax) => (0, -1.0),
+        (BoundaryKind::VelocityInlet, Face::YMin) => (1, 1.0),
+        (BoundaryKind::VelocityInlet, Face::YMax) => (1, -1.0),
+        (BoundaryKind::MovingWall, Face::YMin | Face::YMax) => (0, 1.0),
+        (BoundaryKind::MovingWall, Face::XMin | Face::XMax) => (1, 1.0),
+        _ => return None,
     };
-    for (field, value) in [
-        ("domain.length_x", domain.length_x),
-        ("domain.length_y", domain.length_y),
-        ("domain.length_z", domain.length_z),
-    ] {
-        positive(value, field)?;
-    }
-    let nu = convert(
-        &study.fluid.kinematic_viscosity,
-        Dimension::KinematicViscosity,
-        "fluid.kinematic_viscosity",
-        "kinematic viscosity",
-    )?;
-    positive(nu, "fluid.kinematic_viscosity")?;
-    let lid_velocity = convert(
-        &study.boundary_conditions.lid_velocity,
-        Dimension::Velocity,
-        "boundary_conditions.lid_velocity",
-        "velocity",
-    )?;
-    if lid_velocity == 0.0 {
-        return Err(ResolveError::Invalid {
-            field: "boundary_conditions.lid_velocity",
-            requirement: "nonzero",
-        });
-    }
-    for (field, count) in [
-        ("mesh.cells_x", study.mesh.cells_x),
-        ("mesh.cells_y", study.mesh.cells_y),
-        ("mesh.cells_z", study.mesh.cells_z),
-    ] {
-        if count == 0 {
-            return Err(ResolveError::Invalid {
-                field,
-                requirement: "at least one",
-            });
+    (0..3)
+        .all(|i| i == axis || vector[i] == 0.0)
+        .then(|| sign * vector[axis])
+}
+
+impl ResolvedStudy {
+    /// The lid speed (m/s along +x) of a study with exactly one moving wall on the top face.
+    pub fn lid_velocity(&self) -> Option<f64> {
+        let mut walls = self
+            .boundary_conditions
+            .values()
+            .filter(|b| b.kind == BoundaryKind::MovingWall);
+        let wall = walls.next()?;
+        if walls.next().is_some() || wall.faces != [Face::YMax] {
+            return None;
         }
+        wall.velocity
     }
-    let end_time = convert(
-        &study.solver.end_time,
-        Dimension::Time,
-        "solver.end_time",
-        "time",
-    )?;
-    let write_interval = convert(
-        &study.solver.write_interval,
-        Dimension::Time,
-        "solver.write_interval",
-        "time",
-    )?;
-    positive(end_time, "solver.end_time")?;
-    positive(write_interval, "solver.write_interval")?;
-    if end_time.fract() != 0.0
-        || write_interval.fract() != 0.0
-        || write_interval > end_time
-        || end_time % write_interval != 0.0
-    {
-        return Err(ResolveError::Invalid {
-            field: "solver.write_interval",
-            requirement: "a positive whole iteration count dividing the whole end_time",
-        });
+}
+
+/// Resolve unit-carrying inputs to SI exactly once. Validity is `diagnose`'s alone: a study
+/// with any error is refused with every finding, and one without is converted.
+pub fn resolve(study: &Study) -> Result<ResolvedStudy, ResolveError> {
+    let found = diagnose(study, &Capabilities::unrestricted());
+    if has_errors(&found) {
+        return Err(ResolveError::Diagnostics(found));
     }
-    for (field, value) in [
-        ("solver.convergence.p", study.solver.convergence.p),
-        ("solver.convergence.U", study.solver.convergence.u),
-    ] {
-        if !value.is_finite() {
-            return Err(ResolveError::NonFinite { field });
-        }
-        positive(value, field)?;
-    }
-    if study.monitors.centreline_u_sample_count < 2 {
-        return Err(ResolveError::Invalid {
-            field: "monitors.centreline_u_sample_count",
-            requirement: "at least two",
-        });
-    }
+    let si = |quantity: &Quantity| {
+        let value = to_si(quantity);
+        if value == 0.0 { 0.0 } else { value }
+    };
+    let boundary_conditions = study
+        .boundary_conditions
+        .iter()
+        .map(|(name, boundary)| {
+            let mut faces = boundary.faces.clone();
+            faces.sort();
+            faces.dedup();
+            let resolved = ResolvedBoundary {
+                faces,
+                kind: boundary.kind,
+                velocity: boundary.velocity.as_ref().map(si),
+            };
+            (name.clone(), resolved)
+        })
+        .collect();
     Ok(ResolvedStudy {
-        schema_version: 0,
-        domain,
-        nu,
-        lid_velocity,
+        schema_version: 1,
+        domain: ResolvedDomain {
+            length_x: si(&study.domain.length_x),
+            length_y: si(&study.domain.length_y),
+            length_z: si(&study.domain.length_z),
+            open: study.domain.open,
+        },
+        fluid: ResolvedFluid {
+            kinematic_viscosity: si(&study.fluid.kinematic_viscosity),
+        },
+        boundary_conditions,
         mesh: ResolvedMesh {
             cells_x: study.mesh.cells_x,
             cells_y: study.mesh.cells_y,
             cells_z: study.mesh.cells_z,
         },
         solver: ResolvedSolver {
-            end_time,
-            write_interval,
+            end_time: si(&study.solver.end_time),
+            write_interval: si(&study.solver.write_interval),
             convergence: study.solver.convergence.clone(),
         },
         monitors: ResolvedMonitors {

@@ -4,9 +4,7 @@ use cfdcraft_compare::KeyNumbers;
 
 use crate::bundle::read_regular;
 use crate::result::centreline_folder;
-use crate::{CaptureError, FILE_CAP};
-
-const SOLVER_LOG: &str = "log.simpleFoam";
+use crate::{CaptureError, CapturePlan, FILE_CAP};
 
 fn invalid(file: &str, why: &str) -> CaptureError {
     CaptureError::Invalid(format!("{file}: {why}"))
@@ -22,23 +20,27 @@ fn finite(word: &str) -> Option<f64> {
     word.trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
-/// The time of the last `Time = ` line and the first initial residual of each of `Ux`, `Uy` and
-/// `p` after it.
-fn last_iteration(log: &str) -> Result<(f64, [f64; 3]), CaptureError> {
+/// The time of the last `Time = ` line and the first initial residual of each of `fields` after
+/// it, in the order given. `file` is the log's name, for the refusal text.
+fn last_iteration(
+    log: &str,
+    file: &str,
+    fields: &[String],
+) -> Result<(f64, Vec<f64>), CaptureError> {
     let lines: Vec<&str> = log.lines().collect();
     let (at, time_text) = lines
         .iter()
         .enumerate()
         .rev()
         .find_map(|(i, line)| line.strip_prefix("Time = ").map(|t| (i, t)))
-        .ok_or_else(|| invalid(SOLVER_LOG, "it has no Time line"))?;
+        .ok_or_else(|| invalid(file, "it has no Time line"))?;
     let time = finite(time_text.trim().trim_end_matches('s'))
-        .ok_or_else(|| invalid(SOLVER_LOG, "its last Time line holds no number"))?;
+        .ok_or_else(|| invalid(file, "its last Time line holds no number"))?;
     let block = &lines[at + 1..];
-    let mut residuals = [0.0; 3];
-    for (slot, name) in residuals.iter_mut().zip(["Ux", "Uy", "p"]) {
+    let mut residuals = Vec::with_capacity(fields.len());
+    for name in fields {
         let marker = format!("Solving for {name},");
-        *slot = block
+        let value = block
             .iter()
             .find_map(|line| {
                 line.split_once(marker.as_str())?
@@ -51,10 +53,11 @@ fn last_iteration(log: &str) -> Result<(f64, [f64; 3]), CaptureError> {
             .and_then(finite)
             .ok_or_else(|| {
                 invalid(
-                    SOLVER_LOG,
+                    file,
                     &format!("its last iteration has no initial residual for {name}"),
                 )
             })?;
+        residuals.push(value);
     }
     Ok((time, residuals))
 }
@@ -81,16 +84,29 @@ fn sample_column(text: &str, file: &str, column: usize) -> Result<Vec<f64>, Capt
     Ok(out)
 }
 
-/// The key numbers of a run: `solver.iterations`, `residual.Ux`, `residual.Uy`, `residual.p`
-/// (the first initial residuals of the last solver iteration) and every centreline sample as
-/// `centreline.vertical.ux.NNNN` and `centreline.horizontal.uy.NNNN`, in file order.
+/// The key numbers of a cavity run: `solver.iterations`, `residual.Ux`, `residual.Uy`,
+/// `residual.p` (the first initial residuals of the last solver iteration) and every centreline
+/// sample as `centreline.vertical.ux.NNNN` and `centreline.horizontal.uy.NNNN`, in file order.
 pub fn key_numbers(results: &Path, end_time: f64) -> Result<KeyNumbers, CaptureError> {
-    let log = text_of(&read_regular(results, SOLVER_LOG, FILE_CAP)?, SOLVER_LOG)?;
-    let (time, residuals) = last_iteration(&log)?;
+    key_numbers_with(results, end_time, &CapturePlan::cavity())
+}
+
+/// [`key_numbers`] for the log and residual fields `plan` names; the centreline samples are read
+/// only when the plan asks for them.
+pub fn key_numbers_with(
+    results: &Path,
+    end_time: f64,
+    plan: &CapturePlan,
+) -> Result<KeyNumbers, CaptureError> {
+    let log = text_of(&read_regular(results, &plan.log, FILE_CAP)?, &plan.log)?;
+    let (time, residuals) = last_iteration(&log, &plan.log, &plan.residual_fields)?;
     let mut numbers = KeyNumbers::new();
     numbers.insert("solver.iterations".to_owned(), time);
-    for (name, value) in ["Ux", "Uy", "p"].iter().zip(residuals) {
+    for (name, value) in plan.residual_fields.iter().zip(residuals) {
         numbers.insert(format!("residual.{name}"), value);
+    }
+    if !plan.centreline {
+        return Ok(numbers);
     }
 
     let centre = centreline_folder(results, end_time)?;

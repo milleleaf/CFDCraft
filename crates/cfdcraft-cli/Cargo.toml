@@ -29,6 +29,7 @@ craft-atomic = { workspace = true }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 
 [dev-dependencies]
+cfdcraft-bench-cylinder = { path = "../cfdcraft-bench-cylinder", version = "=0.1.0" }
 cfdcraft-capture = { path = "../cfdcraft-capture", version = "=0.1.0" }
 cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
 cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }

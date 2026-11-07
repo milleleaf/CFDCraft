@@ -1,0 +1,21 @@
+[source]
+paper = "Armaly, Durst, Pereira and Schonung (1983), J. Fluid Mech. 127, 473-496"
+doi = "10.1017/S0022112083002839"
+figure = "4"
+page = "479"
+cross_check = "Fig. 14, page 490"
+method = "The lower-wall reattachment length x1/S of the measured curve of Fig. 4 (page 479) was read at Re = 100, 150, 200, 250, 300, 350 and 400. The page was rendered at 500 to 1000 dpi, the frame and the axis ticks were located in the image, and the value of the curve was read by eye at each Reynolds number against gridlines drawn at integer values of x1/S. The measured curve of Fig. 14 (page 490) was read the same way, independently, and the two readings agree within 0.15 S at every Reynolds number. The reading uncertainty is 0.5 S: it covers the ambiguity of where the Reynolds-number axis of Fig. 4 starts (up to 0.5 S in the steep part of the curve), the width of the markers and of the line, and the difference between the two figures. The curve was not traced and no figure or page is kept."
+terms = "no terms stated in the supplied copy; only the digitised numbers are kept, with this citation"
+
+[geometry]
+step_height_mm = 4.9
+inlet_height_mm = 5.2
+outlet_height_mm = 10.1
+expansion_ratio = 1.94
+aspect_ratio = 18.0
+reynolds_definition = "U 2h / nu"
+
+[tolerance]
+reading_uncertainty_s = 0.5
+relative_allowance = 0.10
+justification = "Initial settings. The owner approves any revision after real runs. The limit is the reading uncertainty of 0.5 step heights plus 10 percent of the reference length. The 10 percent stands for the growing three-dimensionality of the experiment, a channel of aspect ratio 18 to 1 with side walls, compared with a two-dimensional computation. The range is Re 100 to 400, where the authors' own two-dimensional computation agrees with their measurements; above about Re 400 the experiment is three-dimensional and a two-dimensional computation shows several separation zones. Re is U 2h / nu with U the mean inlet speed and h the height of the inlet channel (5.2 mm). The step height S is 4.9 mm, the expansion ratio 10.1 mm to 5.2 mm, which is 1.94."

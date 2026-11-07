@@ -105,3 +105,31 @@ pub fn surface_series(file: &SurfaceFile, prefix: &str, mapping: &[(&str, &str)]
         })
         .collect()
 }
+
+/// One series per column of vectors, holding one component of them: `<prefix>.<column>.x`, `.y` or `.z`.
+///
+/// `component` is 0 for x, 1 for y, 2 for z; any other number gives nothing. A column that holds a
+/// scalar in any row is skipped, and so is every column when the file has no rows, so the scalar
+/// columns stay with `surface_series`. The column text is used as written.
+pub fn surface_series_component(file: &SurfaceFile, prefix: &str, component: usize) -> Vec<Series> {
+    let Some(axis) = ["x", "y", "z"].get(component) else {
+        return Vec::new();
+    };
+    if file.rows.is_empty() {
+        return Vec::new();
+    }
+    file.columns
+        .iter()
+        .enumerate()
+        .filter_map(|(at, column)| {
+            let mut series = Series::new(format!("{prefix}.{column}.{axis}"));
+            for row in &file.rows {
+                match row.values.get(at)? {
+                    Value::Vector(v) => series.push(row.time, v[component]),
+                    Value::Scalar(_) => return None,
+                }
+            }
+            Some(series)
+        })
+        .collect()
+}

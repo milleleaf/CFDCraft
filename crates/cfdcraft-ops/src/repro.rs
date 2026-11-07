@@ -1,5 +1,6 @@
 //! The data a reproducibility report carries beside the usual findings.
 
+use crate::gci_ops::GciData;
 use cfdcraft_compare::{Comparison, KeyNumbers};
 use cfdcraft_diskuse::{DiskUse, PrunePlan};
 use cfdcraft_keys::Change;
@@ -7,6 +8,7 @@ use cfdcraft_runs::{Check, Provenance};
 use cfdcraft_scenarios::Override;
 use cfdcraft_settle::Verdict;
 use cfdcraft_sweep::Point;
+use cfdcraft_text::Line;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,10 @@ pub enum Repro {
     Prune(Box<PruneData>),
     /// The job queue of a document.
     Queue(Box<QueueData>),
+    /// The grid convergence index of one key number over the meshes of a sweep.
+    Gci(Box<GciData>),
+    /// The benchmark templates and the benchmark that judges each.
+    Benchmarks(Box<BenchmarksData>),
 }
 
 /// The outcome of one solve.
@@ -318,4 +324,40 @@ pub struct JobView {
     pub code: Option<String>,
     /// A one-line summary of the latest progress of an active job.
     pub progress_line: Option<String>,
+}
+
+/// The benchmark templates, in a fixed order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BenchmarksData {
+    pub benchmarks: Vec<BenchmarkEntry>,
+}
+
+impl BenchmarksData {
+    /// One sentence for each template, in order.
+    pub fn lines(&self) -> Vec<Line> {
+        self.benchmarks
+            .iter()
+            .map(|entry| Line::BenchmarkListed {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                reference: entry.reference.clone(),
+            })
+            .collect()
+    }
+}
+
+/// One template and the benchmark a run of it is checked against.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BenchmarkEntry {
+    /// The template id, which a study is made from.
+    pub id: String,
+    pub title: String,
+    /// The id of the benchmark that judges a run of the template.
+    pub benchmark: String,
+    /// The published source of the reference values.
+    pub reference: String,
+    /// The physics the template has when no option changes it.
+    pub defaults: String,
+    /// The key numbers a mesh independence study reads, by name.
+    pub headline_quantities: Vec<String>,
 }

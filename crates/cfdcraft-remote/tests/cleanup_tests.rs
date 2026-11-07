@@ -321,7 +321,7 @@ mod real {
     /// Run one scenario in a child with the fakes on its PATH.
     fn scenario(tag: &str) {
         let root = support::new_root(GROUP, tag);
-        let c = support::worker(&root, "real::host_worker", "ok");
+        let mut c = support::worker(&root, "real::host_worker", "ok");
         support::assert_worker_ok(&c.output().unwrap());
     }
 

@@ -1,0 +1,2713 @@
+{
+  "$defs": {
+    "Balance": {
+      "additionalProperties": false,
+      "description": "One balance: how far it is from closing, and what that is measured against.",
+      "properties": {
+        "imbalance": {
+          "description": "The imbalance as a share of the reference.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reference": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/BalanceStatus"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "BalanceStatus": {
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The imbalance is within the tolerance.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The imbalance is over the tolerance, or there is nothing to compare it with.",
+          "type": "string"
+        },
+        {
+          "const": "not_applicable",
+          "description": "There is nothing to balance, as in a closed domain. Never a pass.",
+          "type": "string"
+        }
+      ]
+    },
+    "BlobKind": {
+      "description": "What kind of result a stored blob is.",
+      "oneOf": [
+        {
+          "const": "surface",
+          "description": "Prepared geometry.",
+          "type": "string"
+        },
+        {
+          "const": "mesh",
+          "description": "A generated mesh.",
+          "type": "string"
+        },
+        {
+          "const": "result",
+          "description": "A solver result.",
+          "type": "string"
+        }
+      ]
+    },
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A result kept in the content-addressed store beside the file.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the content."
+        },
+        "kind": {
+          "$ref": "#/$defs/BlobKind",
+          "description": "What the content is."
+        },
+        "size": {
+          "description": "Size of the content in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hash",
+        "size",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoundaryCondition": {
+      "additionalProperties": false,
+      "description": "One named boundary: the box faces it covers, its kind, and a speed where the kind needs one.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InletProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The shape of the inflow across an inlet on a left or right face. The velocity is the mean\nspeed; the peak of a parabola is 1.5 times it. Left out for a flat profile."
+        },
+        "thermal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThermalCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The temperature condition of a wall."
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for a velocity inlet and a moving wall; absent for every other kind."
+        }
+      },
+      "required": [
+        "faces",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoundaryKind": {
+      "description": "What a boundary does to the flow.",
+      "oneOf": [
+        {
+          "const": "VelocityInlet",
+          "description": "Fixed inflow velocity. `velocity` is the speed into the domain, along the inward normal.",
+          "type": "string"
+        },
+        {
+          "const": "PressureOutlet",
+          "description": "Outflow at gauge pressure zero in kinematic units. It has no value field.",
+          "type": "string"
+        },
+        {
+          "const": "NoSlipWall",
+          "description": "Wall with zero velocity at the wall.",
+          "type": "string"
+        },
+        {
+          "const": "SlipWall",
+          "description": "Wall without friction.",
+          "type": "string"
+        },
+        {
+          "const": "MovingWall",
+          "description": "Wall that moves in its own plane. `velocity` is the tangential speed along +x (bottom\nand top faces) or +y (left and right faces).",
+          "type": "string"
+        },
+        {
+          "const": "Symmetry",
+          "description": "Mirror plane.",
+          "type": "string"
+        }
+      ]
+    },
+    "BoundaryRecipe": {
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InletProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The inlet profile, when the study states one."
+        },
+        "thermal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThermalRecipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thermal condition of a wall, in kelvin, when the study states one."
+        },
+        "velocity": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "Buoyancy": {
+      "additionalProperties": false,
+      "description": "Boussinesq buoyancy: the density varies linearly with temperature in the gravity term only.",
+      "properties": {
+        "beta": {
+          "description": "Thermal expansion coefficient in 1/K.",
+          "format": "double",
+          "type": "number"
+        },
+        "gravity": {
+          "description": "Gravity in m/s2, acting along -y.",
+          "format": "double",
+          "type": "number"
+        },
+        "prandtl": {
+          "format": "double",
+          "type": "number"
+        },
+        "reference_temperature": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "turbulent_prandtl": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gravity",
+        "beta",
+        "reference_temperature",
+        "prandtl",
+        "turbulent_prandtl"
+      ],
+      "type": "object"
+    },
+    "BuoyancyRecipe": {
+      "description": "Boussinesq buoyancy in SI.",
+      "properties": {
+        "beta": {
+          "format": "double",
+          "type": "number"
+        },
+        "gravity": {
+          "format": "double",
+          "type": "number"
+        },
+        "prandtl": {
+          "format": "double",
+          "type": "number"
+        },
+        "reference_temperature": {
+          "format": "double",
+          "type": "number"
+        },
+        "turbulent_prandtl": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gravity",
+        "beta",
+        "reference_temperature",
+        "prandtl",
+        "turbulent_prandtl"
+      ],
+      "type": "object"
+    },
+    "CellsRecipe": {
+      "properties": {
+        "x": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "y": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "z": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Check": {
+      "additionalProperties": false,
+      "description": "One named check a run was held to.",
+      "properties": {
+        "detail": {
+          "description": "A short statement of what was found.",
+          "type": "string"
+        },
+        "name": {
+          "description": "What was checked.",
+          "type": "string"
+        },
+        "passed": {
+          "description": "Whether it held.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "Checkpoint": {
+      "additionalProperties": false,
+      "description": "The latest written time of a stopped run, kept so a later run can start from it.",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the stored blob."
+        },
+        "size": {
+          "description": "The size of the stored blob in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "description": "The solver time written, as plain decimal text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "blob",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Comparison": {
+      "properties": {
+        "compared": {
+          "description": "How many names were compared: the union of both sides.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "differing": {
+          "description": "Every quantity that is not identical (including those within tolerance), sorted by name.",
+          "items": {
+            "$ref": "#/$defs/QuantityDiff"
+          },
+          "type": "array"
+        },
+        "max_abs_diff": {
+          "description": "The largest difference over the names present on both sides, 0 when there are none.",
+          "format": "double",
+          "type": "number"
+        },
+        "tolerance": {
+          "$ref": "#/$defs/Tolerance"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        }
+      },
+      "required": [
+        "verdict",
+        "tolerance",
+        "compared",
+        "max_abs_diff",
+        "differing"
+      ],
+      "type": "object"
+    },
+    "ContentHash": {
+      "description": "BLAKE3 hash of a stored result, as 64 lower-case hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ContinuedFrom": {
+      "additionalProperties": false,
+      "description": "The run a continued run took its starting state from.",
+      "properties": {
+        "run": {
+          "description": "The id of the earlier run.",
+          "type": "string"
+        },
+        "time": {
+          "description": "The solver time it started from, as plain decimal text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "time"
+      ],
+      "type": "object"
+    },
+    "Convergence": {
+      "additionalProperties": false,
+      "properties": {
+        "U": {
+          "format": "double",
+          "type": "number"
+        },
+        "p": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "p",
+        "U"
+      ],
+      "type": "object"
+    },
+    "Domain": {
+      "additionalProperties": false,
+      "properties": {
+        "length_x": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_y": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_z": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "open": {
+          "default": false,
+          "description": "True when the box has open (inlet or outlet) faces. A closed domain has only walls.\nClosed unless stated.",
+          "type": "boolean"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Shape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A shape other than the plain box. Left out for a box."
+        }
+      },
+      "required": [
+        "length_x",
+        "length_y",
+        "length_z"
+      ],
+      "type": "object"
+    },
+    "Face": {
+      "description": "A face of the domain: left (x min), right (x max), bottom (y min) or top (y max), and the\nsurface of the cylinder in a cylinder channel. The front and back faces are always empty\n(two-dimensional case).",
+      "oneOf": [
+        {
+          "enum": [
+            "XMin",
+            "XMax",
+            "YMin",
+            "YMax"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Obstacle",
+          "description": "The surface of the cylinder of a cylinder channel; no other domain has it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Fluid": {
+      "additionalProperties": false,
+      "properties": {
+        "kinematic_viscosity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "kinematic_viscosity"
+      ],
+      "type": "object"
+    },
+    "FluidRecipe": {
+      "properties": {
+        "kinematic_viscosity": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kinematic_viscosity"
+      ],
+      "type": "object"
+    },
+    "ForceMonitor": {
+      "additionalProperties": false,
+      "description": "Drag and lift coefficients of one wall boundary. The coefficients are the force over\n1/2 times the reference velocity squared times the reference length (per unit depth).",
+      "properties": {
+        "boundary": {
+          "type": "string"
+        },
+        "reference_length": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "reference_velocity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "boundary",
+        "reference_velocity",
+        "reference_length"
+      ],
+      "type": "object"
+    },
+    "ForceRecipe": {
+      "description": "Force coefficients on one wall, named by the boundary's label and never by the monitor's.",
+      "properties": {
+        "boundary": {
+          "type": "string"
+        },
+        "reference_length": {
+          "format": "double",
+          "type": "number"
+        },
+        "reference_velocity": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "boundary",
+        "reference_velocity",
+        "reference_length"
+      ],
+      "type": "object"
+    },
+    "GeometryRecipe": {
+      "description": "The size and openness of the domain, in metres.",
+      "properties": {
+        "length_x": {
+          "format": "double",
+          "type": "number"
+        },
+        "length_y": {
+          "format": "double",
+          "type": "number"
+        },
+        "length_z": {
+          "format": "double",
+          "type": "number"
+        },
+        "open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "length_x",
+        "length_y",
+        "length_z",
+        "open"
+      ],
+      "type": "object"
+    },
+    "Grading": {
+      "additionalProperties": false,
+      "description": "Symmetric wall grading. Each ratio is the growth of one cell over the next from a wall toward\nthe middle of the domain, from 1 (even cells) up to 1.5. An axis left out is not graded, and\na graded axis needs an even cell count.",
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "y": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GradingRecipe": {
+      "description": "Wall grading ratios, an axis present only when it is graded.",
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "y": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InitMode": {
+      "description": "How the fields start.",
+      "oneOf": [
+        {
+          "const": "uniform",
+          "description": "The same values everywhere.",
+          "type": "string"
+        },
+        {
+          "const": "potential",
+          "description": "A potential-flow solution of the velocity field.",
+          "type": "string"
+        }
+      ]
+    },
+    "InletProfile": {
+      "description": "How the inflow speed varies across an inlet.",
+      "oneOf": [
+        {
+          "const": "uniform",
+          "description": "The same speed everywhere on the inlet.",
+          "type": "string"
+        },
+        {
+          "const": "parabolic",
+          "description": "Zero at the walls and 1.5 times the mean speed in the middle of the inlet.",
+          "type": "string"
+        }
+      ]
+    },
+    "LineMonitor": {
+      "additionalProperties": false,
+      "description": "A straight line of evenly spaced samples; `samples` counts the points, ends included.",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "samples": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x0": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "x1": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y0": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y1": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "x0",
+        "y0",
+        "x1",
+        "y1",
+        "samples",
+        "field"
+      ],
+      "type": "object"
+    },
+    "LineRecipe": {
+      "description": "A sampled line the case writes, ends in metres.",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "samples": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x0": {
+          "format": "double",
+          "type": "number"
+        },
+        "x1": {
+          "format": "double",
+          "type": "number"
+        },
+        "y0": {
+          "format": "double",
+          "type": "number"
+        },
+        "y1": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x0",
+        "y0",
+        "x1",
+        "y1",
+        "samples",
+        "field"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A file the study refers to but does not contain: where it was, and what it held.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the file content as recorded when the link was made."
+        },
+        "id": {
+          "description": "Name the study uses for this link: 1 to 40 lower-case letters, digits or hyphens, starting with a letter or digit.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "File name as recorded when the link was made.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path of the file, relative to the folder of the study file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "name",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "MeshRecipe": {
+      "description": "What made a mesh.",
+      "properties": {
+        "cells": {
+          "$ref": "#/$defs/CellsRecipe",
+          "description": "The effective cell counts, the refinement level already applied."
+        },
+        "geometry": {
+          "$ref": "#/$defs/GeometryRecipe"
+        },
+        "grading": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GradingRecipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent when no axis is graded."
+        },
+        "level": {
+          "description": "The refinement level the counts were refined by. Absent at level 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "patches": {
+          "description": "Sorted by their JSON text, so the order never depends on boundary labels.",
+          "items": {
+            "$ref": "#/$defs/PatchRecipe"
+          },
+          "type": "array"
+        },
+        "raw": {
+          "description": "The raw overrides that touch a mesh dictionary, without their labels, sorted by file,\nentry, value and backend. Absent when there are none, so a study without them keeps its\nmesh key.",
+          "items": {
+            "$ref": "#/$defs/RawOverride"
+          },
+          "type": "array"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShapeRecipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent for a box."
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity"
+        }
+      },
+      "required": [
+        "tool",
+        "geometry",
+        "patches",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "MeshSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "cells_x": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_y": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_z": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "grading": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grading"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Wall grading: cells shrink toward the walls on the axes given. Box domains only."
+        },
+        "level": {
+          "description": "Refinement level, 0 to 4. The cell counts above are the level 0 counts; level L\nmultiplies the counts along x and y by 2^L and leaves z alone. Left out for level 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cells_x",
+        "cells_y",
+        "cells_z"
+      ],
+      "type": "object"
+    },
+    "MonitorField": {
+      "description": "The field a probe or line reads.",
+      "enum": [
+        "velocity",
+        "pressure"
+      ],
+      "type": "string"
+    },
+    "Monitors": {
+      "additionalProperties": false,
+      "description": "What to watch while the solver runs. Every monitor is keyed by the user's own label; the\nlabel is shown to people and never written into a case (the case names monitors by their\nposition). Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`. A study that lists no probe, line or\nsurface is watched at five default velocity points.",
+      "properties": {
+        "centreline_u_sample_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forces": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ForceMonitor"
+          },
+          "description": "Force coefficients on a wall, at most 4.",
+          "type": "object"
+        },
+        "lines": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LineMonitor"
+          },
+          "description": "Straight sample lines, at most 8.",
+          "type": "object"
+        },
+        "probes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Probe"
+          },
+          "description": "Point probes, at most 16.",
+          "type": "object"
+        },
+        "settle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SettleSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How steady a monitored quantity must be to count as settled. It judges a run and does not\nchange what is run."
+        },
+        "surfaces": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SurfaceMonitor"
+          },
+          "description": "Integrals over a named boundary, at most 8.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "MonitorsRecipe": {
+      "description": "What the case watches: the centreline sample count and the planned monitors in plan order,\nthe default probes included, with no label and no settle tolerance. A list that is empty is\nleft out of the text.",
+      "properties": {
+        "centreline_u_sample_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forces": {
+          "items": {
+            "$ref": "#/$defs/ForceRecipe"
+          },
+          "type": "array"
+        },
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/LineRecipe"
+          },
+          "type": "array"
+        },
+        "probes": {
+          "items": {
+            "$ref": "#/$defs/ProbeRecipe"
+          },
+          "type": "array"
+        },
+        "surfaces": {
+          "items": {
+            "$ref": "#/$defs/SurfaceRecipe"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "additionalProperties": false,
+      "description": "Which sweep made a variant, and which point of it.",
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sweep": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sweep",
+        "index"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "description": "How a run ended.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "The run went to its end.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The run was stopped on request at this solver time.",
+          "properties": {
+            "stopped": {
+              "properties": {
+                "at_time": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "at_time"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "stopped"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Output": {
+      "additionalProperties": false,
+      "description": "One stage output a run recorded: its key, the recipe the key comes from, and the stored blob.",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the stored blob."
+        },
+        "key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of `recipe`."
+        },
+        "recipe": {
+          "$ref": "#/$defs/MeshRecipe",
+          "description": "What made the output."
+        },
+        "size": {
+          "description": "The size of the stored blob in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "blob",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Output2": {
+      "additionalProperties": false,
+      "description": "One stage output a run recorded: its key, the recipe the key comes from, and the stored blob.",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the stored blob."
+        },
+        "key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of `recipe`."
+        },
+        "recipe": {
+          "$ref": "#/$defs/ResultRecipe",
+          "description": "What made the output."
+        },
+        "size": {
+          "description": "The size of the stored blob in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "blob",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Override": {
+      "description": "One change to a study: put a value at a setting, or take a member away.\n\nA setting is a JSON Pointer (RFC 6901) into the study written as JSON, for example\n`/mesh/cells_x`. Only object members are addressed; no list element ever is, so a list such as\nthe faces of a boundary is replaced whole.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Replace the member at `setting`, or add it when its parent exists and it does not.",
+          "properties": {
+            "op": {
+              "const": "set",
+              "type": "string"
+            },
+            "setting": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "op",
+            "setting",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Delete the member at `setting`.",
+          "properties": {
+            "op": {
+              "const": "remove",
+              "type": "string"
+            },
+            "setting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "setting"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Parameter": {
+      "additionalProperties": false,
+      "description": "One thing a sweep varies.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "values": {
+          "$ref": "#/$defs/Values"
+        }
+      },
+      "required": [
+        "name",
+        "target",
+        "values"
+      ],
+      "type": "object"
+    },
+    "PatchRecipe": {
+      "description": "The patch layout of one boundary: what it is and where, never what the user called it.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "thermal": {
+          "description": "For a wall held at a fixed temperature: the place of that temperature among the distinct\nfixed temperatures of the study, counted from 1 in ascending order. The mesh gives such\nwalls their own patches, so the place matters and the temperature itself does not. Absent\nfor a wall without a fixed temperature.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "Physics": {
+      "additionalProperties": false,
+      "description": "The physics of the run. A study that states none of it is steady, laminar, without buoyancy\nand started from a uniform field.",
+      "properties": {
+        "buoyancy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Buoyancy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present means the Boussinesq buoyancy model is on."
+        },
+        "init": {
+          "$ref": "#/$defs/InitMode"
+        },
+        "time": {
+          "$ref": "#/$defs/TimeMode"
+        },
+        "turbulence": {
+          "$ref": "#/$defs/Turbulence"
+        }
+      },
+      "type": "object"
+    },
+    "PhysicsRecipe": {
+      "description": "The physics the solver was given. Absent when the study is steady, laminar, without buoyancy\nand started from a uniform field, so such a study keeps its result key.",
+      "properties": {
+        "buoyancy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BuoyancyRecipe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "init": {
+          "$ref": "#/$defs/InitMode"
+        },
+        "time": {
+          "$ref": "#/$defs/TimeRecipe"
+        },
+        "turbulence": {
+          "$ref": "#/$defs/TurbulenceRecipe"
+        }
+      },
+      "required": [
+        "time",
+        "turbulence",
+        "init"
+      ],
+      "type": "object"
+    },
+    "Probe": {
+      "additionalProperties": false,
+      "description": "A point in the plane of the case (the case is flat, so a point has x and y only).",
+      "properties": {
+        "boundary": {
+          "description": "The boundary the point lies on, for a reading at a wall. Left out for a point in the\nflow.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "x": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "y": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "field"
+      ],
+      "type": "object"
+    },
+    "ProbeRecipe": {
+      "description": "A probe the case writes: where it reads and what, never what the user called it.",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/MonitorField"
+        },
+        "on": {
+          "description": "The label of the boundary the point lies on, for a reading at a wall.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "field"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "What a run stood on, so it can be repeated without anything else.",
+      "properties": {
+        "geometry_hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the geometry recipe."
+        },
+        "host": {
+          "description": "A label for the machine it ran on; sharing may clear it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mesh_hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the mesh blob the run stands on."
+        },
+        "mesh_key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of the mesh the run stands on."
+        },
+        "result_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The key of the result the run recorded, if it recorded one."
+        },
+        "settings": {
+          "$ref": "#/$defs/Study",
+          "description": "The authored study as it was when the case ran."
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity",
+          "description": "The tools that made the outputs."
+        }
+      },
+      "required": [
+        "geometry_hash",
+        "mesh_key",
+        "mesh_hash",
+        "settings",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "Quantity": {
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "QuantityDiff": {
+      "description": "One quantity that is not identical on both sides. A side that lacks the name is `None`.",
+      "properties": {
+        "abs_diff": {
+          "description": "`None` when a side is missing or a value is not finite.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "original": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rerun": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "within": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "within"
+      ],
+      "type": "object"
+    },
+    "QuantityState": {
+      "additionalProperties": false,
+      "description": "The numbers for one monitored quantity. They are always given, settled or not.\n\n`samples` is the number of samples the statistics were taken over (the tail); where no tail\ncould be taken (an error) it is the length of the series.",
+      "properties": {
+        "drift": {
+          "format": "double",
+          "type": "number"
+        },
+        "last": {
+          "format": "double",
+          "type": "number"
+        },
+        "mean": {
+          "format": "double",
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "samples": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "spread": {
+          "format": "double",
+          "type": "number"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        }
+      },
+      "required": [
+        "name",
+        "last",
+        "mean",
+        "spread",
+        "drift",
+        "status",
+        "samples"
+      ],
+      "type": "object"
+    },
+    "RawBackend": {
+      "description": "The backend a raw override is written for. The dictionary syntax differs between backends, so\nan override only runs on the backend it names.",
+      "enum": [
+        "esi",
+        "foundation"
+      ],
+      "type": "string"
+    },
+    "RawOverride": {
+      "additionalProperties": false,
+      "description": "One dictionary entry to set in the written case.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/RawBackend",
+          "description": "The backend this override is written for."
+        },
+        "entry": {
+          "description": "The entry inside the file: block names then the entry, joined by `/`, for example\n`relaxationFactors/equations/U`.",
+          "type": "string"
+        },
+        "file": {
+          "description": "The case file, for example `system/fvSolution`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The text that goes after the entry name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "backend",
+        "file",
+        "entry",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ResultRecipe": {
+      "description": "What made a result: the mesh by key, and everything the solver was given.",
+      "properties": {
+        "boundaries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BoundaryRecipe"
+          },
+          "description": "By the user's label, so a rename changes this recipe and never the mesh recipe.",
+          "type": "object"
+        },
+        "fluid": {
+          "$ref": "#/$defs/FluidRecipe"
+        },
+        "mesh_key": {
+          "$ref": "#/$defs/StageKey"
+        },
+        "monitors": {
+          "$ref": "#/$defs/MonitorsRecipe"
+        },
+        "physics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PhysicsRecipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent for a steady laminar study without buoyancy."
+        },
+        "raw": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RawOverride"
+          },
+          "description": "Every raw override by the user's label, so a rename changes this recipe and never the\nmesh recipe. Absent when there are none, so a study without them keeps its result key.",
+          "type": "object"
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverRecipe"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity"
+        }
+      },
+      "required": [
+        "tool",
+        "mesh_key",
+        "fluid",
+        "boundaries",
+        "solver",
+        "monitors"
+      ],
+      "type": "object"
+    },
+    "RunRecord": {
+      "additionalProperties": false,
+      "description": "One run. A record is never edited after it is appended to the log.",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Checkpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a stopped run, the latest written time."
+        },
+        "checks": {
+          "default": [],
+          "description": "The checks the run was held to.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a rerun, how it compares with the run it repeats."
+        },
+        "continued_from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContinuedFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a continued run, the run and time it started from."
+        },
+        "id": {
+          "description": "`run-<n>`, counted from the number of records before it.",
+          "type": "string"
+        },
+        "key_numbers": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "default": {},
+          "description": "The numbers a rerun is compared on.",
+          "type": "object"
+        },
+        "mesh": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Output"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The mesh this run recorded; absent when it did not record one."
+        },
+        "np": {
+          "description": "The number of processes the run used.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome",
+          "description": "How the run ended; absent means it went to its end."
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance",
+          "description": "What the run stood on."
+        },
+        "rerun_of": {
+          "description": "The run this one repeats, if it is a rerun.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Output2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The result this run recorded; absent when it did not record one."
+        },
+        "scenario": {
+          "description": "The scenario this run was made for; absent means the study itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verdict": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Verdict2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The convergence verdict made when the run was recorded."
+        }
+      },
+      "required": [
+        "id",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "Scenario": {
+      "additionalProperties": false,
+      "description": "A variant of a study: what it changes, and the label a person gave it.\n\nIt stores only its own overrides. Its effective study is the study it descends from with the\noverrides of every ancestor applied first and its own after.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Origin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overrides": {
+          "items": {
+            "$ref": "#/$defs/Override"
+          },
+          "type": "array"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "SettleSettings": {
+      "additionalProperties": false,
+      "description": "Optional tolerances for judging a monitored quantity settled. A member left out uses the\nbuilt-in value.",
+      "properties": {
+        "drift_rel": {
+          "description": "The largest drift across the tail, relative to its mean (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spread_rel": {
+          "description": "The largest spread of the tail, relative to its mean (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tail_floor": {
+          "description": "The fewest iterations the judged tail may hold (5 to 100000).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tail_fraction": {
+          "description": "The share of the iterations, counted from the end, that is judged (above 0, up to 1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Shape": {
+      "description": "The outline of the domain when it is not a plain box. The domain lengths still give the\nbounding box, `[0, length_x]` by `[0, length_y]`; a shape needs an open domain.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A channel that widens by a step. The step is at x = `upstream_length`; upstream of it the\nchannel spans y from `step_height` to `length_y`, downstream it spans the full height.",
+          "properties": {
+            "kind": {
+              "const": "backward_step",
+              "type": "string"
+            },
+            "startup_length": {
+              "$ref": "#/$defs/Quantity",
+              "description": "Length of a slip section at the inlet, from 0 (none) up to `upstream_length`."
+            },
+            "step_height": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "upstream_length": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "step_height",
+            "upstream_length",
+            "startup_length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A channel with a round cylinder across the flow. The surface of the cylinder is the face\n`Obstacle`. The cylinder and a clearance of one diameter around it must lie inside the domain.",
+          "properties": {
+            "centre_x": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "centre_y": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "diameter": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "kind": {
+              "const": "cylinder_channel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "diameter",
+            "centre_x",
+            "centre_y"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ShapeRecipe": {
+      "description": "A domain shape other than the plain box, in metres.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "backward_step",
+              "type": "string"
+            },
+            "startup_length": {
+              "format": "double",
+              "type": "number"
+            },
+            "step_height": {
+              "format": "double",
+              "type": "number"
+            },
+            "upstream_length": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "step_height",
+            "upstream_length",
+            "startup_length"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "centre_x": {
+              "format": "double",
+              "type": "number"
+            },
+            "centre_y": {
+              "format": "double",
+              "type": "number"
+            },
+            "diameter": {
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "cylinder_channel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "diameter",
+            "centre_x",
+            "centre_y"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SolverControl": {
+      "additionalProperties": false,
+      "properties": {
+        "convergence": {
+          "$ref": "#/$defs/Convergence",
+          "default": {
+            "U": 1e-6,
+            "p": 1e-6
+          }
+        },
+        "end_time": {
+          "$ref": "#/$defs/Quantity",
+          "description": "Steady SIMPLE iteration count, represented as solver pseudo-time in seconds."
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverKind"
+        },
+        "write_interval": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "solver",
+        "end_time",
+        "write_interval"
+      ],
+      "type": "object"
+    },
+    "SolverKind": {
+      "oneOf": [
+        {
+          "const": "SimpleLaminar",
+          "description": "Steady, laminar, no buoyancy. Any physics that differs is refused.",
+          "type": "string"
+        },
+        {
+          "const": "FromPhysics",
+          "description": "The solver follows the study's physics.",
+          "type": "string"
+        }
+      ]
+    },
+    "SolverRecipe": {
+      "properties": {
+        "convergence_p": {
+          "format": "double",
+          "type": "number"
+        },
+        "convergence_u": {
+          "format": "double",
+          "type": "number"
+        },
+        "end_time": {
+          "format": "double",
+          "type": "number"
+        },
+        "write_interval": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "end_time",
+        "write_interval",
+        "convergence_p",
+        "convergence_u"
+      ],
+      "type": "object"
+    },
+    "StageKey": {
+      "$ref": "#/$defs/ContentHash",
+      "description": "The key of one stage output: 64 lower-case hexadecimal characters."
+    },
+    "Status": {
+      "description": "Where a quantity stands.",
+      "oneOf": [
+        {
+          "const": "settled",
+          "description": "Flat within both tolerances over the tail.",
+          "type": "string"
+        },
+        {
+          "const": "drifting",
+          "description": "The fitted line still moves across the tail.",
+          "type": "string"
+        },
+        {
+          "const": "oscillating",
+          "description": "Flat on average but the values spread more than the tolerance.",
+          "type": "string"
+        },
+        {
+          "const": "too_early",
+          "description": "Fewer iteration samples than the tail floor.",
+          "type": "string"
+        },
+        {
+          "const": "too_few_samples",
+          "description": "Fewer write-time samples than a line monitor needs.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "A non-finite value, unequal lengths or times that do not increase.",
+          "type": "string"
+        }
+      ]
+    },
+    "Study": {
+      "additionalProperties": false,
+      "description": "A unit-carrying study, schema version 1.",
+      "properties": {
+        "boundary_conditions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BoundaryCondition"
+          },
+          "description": "Boundaries keyed by the user's own label. The label appears in diagnostics only and\nnever in the written case. Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`.",
+          "type": "object"
+        },
+        "domain": {
+          "$ref": "#/$defs/Domain"
+        },
+        "fluid": {
+          "$ref": "#/$defs/Fluid"
+        },
+        "mesh": {
+          "$ref": "#/$defs/MeshSpec"
+        },
+        "monitors": {
+          "$ref": "#/$defs/Monitors"
+        },
+        "physics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Physics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Steady or transient, the turbulence model, buoyancy and how the flow starts. Left out\nfor the plain steady laminar study."
+        },
+        "raw_overrides": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RawOverride"
+          },
+          "description": "Raw dictionary overrides keyed by a label (same naming rule as boundaries). For expert\nuse: each one sets a solver dictionary entry the study does not model. They show in\ndiffs and are part of the result's identity.",
+          "type": "object"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverControl"
+        }
+      },
+      "required": [
+        "schema_version",
+        "domain",
+        "fluid",
+        "boundary_conditions",
+        "mesh",
+        "solver",
+        "monitors"
+      ],
+      "type": "object"
+    },
+    "SurfaceMonitor": {
+      "additionalProperties": false,
+      "description": "A quantity integrated over one boundary of the study, named by its label.",
+      "properties": {
+        "boundary": {
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/SurfaceQuantity"
+        }
+      },
+      "required": [
+        "boundary",
+        "quantity"
+      ],
+      "type": "object"
+    },
+    "SurfaceQuantity": {
+      "description": "What a surface monitor reports over its boundary.",
+      "oneOf": [
+        {
+          "const": "flux",
+          "description": "The volumetric flux through the boundary.",
+          "type": "string"
+        },
+        {
+          "const": "pressure_average",
+          "description": "The area-averaged pressure on the boundary.",
+          "type": "string"
+        },
+        {
+          "const": "pressure_integral",
+          "description": "The area-integrated pressure on the boundary.",
+          "type": "string"
+        },
+        {
+          "const": "heat_flux",
+          "description": "The area integral of the temperature gradient along the boundary's axis, in K m. The\nboundary needs a thermal condition.",
+          "type": "string"
+        }
+      ]
+    },
+    "SurfaceRecipe": {
+      "description": "A surface integral the case writes. It names the kind of boundary, as the mesh does, so two\nboundaries of one kind with different names give the same entry.",
+      "properties": {
+        "boundary": {
+          "description": "The label of the boundary, set only for a heat flux, which depends on which wall it is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "quantity": {
+          "$ref": "#/$defs/SurfaceQuantity"
+        }
+      },
+      "required": [
+        "kind",
+        "quantity"
+      ],
+      "type": "object"
+    },
+    "Sweep": {
+      "additionalProperties": false,
+      "description": "A sweep: the scenario it starts from and the parameters it varies.",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/Parameter"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "base",
+        "parameters"
+      ],
+      "type": "object"
+    },
+    "Target": {
+      "description": "What a parameter changes in the study.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A quantity, written in a study as `{\"value\": <number>, \"unit\": <text>}`.",
+          "properties": {
+            "kind": {
+              "const": "quantity",
+              "type": "string"
+            },
+            "setting": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "setting",
+            "unit"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A whole number, such as a cell count.",
+          "properties": {
+            "kind": {
+              "const": "count",
+              "type": "string"
+            },
+            "setting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "setting"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A plain number, such as a convergence limit.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            },
+            "setting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "setting"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A vector setting turned by an angle. The values are angles in degrees, counter-clockwise\nabout +z; the base vector is the one at angle zero. The two components are set as\nquantities in `unit`.",
+          "properties": {
+            "base_x": {
+              "format": "double",
+              "type": "number"
+            },
+            "base_y": {
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "direction",
+              "type": "string"
+            },
+            "setting_x": {
+              "type": "string"
+            },
+            "setting_y": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "setting_x",
+            "setting_y",
+            "unit",
+            "base_x",
+            "base_y"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ThermalCondition": {
+      "description": "The temperature condition of a wall.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The wall is held at this temperature.",
+          "properties": {
+            "kind": {
+              "const": "fixed_temperature",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No heat passes through the wall.",
+          "properties": {
+            "kind": {
+              "const": "adiabatic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ThermalRecipe": {
+      "description": "The temperature condition of a wall.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "fixed_temperature",
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "adiabatic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TimeMode": {
+      "description": "Whether the run marches in time.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Iterate to a steady state.",
+          "properties": {
+            "mode": {
+              "const": "steady",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "March in time. `delta_t` is the step at mesh level 0; each level halves it.",
+          "properties": {
+            "delta_t": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "mode": {
+              "const": "transient",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "delta_t"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TimeRecipe": {
+      "description": "Steady, or transient with the time step of mesh level 0 in seconds.",
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "steady",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "delta_t": {
+              "format": "double",
+              "type": "number"
+            },
+            "mode": {
+              "const": "transient",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "delta_t"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Tolerance": {
+      "description": "How far two numbers may differ and still count as the same: an absolute part plus a part relative to their size.",
+      "properties": {
+        "abs": {
+          "format": "double",
+          "type": "number"
+        },
+        "rel": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "abs",
+        "rel"
+      ],
+      "type": "object"
+    },
+    "ToolIdentity": {
+      "description": "Everything about the tools that can change an output without the study changing.",
+      "properties": {
+        "dialect": {
+          "description": "The solver dialect the case is written in, for example `esi-v2512`.",
+          "type": "string"
+        },
+        "image_digest": {
+          "description": "The part of the image reference after `@`, for example `sha256:...`.",
+          "type": "string"
+        },
+        "sidecar_lock": {
+          "description": "The hash of the geometry sidecar's lock, or `null` when no sidecar was used. An absent\nlock is written as `null`, never skipped, so absent and present keys differ.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writer_version": {
+          "description": "The version of this program that wrote the case.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_digest",
+        "dialect",
+        "writer_version"
+      ],
+      "type": "object"
+    },
+    "Turbulence": {
+      "additionalProperties": false,
+      "description": "The turbulence model and the inflow values it needs.",
+      "properties": {
+        "intensity": {
+          "description": "Turbulence intensity of the inflow, above 0 and at most 1.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/TurbulenceModel"
+        },
+        "reference_velocity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The speed the inflow values are built from. Left out to use the speed of the inlet or\nmoving wall."
+        },
+        "viscosity_ratio": {
+          "description": "Ratio of the turbulent to the molecular viscosity of the inflow, above 0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TurbulenceModel": {
+      "description": "The flow model: none (laminar) or one of three Reynolds-averaged models.",
+      "enum": [
+        "laminar",
+        "k_omega_sst",
+        "realizable_ke",
+        "rng_k_epsilon"
+      ],
+      "type": "string"
+    },
+    "TurbulenceRecipe": {
+      "properties": {
+        "intensity": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/TurbulenceModel"
+        },
+        "reference_velocity": {
+          "description": "In m/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "viscosity_ratio": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "Unit": {
+      "enum": [
+        "m",
+        "mm",
+        "m/s",
+        "m2/s",
+        "Pa",
+        "K",
+        "s",
+        "1",
+        "rpm"
+      ],
+      "type": "string"
+    },
+    "Values": {
+      "description": "The values of one parameter: a list, a range or a number of even steps.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The values in the order given.",
+          "properties": {
+            "items": {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "From `start` by `step`; `stop` is included when the steps land on it.",
+          "properties": {
+            "mode": {
+              "const": "range",
+              "type": "string"
+            },
+            "start": {
+              "format": "double",
+              "type": "number"
+            },
+            "step": {
+              "format": "double",
+              "type": "number"
+            },
+            "stop": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "mode",
+            "start",
+            "stop",
+            "step"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`count` values spread evenly from `start` to `stop`, both included.",
+          "properties": {
+            "count": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "const": "steps",
+              "type": "string"
+            },
+            "start": {
+              "format": "double",
+              "type": "number"
+            },
+            "stop": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "mode",
+            "start",
+            "stop",
+            "count"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Verdict": {
+      "enum": [
+        "reproduced",
+        "within_tolerance",
+        "differs"
+      ],
+      "type": "string"
+    },
+    "Verdict2": {
+      "additionalProperties": false,
+      "description": "The verdict with everything it was made from.\n\n`reasons` are stable words: `no_monitored_quantity`, `not_settled:<name>`, `mass_imbalance`,\n`energy_imbalance`, `residuals_above_limit`, and the two a caller adds with\n[`Verdict::blocked_by`]: [`SOLVER_FAILED`] and [`NOT_FINISHED`].",
+      "properties": {
+        "energy": {
+          "$ref": "#/$defs/Balance"
+        },
+        "mass": {
+          "$ref": "#/$defs/Balance"
+        },
+        "quantities": {
+          "items": {
+            "$ref": "#/$defs/QuantityState"
+          },
+          "type": "array"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "residuals_ok": {
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/$defs/VerdictState"
+        }
+      },
+      "required": [
+        "state",
+        "reasons",
+        "quantities",
+        "mass",
+        "energy",
+        "residuals_ok"
+      ],
+      "type": "object"
+    },
+    "VerdictState": {
+      "enum": [
+        "converged",
+        "not_converged",
+        "not_judged"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:artifacts:5",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Everything the file refers to outside itself.",
+  "properties": {
+    "blobs": {
+      "default": [],
+      "description": "Stored results.",
+      "items": {
+        "$ref": "#/$defs/BlobRef"
+      },
+      "type": "array"
+    },
+    "links": {
+      "default": [],
+      "description": "Linked files.",
+      "items": {
+        "$ref": "#/$defs/Link"
+      },
+      "type": "array"
+    },
+    "pruned": {
+      "description": "Hashes of stored results that were removed on purpose, sorted, each listed in `blobs`. The\nrun records that named them stay. Absent when nothing was removed.",
+      "items": {
+        "$ref": "#/$defs/ContentHash"
+      },
+      "type": "array"
+    },
+    "runs": {
+      "default": [],
+      "description": "The runs recorded for this study, oldest first; the list only grows.",
+      "items": {
+        "$ref": "#/$defs/RunRecord"
+      },
+      "type": "array"
+    },
+    "scenarios": {
+      "description": "Variants of the study, each storing only its overrides; a variant is listed after its\nparent. Absent when the study has none.",
+      "items": {
+        "$ref": "#/$defs/Scenario"
+      },
+      "type": "array"
+    },
+    "sweeps": {
+      "description": "Parameter sweeps, and through each point's origin the variants they generated. Absent when\nthe study has none.",
+      "items": {
+        "$ref": "#/$defs/Sweep"
+      },
+      "type": "array"
+    }
+  },
+  "title": "CFDCraft artifacts.json, schema 5",
+  "type": "object"
+}

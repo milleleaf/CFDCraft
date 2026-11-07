@@ -24,7 +24,10 @@ pub enum SettingClass {
 use SettingClass::{Geometry, Setting};
 
 /// Every setting a variant can change, with its class. `<label>` stands for the label of one
-/// boundary and `<id>` for the label of one raw override; each matches exactly one part.
+/// boundary and `<id>` for the label of one raw override; each matches exactly one part. The mesh
+/// level, the wall grading and every part of a shape are geometry because the mesh recipe holds
+/// them, and so is the thermal condition of a wall, because a wall at a fixed temperature gets its
+/// own patch. The physics, an inlet profile and the temperature itself are settings.
 pub const KNOWN_SETTINGS: &[(&str, SettingClass)] = &[
     ("/domain/length_x", Geometry),
     ("/domain/length_x/value", Geometry),
@@ -39,8 +42,36 @@ pub const KNOWN_SETTINGS: &[(&str, SettingClass)] = &[
     ("/mesh/cells_x", Geometry),
     ("/mesh/cells_y", Geometry),
     ("/mesh/cells_z", Geometry),
+    ("/mesh/level", Geometry),
+    ("/mesh/grading", Geometry),
+    ("/mesh/grading/x", Geometry),
+    ("/mesh/grading/y", Geometry),
+    ("/domain/shape", Geometry),
+    ("/domain/shape/step_height", Geometry),
+    ("/domain/shape/step_height/value", Geometry),
+    ("/domain/shape/step_height/unit", Geometry),
+    ("/domain/shape/upstream_length", Geometry),
+    ("/domain/shape/upstream_length/value", Geometry),
+    ("/domain/shape/upstream_length/unit", Geometry),
+    ("/domain/shape/startup_length", Geometry),
+    ("/domain/shape/startup_length/value", Geometry),
+    ("/domain/shape/startup_length/unit", Geometry),
+    ("/domain/shape/diameter", Geometry),
+    ("/domain/shape/diameter/value", Geometry),
+    ("/domain/shape/diameter/unit", Geometry),
+    ("/domain/shape/centre_x", Geometry),
+    ("/domain/shape/centre_x/value", Geometry),
+    ("/domain/shape/centre_x/unit", Geometry),
+    ("/domain/shape/centre_y", Geometry),
+    ("/domain/shape/centre_y/value", Geometry),
+    ("/domain/shape/centre_y/unit", Geometry),
     ("/boundary_conditions/<label>/kind", Geometry),
     ("/boundary_conditions/<label>/faces", Geometry),
+    ("/boundary_conditions/<label>/thermal", Geometry),
+    ("/boundary_conditions/<label>/thermal/value", Setting),
+    ("/boundary_conditions/<label>/thermal/value/value", Setting),
+    ("/boundary_conditions/<label>/thermal/value/unit", Setting),
+    ("/boundary_conditions/<label>/profile", Setting),
     ("/boundary_conditions/<label>/velocity", Setting),
     ("/boundary_conditions/<label>/velocity/value", Setting),
     ("/fluid/kinematic_viscosity", Setting),
@@ -54,6 +85,28 @@ pub const KNOWN_SETTINGS: &[(&str, SettingClass)] = &[
     ("/solver/convergence/p", Setting),
     ("/solver/convergence/U", Setting),
     ("/monitors/centreline_u_sample_count", Setting),
+    ("/physics", Setting),
+    ("/physics/time", Setting),
+    ("/physics/time/mode", Setting),
+    ("/physics/time/delta_t", Setting),
+    ("/physics/time/delta_t/value", Setting),
+    ("/physics/time/delta_t/unit", Setting),
+    ("/physics/turbulence", Setting),
+    ("/physics/turbulence/model", Setting),
+    ("/physics/turbulence/intensity", Setting),
+    ("/physics/turbulence/viscosity_ratio", Setting),
+    ("/physics/turbulence/reference_velocity", Setting),
+    ("/physics/turbulence/reference_velocity/value", Setting),
+    ("/physics/turbulence/reference_velocity/unit", Setting),
+    ("/physics/buoyancy", Setting),
+    ("/physics/buoyancy/gravity", Setting),
+    ("/physics/buoyancy/beta", Setting),
+    ("/physics/buoyancy/reference_temperature", Setting),
+    ("/physics/buoyancy/reference_temperature/value", Setting),
+    ("/physics/buoyancy/reference_temperature/unit", Setting),
+    ("/physics/buoyancy/prandtl", Setting),
+    ("/physics/buoyancy/turbulent_prandtl", Setting),
+    ("/physics/init", Setting),
 ];
 
 const RAW_OVERRIDES: &str = "raw_overrides";

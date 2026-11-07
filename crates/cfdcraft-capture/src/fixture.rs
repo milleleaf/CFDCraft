@@ -5,6 +5,8 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::CapturePlan;
+
 /// What the fixture folder should look like.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FixtureSpec {
@@ -82,5 +84,55 @@ pub fn write_results(dir: &Path, spec: &FixtureSpec) -> io::Result<()> {
     }
     fs::write(samples.join("vertical_U.xy"), vertical)?;
     fs::write(samples.join("horizontal_U.xy"), horizontal)?;
+    Ok(())
+}
+
+/// Write the folder a good run of any solver leaves, as `plan` names it: the mesh files, the two
+/// mesh logs, the plan's log with one `Solving for <field>,` line per residual field in its last
+/// iteration (the residual of the n-th field is `n * 1e-7`), the plan's fields in the end-time
+/// folder and, only when the plan asks, the two centreline sample files.
+pub fn write_results_for(dir: &Path, spec: &FixtureSpec, plan: &CapturePlan) -> io::Result<()> {
+    let end = spec.end_time.to_string();
+    let time = dir.join(&end);
+    fs::create_dir_all(&time)?;
+    if plan.centreline {
+        // The cavity layout is the one that writes the samples; reuse it and overwrite its logs.
+        write_results(dir, spec)?;
+        fs::remove_file(dir.join("log.simpleFoam"))?;
+        fs::remove_file(time.join("U"))?;
+        fs::remove_file(time.join("p"))?;
+    } else {
+        let mesh = dir.join("constant/polyMesh");
+        fs::create_dir_all(&mesh)?;
+        for name in ["points", "faces", "owner", "neighbour", "boundary"] {
+            fs::write(
+                mesh.join(name),
+                format!("// {name} of a fixture mesh with {} cells\n", spec.cells),
+            )?;
+        }
+        let cells = spec.cells;
+        fs::write(
+            dir.join("log.blockMesh"),
+            format!("Created {cells} cells\nEnd\n"),
+        )?;
+        fs::write(
+            dir.join("log.checkMesh"),
+            format!("cells: {cells}\nTotal volume = 0.0005\nMesh OK.\nEnd\n"),
+        )?;
+    }
+
+    let mut log = format!("Time = {end}\n");
+    for (index, field) in plan.residual_fields.iter().enumerate() {
+        let residual = (index + 1) as f64 * 1e-7;
+        let _ = writeln!(
+            log,
+            "smoothSolver: Solving for {field}, Initial residual = {residual:e}, Final residual = 1e-11, No Iterations 1"
+        );
+    }
+    log.push_str("ExecutionTime = 1 s ClockTime = 1 s\nEnd\n");
+    fs::write(dir.join(&plan.log), log)?;
+    for field in &plan.fields {
+        fs::write(time.join(field), format!("field {field}\n"))?;
+    }
     Ok(())
 }

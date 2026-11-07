@@ -1,5 +1,5 @@
 use cfdcraft_model::{
-    BoundaryKind, LineMonitor, MonitorField, MonitorPlan, PlannedLine, PlannedProbe,
+    BoundaryKind, LineMonitor, MonitorField, MonitorPlan, PlannedForce, PlannedLine, PlannedProbe,
     PlannedSurface, Probe, SettleSettings, Study, SurfaceMonitor, SurfaceQuantity, canonical_hash,
     resolve,
 };
@@ -192,6 +192,7 @@ fn every_public_monitor_type_is_exported() {
         x: cavity().domain.length_x,
         y: cavity().domain.length_y,
         field: MonitorField::Pressure,
+        boundary: None,
     };
     let line = LineMonitor {
         x0: probe.x,
@@ -212,6 +213,7 @@ fn every_public_monitor_type_is_exported() {
         probes: Vec::<PlannedProbe>::new(),
         lines: Vec::<PlannedLine>::new(),
         surfaces: Vec::<PlannedSurface>::new(),
+        forces: Vec::<PlannedForce>::new(),
         defaulted: false,
     };
     assert!(plan.probes.is_empty() && !plan.defaulted);

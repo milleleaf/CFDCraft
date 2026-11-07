@@ -1,11 +1,15 @@
-//! The function objects that watch a run: the probes, lines and surface integrals of the study,
-//! and one flux object per patch so the mass balance can be judged whatever the study lists.
+//! The function objects that watch a run: the probes, lines, force coefficients and surface
+//! integrals of the study, and one flux object per patch so the mass balance can be judged
+//! whatever the study lists.
 //!
 //! Only numbers and fixed words are written. No author text reaches the case: objects are named
-//! by position (`probe_1`, `line_1`, `surface_1`) and patches by the fixed patch table.
+//! by position (`probe_1`, `line_1`, `force_1`, `surface_1`) and patches by the fixed patch table,
+//! found through the boundary's label. Every object is typed out in full.
 
-use crate::{case::patch_plan, scalar};
-use cfdcraft_model::{BoundaryKind, MonitorField, ResolvedStudy, SurfaceQuantity};
+use crate::{case::patch_plan, patches::patch_of_label, scalar};
+use cfdcraft_model::{
+    BoundaryKind, MonitorField, PlannedForce, PlannedProbe, ResolvedStudy, SurfaceQuantity,
+};
 
 /// A flux object written for one patch, whatever the study lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,14 +45,24 @@ pub fn balance_patches(s: &ResolvedStudy) -> Vec<BalancePatch> {
         .collect()
 }
 
+/// The name of the gradient object a heat-flux surface integrates.
+pub const HEAT_GRAD: &str = "heat_grad";
+
 /// The names of the monitor objects the case writes, without the centreline object: probes, then
-/// lines, then surfaces, then the balances.
+/// lines, then forces, then the gradient object when a heat-flux surface needs it, then surfaces,
+/// then the balances.
 pub fn monitor_fo_names(s: &ResolvedStudy) -> Vec<String> {
     let plan = s.monitor_plan();
+    let heat = plan
+        .surfaces
+        .iter()
+        .any(|f| f.quantity == SurfaceQuantity::HeatFlux);
     plan.probes
         .into_iter()
         .map(|p| p.fo)
         .chain(plan.lines.into_iter().map(|l| l.fo))
+        .chain(plan.forces.into_iter().map(|f| f.fo))
+        .chain(heat.then(|| HEAT_GRAD.to_owned()))
         .chain(plan.surfaces.into_iter().map(|f| f.fo))
         .chain(balance_patches(s).into_iter().map(|b| b.fo))
         .collect()
@@ -61,10 +75,41 @@ fn field_word(field: MonitorField) -> &'static str {
     }
 }
 
-fn probe(fo: &str, x: f64, y: f64, z: &str, field: MonitorField) -> String {
-    let (x, y, f) = (scalar(x), scalar(y), field_word(field));
+/// The shortest decimal, with no `.0` on a whole number.
+pub(crate) fn short(value: f64) -> String {
+    let text = scalar(value);
+    text.strip_suffix(".0").unwrap_or(&text).to_owned()
+}
+
+/// A probe in the flow (`patch` is `None`) or on a wall (`patch` is the written patch).
+fn probe(p: &PlannedProbe, z: &str, patch: Option<&str>) -> String {
+    let (fo, x, y, f) = (&p.fo, scalar(p.x), scalar(p.y), field_word(p.field));
+    let (kind, on) = match patch {
+        Some(patch) => ("patchProbes", format!("        patches ({patch});\n")),
+        None => ("probes", String::new()),
+    };
     format!(
-        "    {fo}\n    {{\n        type probes;\n        libs (sampling);\n        writeControl timeStep;\n        writeInterval 1;\n        probeLocations\n        (\n            ({x} {y} {z})\n        );\n        fields ({f});\n    }}\n"
+        "    {fo}\n    {{\n        type {kind};\n        libs (sampling);\n        writeControl timeStep;\n        writeInterval 1;\n{on}        probeLocations\n        (\n            ({x} {y} {z})\n        );\n        fields ({f});\n    }}\n"
+    )
+}
+
+/// Force coefficients on one wall. The lift axis is set to y: the case lies in the x-y plane and
+/// the default lift axis is z, which would leave the lift coefficient at zero. The reference area
+/// is the reference length times the depth of the domain.
+fn force(f: &PlannedForce, patch: &str, depth: f64) -> String {
+    let fo = &f.fo;
+    let magnitude = short(f.reference_velocity);
+    let length = short(f.reference_length);
+    let area = short(f.reference_length * depth);
+    format!(
+        "    {fo}\n    {{\n        type forceCoeffs;\n        libs (forces);\n        patches ({patch});\n        rho rhoInf;\n        rhoInf 1;\n        magUInf {magnitude};\n        lRef {length};\n        Aref {area};\n        origin (0 0 0);\n        e1 (1 0 0);\n        e3 (0 1 0);\n        writeControl timeStep;\n        writeInterval 1;\n    }}\n"
+    )
+}
+
+/// The temperature gradient field a heat-flux surface integrates; it is computed, not written.
+fn heat_gradient() -> String {
+    format!(
+        "    {HEAT_GRAD}\n    {{\n        type grad;\n        libs (fieldFunctionObjects);\n        field T;\n        result gradT;\n        writeControl none;\n    }}\n"
     )
 }
 
@@ -83,14 +128,21 @@ fn flux(fo: &str, patch: &str, operation: &str, field: &str) -> String {
 }
 
 /// The objects that follow `centreline` inside the `functions` block, each indented four spaces:
-/// probes, lines, surfaces, then the balances.
+/// probes, lines, forces, the gradient object, surfaces, then the balances. A monitor whose
+/// boundary label has no written patch is left out.
 pub fn functions_block(s: &ResolvedStudy) -> String {
     let plan = s.monitor_plan();
     let z = scalar(s.domain.length_z / 2.0);
-    let named = patches(s);
     let mut out = String::new();
     for p in &plan.probes {
-        out.push_str(&probe(&p.fo, p.x, p.y, &z, p.field));
+        match &p.boundary {
+            None => out.push_str(&probe(p, &z, None)),
+            Some(label) => {
+                if let Some(patch) = patch_of_label(s, label) {
+                    out.push_str(&probe(p, &z, Some(patch)));
+                }
+            }
+        }
     }
     for l in &plan.lines {
         out.push_str(&line(
@@ -101,14 +153,27 @@ pub fn functions_block(s: &ResolvedStudy) -> String {
             l.field,
         ));
     }
+    for f in &plan.forces {
+        if let Some(patch) = patch_of_label(s, &f.boundary) {
+            out.push_str(&force(f, patch, s.domain.length_z));
+        }
+    }
+    if plan
+        .surfaces
+        .iter()
+        .any(|f| f.quantity == SurfaceQuantity::HeatFlux)
+    {
+        out.push_str(&heat_gradient());
+    }
     for surface in &plan.surfaces {
-        let Some((patch, _)) = named.iter().find(|(_, kind)| *kind == surface.kind) else {
+        let Some(patch) = patch_of_label(s, &surface.boundary) else {
             continue;
         };
         let (operation, field) = match surface.quantity {
             SurfaceQuantity::Flux => ("sum", "phi"),
             SurfaceQuantity::PressureAverage => ("areaAverage", "p"),
             SurfaceQuantity::PressureIntegral => ("areaIntegrate", "p"),
+            SurfaceQuantity::HeatFlux => ("areaIntegrate", "gradT"),
         };
         out.push_str(&flux(&surface.fo, patch, operation, field));
     }

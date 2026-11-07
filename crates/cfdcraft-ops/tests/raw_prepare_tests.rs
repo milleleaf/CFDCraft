@@ -205,8 +205,11 @@ fn the_writer_version_moves_with_the_new_sources() {
     // the writer was made of before them. (The comparison with a fingerprint over the earlier six
     // is a unit test next to the function that makes it, in the keys module.)
     let names: Vec<&str> = WRITER_SOURCES.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 12);
+    assert!(names.contains(&"fields.rs"));
     assert!(names.contains(&"raw.rs"));
+    assert!(names.contains(&"solver_plan.rs"));
+    assert!(names.contains(&"patches.rs"));
     assert!(names.contains(&"monitors.rs"));
     assert!(names.contains(&"../../cfdcraft-dictedit/src/lib.rs"));
 }

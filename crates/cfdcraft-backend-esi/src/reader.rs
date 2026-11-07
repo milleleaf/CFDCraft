@@ -13,7 +13,12 @@ use cfdcraft_model::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::case::CaseTree;
+/// The expected side of the shaped studies; the only part of the reader that knows the patch table.
+pub mod expected;
+/// The multi-block mesh dictionary and the conditions of its patches.
+mod layout;
+/// The time step, the initialisation, buoyancy, inflow values, thermal and profile conditions.
+mod physics;
 
 /// Largest file the reader accepts.
 const FILE_MAX: usize = 16 * 1024 * 1024;
@@ -22,7 +27,7 @@ const DEPTH_MAX: usize = 32;
 
 /// The written files as the reader takes them: paths relative to the case root with `/`
 /// separators.
-pub fn source_files(tree: &CaseTree) -> Vec<SourceFile> {
+pub fn source_files(tree: &crate::case::CaseTree) -> Vec<SourceFile> {
     tree.files
         .iter()
         .map(|file| SourceFile {
@@ -43,26 +48,61 @@ pub struct EsiReader;
 
 impl CaseReader for EsiReader {
     /// Reads `system/blockMeshDict`, `0/U`, `0/p`, `constant/transportProperties`,
-    /// `constant/turbulenceProperties`, `system/controlDict` and `system/fvSolution`. It does not
-    /// read `system/fvSchemes`: the schemes are numerics the study does not parameterise, and the
+    /// `constant/turbulenceProperties`, `system/controlDict` and `system/fvSolution`, and, when the
+    /// case has them, `constant/g`, `0/p_rgh`, `0/T`, `0/k`, `0/omega` and `0/epsilon` (a case
+    /// without them is a case without buoyancy or turbulence). It does not read
+    /// `system/fvSchemes`: the schemes are numerics the study does not parameterise, and the
     /// golden case bytes cover them.
     fn read(&self, files: &[SourceFile]) -> Result<BTreeMap<String, Fact>, ReadError> {
         let block_mesh = Doc::parse(files, "system/blockMeshDict")?;
         let velocity = Doc::parse(files, "0/U")?;
-        let pressure = Doc::parse(files, "0/p")?;
+        let plain_pressure = Doc::parse(files, "0/p")?;
+        let flux_pressure = Doc::parse_optional(files, "0/p_rgh")?;
+        let temperature = Doc::parse_optional(files, "0/T")?;
         let transport = Doc::parse(files, "constant/transportProperties")?;
+        let gravity = Doc::parse_optional(files, "constant/g")?;
         let turbulence = Doc::parse(files, "constant/turbulenceProperties")?;
         let control = Doc::parse(files, "system/controlDict")?;
         let solution = Doc::parse(files, "system/fvSolution")?;
+        let inflow = physics::Inflow {
+            k: Doc::parse_optional(files, "0/k")?,
+            omega: Doc::parse_optional(files, "0/omega")?,
+            epsilon: Doc::parse_optional(files, "0/epsilon")?,
+        };
+        // A buoyant case solves for `p_rgh`, so that file says what each patch does to the
+        // pressure; the plain `p` it also holds is worked out by the solver.
+        let fields = Fields {
+            velocity: &velocity,
+            pressure: flux_pressure.as_ref().unwrap_or(&plain_pressure),
+            temperature: temperature.as_ref(),
+            buoyant: flux_pressure.is_some(),
+        };
         let mut facts = BTreeMap::new();
-        mesh_and_boundary_facts(&block_mesh, &velocity, &pressure, &mut facts)?;
+        let mut kinds = BTreeMap::new();
+        mesh_and_boundary_facts(&block_mesh, &fields, &mut facts, &mut kinds)?;
         transport_facts(&transport, &mut facts)?;
+        physics::buoyancy_facts(&transport, gravity.as_ref(), &mut facts)?;
+        physics::inflow_facts(&inflow, &mut facts)?;
         turbulence_facts(&turbulence, &mut facts)?;
-        control_facts(&control, &mut facts)?;
+        control_facts(&control, &kinds, &mut facts)?;
         solution_facts(&solution, &mut facts)?;
         Ok(facts)
     }
 }
+
+/// The field files that say what each patch of the mesh is.
+struct Fields<'a> {
+    velocity: &'a Doc,
+    /// `p`, or `p_rgh` for a buoyant case.
+    pressure: &'a Doc,
+    temperature: Option<&'a Doc>,
+    /// The pressure file is `p_rgh`, whose patches take flux where `p` is zero-gradient.
+    buoyant: bool,
+}
+
+/// What each written patch is, by its name, in the study's words; only the patches the field
+/// files let the reader recognise.
+type PatchKinds = BTreeMap<String, String>;
 
 // ---- syntax tree --------------------------------------------------------------------------
 
@@ -450,6 +490,15 @@ impl Doc {
         })
     }
 
+    /// A file that a case may or may not have; one that is there is read like any other.
+    fn parse_optional(files: &[SourceFile], path: &str) -> Result<Option<Doc>, ReadError> {
+        if files.iter().any(|f| f.path == path) {
+            Doc::parse(files, path).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     fn err(&self, sp: Sp, message: impl Into<String>) -> ReadError {
         fail(&self.path, sp.line, message)
     }
@@ -597,12 +646,9 @@ fn fact(value: FactValue, spans: Vec<Span>, entry: Span) -> Fact {
 
 // ---- constant/transportProperties ---------------------------------------------------------
 
-fn transport_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), ReadError> {
-    let Some(nu) = doc.top("nu") else {
-        return Ok(());
-    };
-    // `nu [dimensions] value;`
-    let value = match doc.items(nu)? {
+/// The number of `name [dimensions] value;`: seven numbers in square brackets, then the value.
+fn dimensioned(doc: &Doc, entry: &Entry) -> Result<Num, ReadError> {
+    match doc.items(entry)? {
         [Item::List(dims), Item::Atom(value)]
             if dims.open == b'['
                 && dims.items.len() == 7
@@ -611,19 +657,27 @@ fn transport_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), 
                     .iter()
                     .all(|d| matches!(d, Item::Atom(a) if parse_number(&a.text).is_some())) =>
         {
-            value
+            doc.num(value)
         }
-        _ => {
-            return Err(doc.err(
-                nu.sp,
-                "\"nu\" should be a seven-number dimension set in square brackets followed by a number",
-            ));
-        }
+        _ => Err(doc.err(
+            entry.sp,
+            format!(
+                "\"{}\" should be a seven-number dimension set in square brackets followed by a number",
+                entry.key
+            ),
+        )),
+    }
+}
+
+fn transport_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), ReadError> {
+    let Some(nu) = doc.top("nu") else {
+        return Ok(());
     };
+    let value = dimensioned(doc, nu)?;
     facts.insert(
         "/fluid/kinematic_viscosity".into(),
         fact(
-            FactValue::Number(doc.num(value)?.v),
+            FactValue::Number(value.v),
             vec![doc.span(value.sp)],
             doc.span(nu.sp),
         ),
@@ -634,23 +688,35 @@ fn transport_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), 
 // ---- constant/turbulenceProperties --------------------------------------------------------
 
 fn turbulence_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), ReadError> {
-    if let Some(entry) = doc.top("simulationType") {
-        let word = doc.word(entry)?;
-        facts.insert(
-            "/solver/turbulence".into(),
-            fact(
-                FactValue::Text(word.text.clone()),
-                vec![doc.span(word.sp)],
-                doc.span(entry.sp),
-            ),
-        );
-    }
+    let Some(entry) = doc.top("simulationType") else {
+        return Ok(());
+    };
+    let word = doc.word(entry)?;
+    // A model is named inside the `RAS` dictionary; a laminar case names itself.
+    let (name, at, held_by) = if word.text == "RAS" {
+        let ras = doc
+            .top("RAS")
+            .ok_or_else(|| doc.err(entry.sp, "a RAS case has no \"RAS\" dictionary"))?;
+        let model = required(doc, ras, doc.block(ras)?, "RASModel")?;
+        let name = doc.word(model)?;
+        (name.text.clone(), name.sp, model.sp)
+    } else {
+        (word.text.clone(), word.sp, entry.sp)
+    };
+    facts.insert(
+        "/solver/turbulence".into(),
+        fact(FactValue::Text(name), vec![doc.span(at)], doc.span(held_by)),
+    );
     Ok(())
 }
 
 // ---- system/controlDict -------------------------------------------------------------------
 
-fn control_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), ReadError> {
+fn control_facts(
+    doc: &Doc,
+    kinds: &PatchKinds,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
     if let Some(entry) = doc.top("application") {
         let word = doc.word(entry)?;
         facts.insert(
@@ -661,6 +727,7 @@ fn control_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), Re
                 doc.span(entry.sp),
             ),
         );
+        physics::time_facts(doc, &word.text, facts)?;
     }
     for (key, name) in [
         ("endTime", "/solver/end_time"),
@@ -685,7 +752,7 @@ fn control_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), Re
     if let Some(centreline) = sub(&functions.entries, "centreline") {
         centreline_facts(doc, centreline, facts)?;
     }
-    monitor_facts(doc, functions, facts)
+    monitor_facts(doc, functions, kinds, facts)
 }
 
 /// The centreline profiles are the two sampled sets of the `centreline` function object.
@@ -717,19 +784,21 @@ fn centreline_facts(
     Ok(())
 }
 
-/// The kind and number of a function object named `probe_<n>`, `line_<n>` or `surface_<n>`. Any
-/// other name (the centreline, the balances) is not a monitor of the study.
+/// The kind and number of a function object named `probe_<n>`, `line_<n>`, `force_<n>` or
+/// `surface_<n>`. Any other name (the centreline, the balances, the gradient) is not a monitor of
+/// the study.
 fn monitor_name(key: &str) -> Option<(&str, &str)> {
     let (kind, n) = key.split_once('_')?;
     let counted = parse_count(n).is_some_and(|v| v >= 1 && v.to_string() == n);
-    (counted && matches!(kind, "probe" | "line" | "surface")).then_some((kind, n))
+    (counted && matches!(kind, "probe" | "line" | "force" | "surface")).then_some((kind, n))
 }
 
-/// The probes, lines and surfaces of the `functions` block. A recognised object with a missing or
-/// malformed entry is an error; the names a study gave its monitors are not in the case.
+/// The probes, lines, forces and surfaces of the `functions` block. A recognised object with a
+/// missing or malformed entry is an error; the names a study gave its monitors are not in the case.
 fn monitor_facts(
     doc: &Doc,
     functions: &Block,
+    kinds: &PatchKinds,
     facts: &mut BTreeMap<String, Fact>,
 ) -> Result<(), ReadError> {
     for entry in &functions.entries {
@@ -740,7 +809,8 @@ fn monitor_facts(
         match kind {
             "probe" => probe_facts(doc, entry, block, n, facts)?,
             "line" => line_facts(doc, entry, block, n, facts)?,
-            _ => surface_facts(doc, entry, block, n, facts)?,
+            "force" => force_facts(doc, entry, block, n, facts)?,
+            _ => surface_facts(doc, entry, block, n, kinds, facts)?,
         }
     }
     Ok(())
@@ -789,6 +859,18 @@ fn monitor_field(doc: &Doc, owner: &Entry, block: &Block) -> Result<Fact, ReadEr
     ))
 }
 
+/// The patch a monitor reads, from its `patches (name);` entry.
+fn patch_fact(doc: &Doc, owner: &Entry, block: &Block) -> Result<Fact, ReadError> {
+    let entry = required(doc, owner, block, "patches")?;
+    let atom = listed_word(doc, entry)?;
+    Ok(fact(
+        FactValue::Text(atom.text.clone()),
+        vec![doc.span(atom.sp)],
+        doc.span(entry.sp),
+    ))
+}
+
+/// A probe in the flow (`probes`) or on a wall (`patchProbes`, which also names its patch).
 fn probe_facts(
     doc: &Doc,
     owner: &Entry,
@@ -796,6 +878,15 @@ fn probe_facts(
     n: &str,
     facts: &mut BTreeMap<String, Fact>,
 ) -> Result<(), ReadError> {
+    let kind = required(doc, owner, block, "type")?;
+    let word = doc.word(kind)?;
+    let on_boundary = match word.text.as_str() {
+        "probes" => false,
+        "patchProbes" => true,
+        other => {
+            return Err(doc.err(word.sp, format!("\"{other}\" is not a kind of probe")));
+        }
+    };
     let locations = required(doc, owner, block, "probeLocations")?;
     let outer = doc.list(locations, b'(')?;
     let [Item::List(point)] = outer.items.as_slice() else {
@@ -816,6 +907,20 @@ fn probe_facts(
         format!("/monitors/probe/{n}/field"),
         monitor_field(doc, owner, block)?,
     );
+    if on_boundary {
+        facts.insert(
+            format!("/monitors/probe/{n}/on_boundary"),
+            fact(
+                FactValue::Flag(true),
+                vec![doc.span(word.sp)],
+                doc.span(kind.sp),
+            ),
+        );
+        facts.insert(
+            format!("/monitors/probe/{n}/patch"),
+            patch_fact(doc, owner, block)?,
+        );
+    }
     Ok(())
 }
 
@@ -877,17 +982,56 @@ fn line_facts(
     Ok(())
 }
 
-/// What a boundary of the patch with this written name is, in the study's words.
-fn patch_kind_name(patch: &str) -> Option<&'static str> {
-    Some(kind_name(match patch {
-        "inlet" => BoundaryKind::VelocityInlet,
-        "outlet" => BoundaryKind::PressureOutlet,
-        "movingWall" => BoundaryKind::MovingWall,
-        "fixedWalls" => BoundaryKind::NoSlipWall,
-        "slipWalls" => BoundaryKind::SlipWall,
-        "symmetry" => BoundaryKind::Symmetry,
-        _ => return None,
-    }))
+/// The force coefficients of one wall: the reference speed and length, the axis the lift is taken
+/// along and the patch.
+fn force_facts(
+    doc: &Doc,
+    owner: &Entry,
+    block: &Block,
+    n: &str,
+    facts: &mut BTreeMap<String, Fact>,
+) -> Result<(), ReadError> {
+    let kind = required(doc, owner, block, "type")?;
+    if doc.word(kind)?.text != "forceCoeffs" {
+        return Err(doc.err(kind.sp, "a force object should be of the kind forceCoeffs"));
+    }
+    for (key, name) in [
+        ("magUInf", "reference_velocity"),
+        ("lRef", "reference_length"),
+    ] {
+        let entry = required(doc, owner, block, key)?;
+        let word = doc.word(entry)?;
+        facts.insert(
+            format!("/monitors/force/{n}/{name}"),
+            fact(
+                FactValue::Number(doc.num(word)?.v),
+                vec![doc.span(word.sp)],
+                doc.span(entry.sp),
+            ),
+        );
+    }
+    let (lift, e3) = point_of(doc, owner, block, "e3")?;
+    let axis = match [e3[0].v, e3[1].v, e3[2].v] {
+        [x, y, z] if x == 1.0 && y == 0.0 && z == 0.0 => "x",
+        [x, y, z] if x == 0.0 && y == 1.0 && z == 0.0 => "y",
+        [x, y, z] if x == 0.0 && y == 0.0 && z == 1.0 => "z",
+        _ => {
+            return Err(doc.err(lift.sp, "the lift direction should be an axis of the case"));
+        }
+    };
+    facts.insert(
+        format!("/monitors/force/{n}/lift_axis"),
+        fact(
+            FactValue::Text(axis.into()),
+            e3.iter().map(|v| doc.span(v.sp)).collect(),
+            doc.span(lift.sp),
+        ),
+    );
+    facts.insert(
+        format!("/monitors/force/{n}/patch"),
+        patch_fact(doc, owner, block)?,
+    );
+    Ok(())
 }
 
 fn surface_facts(
@@ -895,11 +1039,12 @@ fn surface_facts(
     owner: &Entry,
     block: &Block,
     n: &str,
+    kinds: &PatchKinds,
     facts: &mut BTreeMap<String, Fact>,
 ) -> Result<(), ReadError> {
     let name = required(doc, owner, block, "name")?;
     let patch = doc.word(name)?;
-    let kind = patch_kind_name(&patch.text).ok_or_else(|| {
+    let kind = kinds.get(&patch.text).ok_or_else(|| {
         doc.err(
             patch.sp,
             format!("\"{}\" is not a patch of the case", patch.text),
@@ -908,7 +1053,7 @@ fn surface_facts(
     facts.insert(
         format!("/monitors/surface/{n}/kind"),
         fact(
-            FactValue::Text(kind.into()),
+            FactValue::Text(kind.clone()),
             vec![doc.span(patch.sp)],
             doc.span(name.sp),
         ),
@@ -921,6 +1066,7 @@ fn surface_facts(
         ("sum", "phi") => "flux",
         ("areaAverage", "p") => "pressure_average",
         ("areaIntegrate", "p") => "pressure_integral",
+        ("areaIntegrate", "gradT") => "heat_flux",
         (op, f) => {
             return Err(doc.err(
                 operation_entry.sp,
@@ -942,15 +1088,17 @@ fn surface_facts(
 // ---- system/fvSolution --------------------------------------------------------------------
 
 /// A closed domain has no fixed-pressure boundary, so the solver settings carry a pressure
-/// reference; an open domain has none.
+/// reference; an open domain has none. A steady run keeps its settings under `SIMPLE`, a transient
+/// one under `PIMPLE`.
 fn solution_facts(doc: &Doc, facts: &mut BTreeMap<String, Fact>) -> Result<(), ReadError> {
-    let Some(simple) = doc.top("SIMPLE") else {
+    physics::init_fact(doc, facts);
+    let Some(algorithm) = doc.top("SIMPLE").or_else(|| doc.top("PIMPLE")) else {
         return Ok(());
     };
-    let block = doc.block(simple)?;
+    let block = doc.block(algorithm)?;
     let (open, held_by) = match sub(&block.entries, "pRefCell") {
         Some(reference) => (false, reference.sp),
-        None => (true, simple.sp),
+        None => (true, algorithm.sp),
     };
     facts.insert(
         "/domain/open".into(),
@@ -1154,13 +1302,17 @@ fn mesh_patches<'a>(
     Ok(patches)
 }
 
-/// One patch of a field file: its type and its `value` entry, if any.
+/// One patch of a field file: its type, its `value` entry if any, and the dictionary it is in.
 struct FieldPatch<'a> {
     ty: &'a Atom,
     value: Option<&'a Entry>,
+    block: &'a Block,
+    entry: Sp,
 }
 
-fn field_patches(doc: &Doc) -> Result<BTreeMap<String, FieldPatch<'_>>, ReadError> {
+type FieldPatches<'a> = BTreeMap<String, FieldPatch<'a>>;
+
+fn field_patches(doc: &Doc) -> Result<FieldPatches<'_>, ReadError> {
     let mut out = BTreeMap::new();
     let Some(field) = doc.top("boundaryField") else {
         return Ok(out);
@@ -1178,10 +1330,52 @@ fn field_patches(doc: &Doc) -> Result<BTreeMap<String, FieldPatch<'_>>, ReadErro
             FieldPatch {
                 ty,
                 value: sub(&block.entries, "value"),
+                block,
+                entry: entry.sp,
             },
         );
     }
     Ok(out)
+}
+
+/// The mesh and the field files must name the same patches: `names` are the patches of the mesh
+/// dictionary in the order it lists them, `sets` each field file with the patches it holds.
+fn match_patch_names(
+    doc: &Doc,
+    names: &[&Atom],
+    sets: &[(&Doc, &FieldPatches<'_>, &str)],
+) -> Result<(), ReadError> {
+    let mut seen = BTreeSet::new();
+    for name in names {
+        if !seen.insert(name.text.as_str()) {
+            return Err(doc.err(
+                name.sp,
+                format!("the patch \"{}\" appears twice", name.text),
+            ));
+        }
+        for (_, field, label) in sets {
+            if !field.contains_key(&name.text) {
+                return Err(doc.err(
+                    name.sp,
+                    format!("the patch \"{}\" has no entry in {label}", name.text),
+                ));
+            }
+        }
+    }
+    for (field_doc, field, _) in sets {
+        for (name, patch) in *field {
+            if !seen.contains(name.as_str()) {
+                return Err(field_doc.err(
+                    patch.ty.sp,
+                    format!(
+                        "the patch \"{name}\" is not a patch of the mesh in {}",
+                        doc.path
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What a patch is, from its mesh type and its velocity and pressure field types.
@@ -1191,18 +1385,35 @@ enum Recovered {
     Other(String),
 }
 
-fn classify(mesh: &str, velocity: &str, pressure: &str, pressure_is_zero: bool) -> Recovered {
+/// `buoyant` says the pressure file is `p_rgh`, whose patches take flux with `fixedFluxPressure`
+/// where `p` holds `zeroGradient`; a buoyant case never reads `zeroGradient` there, and a case
+/// that is not buoyant never reads `fixedFluxPressure`. An inlet is held either at a uniform value
+/// or along a profile.
+fn classify(
+    mesh: &str,
+    velocity: &str,
+    pressure: &str,
+    pressure_is_zero: bool,
+    buoyant: bool,
+) -> Recovered {
+    let flux = if buoyant {
+        "fixedFluxPressure"
+    } else {
+        "zeroGradient"
+    };
+    let takes_flux = pressure == flux;
     match (mesh, velocity, pressure) {
-        ("patch", "fixedValue", "zeroGradient") => Recovered::Known(BoundaryKind::VelocityInlet),
+        ("patch", "fixedValue" | "fixedProfile", _) if takes_flux => {
+            Recovered::Known(BoundaryKind::VelocityInlet)
+        }
         ("patch", "zeroGradient", "fixedValue") if pressure_is_zero => {
             Recovered::Known(BoundaryKind::PressureOutlet)
         }
-        ("wall", "noSlip", "zeroGradient") => Recovered::Known(BoundaryKind::NoSlipWall),
-        ("wall", "fixedValue", "zeroGradient") => Recovered::Known(BoundaryKind::MovingWall),
-        ("wall", "slip", "zeroGradient") => Recovered::Known(BoundaryKind::SlipWall),
-        ("symmetryPlane", "symmetryPlane", "symmetryPlane") => {
-            Recovered::Known(BoundaryKind::Symmetry)
-        }
+        ("wall", "noSlip", _) if takes_flux => Recovered::Known(BoundaryKind::NoSlipWall),
+        ("wall", "fixedValue", _) if takes_flux => Recovered::Known(BoundaryKind::MovingWall),
+        ("wall", "slip", _) if takes_flux => Recovered::Known(BoundaryKind::SlipWall),
+        ("symmetryPlane", "symmetryPlane", "symmetryPlane")
+        | ("symmetry", "symmetry", "symmetry") => Recovered::Known(BoundaryKind::Symmetry),
         ("empty", "empty", "empty") => Recovered::Empty,
         _ => Recovered::Other(format!(
             "unrecognised combination ({mesh}, {velocity}, {pressure}){}",
@@ -1239,13 +1450,117 @@ fn uniform_vector(doc: &Doc, entry: &Entry) -> Result<[Num; 3], ReadError> {
     }
 }
 
+/// What a patch recovers as: the words of its kind, and the kind itself when it is one the study
+/// can state. `pressure` is the file the patches of the case are judged on.
+fn recover(
+    fields: &Fields<'_>,
+    mesh_type: &str,
+    velocity: &FieldPatch<'_>,
+    pressure: &FieldPatch<'_>,
+) -> Result<(Recovered, String), ReadError> {
+    let recovered = classify(
+        mesh_type,
+        &velocity.ty.text,
+        &pressure.ty.text,
+        pressure_is_uniform_zero(fields.pressure, pressure)?,
+        fields.buoyant,
+    );
+    let text = match &recovered {
+        Recovered::Known(kind) => kind_name(*kind).to_owned(),
+        Recovered::Empty => EMPTY_KIND.to_owned(),
+        Recovered::Other(text) => text.clone(),
+    };
+    Ok((recovered, text))
+}
+
+/// The speed an inlet or a moving wall imposes, for a patch that lies on `faces`. A fixed value
+/// gives the component the kind allows on the face; a profiled inlet gives its mean speed, worked
+/// out for an inlet that spans `extent` along y. A vector the faces cannot read, or faces that
+/// disagree, give the vector as written.
+fn speed_fact(
+    doc: &Doc,
+    kind: BoundaryKind,
+    faces: &[Face],
+    patch: &FieldPatch<'_>,
+    extent: Option<(f64, f64)>,
+) -> Result<Option<Fact>, ReadError> {
+    if !matches!(kind, BoundaryKind::VelocityInlet | BoundaryKind::MovingWall) {
+        return Ok(None);
+    }
+    // The vector as written, the tokens that carry it and the entry that holds it.
+    let (raw, written, tokens, entry) = if patch.ty.text == "fixedProfile" {
+        let Some((lo, hi)) = extent else {
+            return Err(doc.err(patch.entry, "the extent of a profiled inlet is unknown"));
+        };
+        let mean = physics::profile_mean(doc, patch, lo, hi)?;
+        (
+            [mean.value, 0.0, 0.0],
+            format!("({} 0 0)", mean.value),
+            mean.spans,
+            doc.span(mean.entry),
+        )
+    } else if let Some(value) = patch.value {
+        let vector = uniform_vector(doc, value)?;
+        (
+            [vector[0].v, vector[1].v, vector[2].v],
+            format!("({} {} {})", vector[0].text, vector[1].text, vector[2].text),
+            vector.iter().map(|n| doc.span(n.sp)).collect(),
+            doc.span(value.sp),
+        )
+    } else {
+        return Ok(None);
+    };
+    let speeds: Vec<Option<f64>> = faces
+        .iter()
+        .map(|face| speed_from_vector(kind, *face, raw))
+        .collect();
+    let agreed = match speeds.first() {
+        Some(first) if first.is_some() && speeds.iter().all(|s| s == first) => *first,
+        _ => None,
+    };
+    Ok(Some(match (agreed, faces.first()) {
+        (Some(speed), Some(face)) => {
+            // The component the kind allows on this face is the one that carries the speed.
+            let axis = (0..3)
+                .find(|&i| {
+                    let mut unit = [0.0; 3];
+                    unit[i] = 1.0;
+                    speed_from_vector(kind, *face, unit).is_some()
+                })
+                .unwrap_or(0);
+            let carrier = tokens.get(axis).or(tokens.first()).cloned();
+            fact(
+                FactValue::Number(speed),
+                carrier.into_iter().collect(),
+                entry,
+            )
+        }
+        _ => fact(FactValue::Text(written), tokens, entry),
+    }))
+}
+
+/// A profiled inlet is a parabolic one.
+fn profile_fact(doc: &Doc, kind: BoundaryKind, patch: &FieldPatch<'_>) -> Option<Fact> {
+    (kind == BoundaryKind::VelocityInlet && patch.ty.text == "fixedProfile").then(|| {
+        fact(
+            FactValue::Text("parabolic".into()),
+            vec![doc.span(patch.ty.sp)],
+            doc.span(patch.entry),
+        )
+    })
+}
+
 fn mesh_and_boundary_facts(
     block_mesh: &Doc,
-    velocity: &Doc,
-    pressure: &Doc,
+    fields: &Fields<'_>,
     facts: &mut BTreeMap<String, Fact>,
+    kinds: &mut PatchKinds,
 ) -> Result<(), ReadError> {
     let doc = block_mesh;
+    if layout::is_multi_block(doc)? {
+        return layout::layout_facts(doc, fields, facts, kinds);
+    }
+    let (velocity, pressure) = (fields.velocity, fields.pressure);
     let geo = match doc.top("vertices") {
         Some(vertices) => {
             let geo = geometry(doc, vertices)?;
@@ -1295,38 +1610,16 @@ fn mesh_and_boundary_facts(
     };
     let u = field_patches(velocity)?;
     let p = field_patches(pressure)?;
+    let t = fields.temperature.map(field_patches).transpose()?;
 
-    // The mesh and both field files must name the same patches.
-    let mut seen = BTreeSet::new();
-    for patch in &mesh_patches_list {
-        if !seen.insert(patch.name.text.as_str()) {
-            return Err(doc.err(
-                patch.name.sp,
-                format!("the patch \"{}\" appears twice", patch.name.text),
-            ));
-        }
-        for (field, label) in [(&u, "0/U"), (&p, "0/p")] {
-            if !field.contains_key(&patch.name.text) {
-                return Err(doc.err(
-                    patch.name.sp,
-                    format!("the patch \"{}\" has no entry in {label}", patch.name.text),
-                ));
-            }
-        }
+    // The mesh and every field file must name the same patches.
+    let names: Vec<&Atom> = mesh_patches_list.iter().map(|patch| patch.name).collect();
+    let pressure_label = if fields.buoyant { "0/p_rgh" } else { "0/p" };
+    let mut sets = vec![(velocity, &u, "0/U"), (pressure, &p, pressure_label)];
+    if let (Some(doc_t), Some(t)) = (fields.temperature, &t) {
+        sets.push((doc_t, t, "0/T"));
     }
-    for (field_doc, field) in [(velocity, &u), (pressure, &p)] {
-        for (name, patch) in field {
-            if !seen.contains(name.as_str()) {
-                return Err(field_doc.err(
-                    patch.ty.sp,
-                    format!(
-                        "the patch \"{name}\" is not a patch of the mesh in {}",
-                        doc.path
-                    ),
-                ));
-            }
-        }
-    }
+    match_patch_names(doc, &names, &sets)?;
 
     // Each side of the box belongs to one patch.
     let mut claimed: BTreeMap<Side, usize> = BTreeMap::new();
@@ -1346,22 +1639,19 @@ fn mesh_and_boundary_facts(
         }
     }
 
+    let extent = geo.as_ref().map(|g| (g.lo[1], g.hi[1]));
     for patch in &mesh_patches_list {
         let (fu, fp) = (&u[&patch.name.text], &p[&patch.name.text]);
-        let recovered = classify(
-            &patch.mesh_type.text,
-            &fu.ty.text,
-            &fp.ty.text,
-            pressure_is_uniform_zero(pressure, fp)?,
-        );
-        let text = match &recovered {
-            Recovered::Known(kind) => kind_name(*kind).to_owned(),
-            Recovered::Empty => EMPTY_KIND.to_owned(),
-            Recovered::Other(text) => text.clone(),
-        };
+        let (recovered, text) = recover(fields, &patch.mesh_type.text, fu, fp)?;
+        // Every patch has a kind as written, known or not, so a surface monitor on it reads that
+        // kind and the mismatch is reported once, on the patch, not as an unreadable monitor.
+        kinds.insert(patch.name.text.clone(), text.clone());
+        let ft = t.as_ref().and_then(|t| t.get(&patch.name.text));
         for (side, tuple) in &patch.sides {
+            let by_face =
+                |name: &str| format!("/boundary_conditions/by_face/{}/{name}", side.name());
             facts.insert(
-                format!("/boundary_conditions/by_face/{}/kind", side.name()),
+                by_face("kind"),
                 fact(
                     FactValue::Text(text.clone()),
                     vec![
@@ -1373,48 +1663,18 @@ fn mesh_and_boundary_facts(
                     doc.span(patch.entry),
                 ),
             );
-            let (Recovered::Known(kind), Some(face), Some(value)) =
-                (&recovered, side.face(), fu.value)
-            else {
+            let (Recovered::Known(kind), Some(face)) = (&recovered, side.face()) else {
                 continue;
             };
-            if !matches!(kind, BoundaryKind::VelocityInlet | BoundaryKind::MovingWall) {
-                continue;
+            if let Some(speed) = speed_fact(velocity, *kind, &[face], fu, extent)? {
+                facts.insert(by_face("velocity"), speed);
             }
-            let vector = uniform_vector(velocity, value)?;
-            let raw = [vector[0].v, vector[1].v, vector[2].v];
-            let key = format!("/boundary_conditions/by_face/{}/velocity", side.name());
-            let entry = velocity.span(value.sp);
-            match speed_from_vector(*kind, face, raw) {
-                Some(speed) => {
-                    // The component the kind allows on this face is the one that carries the speed.
-                    let axis = (0..3)
-                        .find(|&i| {
-                            let mut unit = [0.0; 3];
-                            unit[i] = 1.0;
-                            speed_from_vector(*kind, face, unit).is_some()
-                        })
-                        .unwrap_or(0);
-                    facts.insert(
-                        key,
-                        fact(
-                            FactValue::Number(speed),
-                            vec![velocity.span(vector[axis].sp)],
-                            entry,
-                        ),
-                    );
-                }
-                None => {
-                    let written =
-                        format!("({} {} {})", vector[0].text, vector[1].text, vector[2].text);
-                    facts.insert(
-                        key,
-                        fact(
-                            FactValue::Text(written),
-                            vector.iter().map(|n| velocity.span(n.sp)).collect(),
-                            entry,
-                        ),
-                    );
+            if let Some(profile) = profile_fact(velocity, *kind, fu) {
+                facts.insert(by_face("profile"), profile);
+            }
+            if let (Some(doc_t), Some(ft)) = (fields.temperature, ft) {
+                for (name, thermal) in physics::thermal_facts(doc_t, *kind, ft)? {
+                    facts.insert(by_face(name), thermal);
                 }
             }
         }
@@ -1478,19 +1738,10 @@ fn block_facts(
             ),
         );
     }
-    let numbers = doc.nums(grading, 3)?;
-    let text = numbers
-        .iter()
-        .map(|n| n.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let (text, spans) = layout::grading_axes(doc, grading)?;
     facts.insert(
         "/mesh/grading".into(),
-        fact(
-            FactValue::Text(text),
-            numbers.iter().map(|n| doc.span(n.sp)).collect(),
-            doc.span(blocks.sp),
-        ),
+        fact(FactValue::Text(text), spans, doc.span(blocks.sp)),
     );
     Ok(())
 }

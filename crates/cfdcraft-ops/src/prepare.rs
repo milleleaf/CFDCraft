@@ -5,15 +5,16 @@
 
 use crate::report::Report;
 use cfdcraft_backend_esi::{
-    CaseTree, CompileError, Dialect,
+    CaseTree, CompileError, Dialect, SolverPlan,
     case::{CaseOptions, compile_with},
-    export::export_tree_for,
+    export::export_tree_with,
     guard::{self, Refusal},
     reader::{EsiReader, source_files},
+    shaped_expected_facts,
 };
 use cfdcraft_model::{
     Diagnostic, Location, MigrationNote, ResolvedStudy, Study, canonical_hash, diagnose,
-    has_errors, resolve, roundtrip::check_roundtrip,
+    has_errors, resolve, roundtrip::check_roundtrip_with,
 };
 use std::path::Path;
 
@@ -133,11 +134,18 @@ fn prepare_inner(
         let found = refusals.iter().map(refusal_diagnostic).collect();
         return Err(fail(found, Some(hash), migration));
     }
-    let unread = check_roundtrip(&EsiReader, &source_files(&tree), &resolved);
+    // A shaped study's geometry and per-patch conditions, and the patch a force or a boundary probe
+    // reads, are expected from the backend's own list; a box study with no such monitor has none.
+    let unread = check_roundtrip_with(
+        &EsiReader,
+        &source_files(&tree),
+        &resolved,
+        &shaped_expected_facts(&resolved),
+    );
     if has_errors(&unread) {
         return Err(fail(unread, Some(hash), migration));
     }
-    let export_tree = export_tree_for(&tree, &hash, options.np);
+    let export_tree = export_tree_with(&tree, &hash, options.np, &SolverPlan::for_study(&resolved));
     Ok(Prepared {
         resolved,
         hash,

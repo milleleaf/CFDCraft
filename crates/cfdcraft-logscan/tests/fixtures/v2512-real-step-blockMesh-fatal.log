@@ -1,0 +1,50 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2512                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _87ed40d2-20251219 OPENFOAM=2512 version=2512
+Arch   : "LSB;label=32;scalar=64"
+Exec   : blockMesh
+Date   : Nov 04 2026
+Time   : 00:31:19
+Host   : redacted
+PID    : redacted
+I/O    : uncollated
+Case   : /w
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+memory pool : not available
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Creating block mesh from "system/blockMeshDict"
+--> FOAM IOWarning :
+    Found [v1012] 'convertToMeters' entry instead of 'scale' in dictionary "system/blockMeshDict"
+
+    This keyword is 180 months old.
+
+Creating block edges
+No non-planar block faces defined
+Creating topology blocks
+
+Creating topology patches - from boundary section
+
+Creating block mesh topology
+
+
+--> FOAM FATAL ERROR: (openfoam-2512)
+Symmetry plane 'startup' is not planar.
+At local face at (0.127 0.0127 0.00635) the normal (0 -1 0) differs from the average normal (0 0 0) by 1
+Either split the patch into planar parts or use the symmetry patch type
+
+    From virtual void Foam::symmetryPlanePolyPatch::calcGeometry(Foam::PstreamBuffers&)
+    in file meshes/polyMesh/polyPatches/constraint/symmetryPlane/symmetryPlanePolyPatch.C at line 78.
+
+FOAM exiting
+

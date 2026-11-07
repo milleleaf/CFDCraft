@@ -923,7 +923,7 @@ fn the_new_tools_are_used_without_the_attached_setting() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 35, "{names:?}");
+    assert_eq!(names.len(), 40, "{names:?}");
     for tool in [
         "queue_list",
         "queue_add",

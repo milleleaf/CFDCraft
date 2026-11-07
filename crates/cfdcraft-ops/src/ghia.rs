@@ -1,104 +1,12 @@
 //! The reference comparison for the lid-driven cavity, as data: every station with the computed
 //! value, the reference value and the deviation, plus the tolerance and the verdict per component.
 
-use cfdcraft_bench_ghia::{Comparison, GhiaTable, Profile, Row, render_table};
+use crate::benchmarks::DirFiles;
+use cfdcraft_bench_ghia::{GhiaTable, Profile};
+use cfdcraft_gate::ResultFiles;
+pub use cfdcraft_gate::{GateMetric, GateReport, GateRow};
 use cfdcraft_model::ResolvedStudy;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct GateRow {
-    pub station: f64,
-    pub computed: f64,
-    pub reference: f64,
-    pub abs_dev: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct GateMetric {
-    /// `u` for the vertical centreline, `v` for the horizontal one.
-    pub name: String,
-    pub max_abs_dev: f64,
-    pub tolerance: f64,
-    pub passed: bool,
-    pub rows: Vec<GateRow>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct GateReport {
-    /// Always `ghia`.
-    pub name: String,
-    pub passed: bool,
-    pub metrics: Vec<GateMetric>,
-    /// Why the gate failed without a comparison: missing or corrupt sampled output.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-impl GateMetric {
-    fn from_comparison(name: &str, c: &Comparison) -> Self {
-        Self {
-            name: name.to_owned(),
-            max_abs_dev: c.max_abs_dev,
-            tolerance: c.tolerance,
-            passed: c.passed,
-            rows: c
-                .rows
-                .iter()
-                .map(|r| GateRow {
-                    station: r.station,
-                    computed: r.computed,
-                    reference: r.reference,
-                    abs_dev: r.abs_dev,
-                })
-                .collect(),
-        }
-    }
-
-    /// The reference crate's own value, for rendering.
-    pub fn to_comparison(&self) -> Comparison {
-        Comparison {
-            max_abs_dev: self.max_abs_dev,
-            tolerance: self.tolerance,
-            passed: self.passed,
-            rows: self
-                .rows
-                .iter()
-                .map(|r| Row {
-                    station: r.station,
-                    computed: r.computed,
-                    reference: r.reference,
-                    abs_dev: r.abs_dev,
-                })
-                .collect(),
-        }
-    }
-}
-
-impl GateReport {
-    /// A failed gate that never got as far as a comparison.
-    pub fn failed(reason: impl Into<String>) -> Self {
-        Self {
-            name: "ghia".to_owned(),
-            passed: false,
-            metrics: Vec::new(),
-            reason: Some(reason.into()),
-        }
-    }
-
-    /// The reference crate's table when there is a comparison, else the reason.
-    pub fn render_text(&self) -> String {
-        if let Some(reason) = &self.reason {
-            return format!("Ghia verdict: FAILED\n  {reason}\n");
-        }
-        let find = |name: &str| self.metrics.iter().find(|m| m.name == name);
-        match (find("u"), find("v")) {
-            (Some(u), Some(v)) => render_table(&u.to_comparison(), &v.to_comparison()),
-            _ => "Ghia verdict: FAILED\n  the comparison is incomplete\n".to_owned(),
-        }
-    }
-}
 
 /// The shipped reference, with the caller's tolerance file when one is given.
 pub fn load_table(tolerance: Option<&Path>) -> Result<GhiaTable, String> {
@@ -150,47 +58,76 @@ pub fn profile_from_raw(
     Ok(Profile { coords, values })
 }
 
-fn compare(results: &Path, r: &ResolvedStudy, table: &GhiaTable) -> Result<GateReport, String> {
+/// The two sampled centrelines of a finished run, in lid-velocity units on the unit interval:
+/// the vertical one (streamwise velocity) and the horizontal one (cross velocity).
+pub(crate) fn centrelines(
+    files: &dyn ResultFiles,
+    r: &ResolvedStudy,
+) -> Result<(Profile, Profile), String> {
     let lid = r
         .lid_velocity()
         .ok_or("the comparison needs a lid-driven cavity")?;
-    let root = results.join("postProcessing/centreline");
-    let final_dir = std::fs::read_dir(&root)
-        .map_err(|_| "missing sampled centreline output")?
-        .filter_map(Result::ok)
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .parse::<f64>()
+    let root = "postProcessing/centreline";
+    let times = files.list(root);
+    if times.is_empty() {
+        return Err("missing sampled centreline output".into());
+    }
+    let final_dir = times
+        .iter()
+        .find(|name| {
+            name.parse::<f64>()
                 .is_ok_and(|t| (t - r.solver.end_time).abs() < 1e-6)
         })
-        .ok_or("missing final-time centreline output")?
-        .path();
+        .ok_or("missing final-time centreline output")?;
     let read = |name: &str| {
-        std::fs::read_to_string(final_dir.join(name))
-            .map_err(|_| format!("missing sampled file {name}"))
+        files
+            .read(&format!("{root}/{final_dir}/{name}"))
+            .ok_or_else(|| format!("missing sampled file {name}"))
     };
     let u = profile_from_raw(&read("vertical_U.xy")?, r.domain.length_y, lid, 1)?;
     let v = profile_from_raw(&read("horizontal_U.xy")?, r.domain.length_x, lid, 2)?;
+    Ok((u, v))
+}
+
+fn compare(
+    files: &dyn ResultFiles,
+    r: &ResolvedStudy,
+    table: &GhiaTable,
+) -> Result<GateReport, String> {
+    let (u, v) = centrelines(files, r)?;
     let u = table.compare_u(&u).map_err(|e| e.to_string())?;
     let v = table.compare_v(&v).map_err(|e| e.to_string())?;
-    Ok(GateReport {
-        name: "ghia".to_owned(),
-        passed: u.passed && v.passed,
-        metrics: vec![
+    Ok(GateReport::from_metrics(
+        "ghia",
+        vec![
             GateMetric::from_comparison("u", &u),
             GateMetric::from_comparison("v", &v),
         ],
-        reason: None,
+    ))
+}
+
+/// Compare the sampled centrelines of a finished run, read through `files`, with the reference.
+/// Missing or corrupt output is a failed gate with the reason, not an error.
+pub(crate) fn compare_files(
+    files: &dyn ResultFiles,
+    r: &ResolvedStudy,
+    table: &GhiaTable,
+) -> GateReport {
+    compare(files, r, table).unwrap_or_else(|reason| {
+        GateReport::failed_named(
+            "ghia",
+            format!("invalid or incomplete sampled output: {reason}"),
+        )
     })
 }
 
 /// Compare the sampled centrelines of a finished run with the reference. Missing or corrupt
 /// output is a failed gate with the reason, not an error.
 pub fn compare_results(results: &Path, r: &ResolvedStudy, table: &GhiaTable) -> GateReport {
-    compare(results, r, table).unwrap_or_else(|reason| {
-        GateReport::failed(format!("invalid or incomplete sampled output: {reason}"))
-    })
+    let files = DirFiles {
+        root: results.to_path_buf(),
+    };
+    compare_files(&files, r, table)
 }
 
 #[cfg(test)]

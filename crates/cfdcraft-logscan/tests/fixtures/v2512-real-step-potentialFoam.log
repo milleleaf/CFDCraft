@@ -1,0 +1,49 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2512                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _87ed40d2-20251219 OPENFOAM=2512 version=2512
+Arch   : "LSB;label=32;scalar=64"
+Exec   : potentialFoam -initialiseUBCs
+Date   : Nov 04 2026
+Time   : 00:35:45
+Host   : redacted
+PID    : redacted
+I/O    : uncollated
+Case   : /w
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+memory pool : not available
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh for time = 0
+
+
+potentialFlow: Operating solver in PISO mode
+
+Reading velocity field U
+
+Constructing pressure field p
+
+Constructing velocity potential field Phi
+
+No MRF models present
+
+
+Calculating potential flow
+GAMG:  Solving for Phi, Initial residual = 1, Final residual = 0.00863194308323, No Iterations 31
+GAMG:  Solving for Phi, Initial residual = 4.32606892421e-05, Final residual = 7.71342015615e-07, No Iterations 17
+GAMG:  Solving for Phi, Initial residual = 7.70625305293e-07, Final residual = 7.70625305293e-07, No Iterations 0
+Continuity error = 0.00287597013999
+Interpolated velocity error = 6.82758095297e-05
+ExecutionTime = 0.16 s  ClockTime = 0 s
+
+End
+

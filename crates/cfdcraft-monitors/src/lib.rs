@@ -2,14 +2,16 @@
 //!
 //! Everything here is pure: text in, series out. A number that is not finite, a row of the wrong width, an oversized file or too many rows is refused by name and never turned into a number.
 
+mod coefficients;
 mod probes;
 mod series;
 mod surface;
 mod xy;
 
+pub use coefficients::{CoefficientFile, coefficient_series, parse_coefficients};
 pub use probes::{FieldKind, ProbeFile, ProbeInfo, Row, Value, parse_probes, probe_series};
 pub use series::{
     MAX_BYTES, MAX_PROBES, MAX_ROWS, MonitorError, Series, join_series, line_mean_series,
 };
-pub use surface::{SurfaceFile, parse_surface, surface_series};
+pub use surface::{SurfaceFile, parse_surface, surface_series, surface_series_component};
 pub use xy::{LineFile, parse_xy};

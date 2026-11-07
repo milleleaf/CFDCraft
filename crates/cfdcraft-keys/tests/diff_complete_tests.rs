@@ -75,6 +75,7 @@ fn probe(label: &str, x: f64, y: f64) -> ResolvedProbe {
         x,
         y,
         field: MonitorField::Velocity,
+        boundary: None,
     }
 }
 

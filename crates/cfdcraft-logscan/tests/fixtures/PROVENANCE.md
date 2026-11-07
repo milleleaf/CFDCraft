@@ -13,6 +13,11 @@ The logs the tests read are built in code, read from another crate's fixtures, o
 | `v2512-real-parallel-decomposePar.log` | this folder, `tests/real_log_tests.rs` | real | `decomposePar -force` of a 300 x 300 case on 2 processes. Same image, date and redaction. Whole. |
 | `v2512-real-parallel-simpleFoam.log` | this folder, `tests/real_log_tests.rs` | real | `simpleFoam -parallel` on 2 processes, 120 iterations, ending with `End` and `Finalising parallel run`. Same image, date and redaction (the host name also appears in the `Hosts` list). Whole. |
 | `v2512-real-parallel-reconstructPar.log` | this folder, `tests/real_log_tests.rs` | real | `reconstructPar -latestTime` of that run. Same image, date and redaction. Whole. |
+| `v2512-real-cylinder-pimpleFoam.log` | this folder, `tests/real_log_tests.rs`; also read by the backend crate's `tests/real_smoke_tests.rs` | real | `pimpleFoam` of the cylinder channel (coarse mesh, 5784 cells), 60 time steps of 1 ms, run on 2026-11-04 in the pinned image (digest `sha256:33fb575aa9980d2bc42fd58c75ae698c489293ba30c991380fe3f899c622f319`) through the command-line tool's smoke run. Removed: the host name and the process id (replaced by `redacted`). Whole. |
+| `v2512-real-heated-buoyantBoussinesqSimpleFoam.log` | this folder, `tests/real_log_tests.rs` | real | `buoyantBoussinesqSimpleFoam` of the heated cavity (coarse mesh, 1600 cells, Rayleigh number 1e5), 60 iterations, through the smoke run. Same image, date and redaction. Whole. |
+| `v2512-real-step-simpleFoam.log` | this folder, `tests/real_log_tests.rs`; also read by the backend crate's `tests/real_smoke_tests.rs` | real | `simpleFoam` with the k-omega SST model on the turbulent backward step (coarse mesh, 20760 cells in four blocks), 60 iterations. It was run with a container started by hand on the compute host from the case the tool exports, with the `startup` patch type changed from `symmetryPlane` to `symmetry` by hand, because the tool's own run stopped in the mesher (see the next row). Same image, date and redaction. Whole. |
+| `v2512-real-step-potentialFoam.log` | this folder, `tests/real_log_tests.rs`; also read by the backend crate's `tests/real_smoke_tests.rs` | real | `potentialFoam -initialiseUBCs` before the same step run. Same image, date and redaction (also started by hand). Whole. |
+| `v2512-real-step-blockMesh-fatal.log` | this folder, `tests/real_log_tests.rs`; also read by the backend crate's `tests/real_smoke_tests.rs` | real | `blockMesh` of the turbulent step as the tool wrote it before the fix: it stopped with `Symmetry plane 'startup' is not planar`. Run through the tool's smoke run. Same image, date and redaction. Whole. |
 | inline log lines in the scan and divergence tests | the test files | synthetic | A few lines typed to show one rule, in the shapes above. |
 
 ## Error-table tails
@@ -38,5 +43,7 @@ The tails in `tests/explain_tests.rs` map to the known-error table. Two come fro
 | `BANNER` | `tests/explain_tests.rs` | real | The start-up line from the real v2512 log, used to show it is not an error. |
 
 ## Not yet real
+
+A real mesh dictionary error is recorded now (`v2512-real-step-blockMesh-fatal.log`) and the error table has no entry for it: it reads as unknown.
 
 The text a real floating-point trap prints has not been recorded: the one run that blew up was stopped on the continuity rule before any number overflowed. `of14-windaround-buildings.log` stays the only real trap text, and it is from the Foundation line.

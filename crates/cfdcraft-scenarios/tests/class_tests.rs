@@ -1,7 +1,11 @@
 use std::collections::HashSet;
 
 use cfdcraft_keys::{StageKeys, StageRecipes, ToolIdentity};
-use cfdcraft_model::{ResolvedStudy, Study, resolve};
+use cfdcraft_model::{
+    InitMode, InletProfile, ResolvedBuoyancy, ResolvedGrading, ResolvedPhysics, ResolvedShape,
+    ResolvedStudy, ResolvedThermal, ResolvedTime, ResolvedTurbulence, Study, TurbulenceModel,
+    resolve,
+};
 use cfdcraft_scenarios::{
     KNOWN_SETTINGS, Override, Scenario, SettingClass, apply_overrides, classify, classify_setting,
     effective_study,
@@ -202,6 +206,9 @@ enum How {
     /// A direct change to the resolved study, for the two settings that cannot be changed alone
     /// on a valid study.
     Resolved(fn(&mut ResolvedStudy)),
+    /// A direct change to a resolved study that first has a base applied, for a setting that
+    /// only means something once its parent exists. The keys before the change are the base's.
+    ResolvedOn(fn(&mut ResolvedStudy), fn(&mut ResolvedStudy)),
 }
 
 struct Sample {
@@ -235,6 +242,100 @@ fn samples() -> Vec<Sample> {
         let cells = format!("/mesh/cells_{axis}");
         let count = if axis == "z" { 2 } else { 256 };
         out.push(sample(&cells, &cells, json!(count)));
+    }
+    out.push(sample("/mesh/level", "/mesh/level", json!(2)));
+    out.push(sample("/mesh/grading", "/mesh/grading", json!({"x": 1.1})));
+    out.push(Sample {
+        row: "/mesh/grading/x".to_string(),
+        setting: "/mesh/grading/x".to_string(),
+        how: How::Resolved(|r| {
+            r.mesh.grading = Some(ResolvedGrading {
+                x: Some(1.1),
+                y: None,
+            })
+        }),
+        changes: true,
+    });
+    out.push(Sample {
+        row: "/mesh/grading/y".to_string(),
+        setting: "/mesh/grading/y".to_string(),
+        how: How::Resolved(|r| {
+            r.mesh.grading = Some(ResolvedGrading {
+                x: None,
+                y: Some(1.1),
+            })
+        }),
+        changes: true,
+    });
+    // The cavity is a plain box, so a shape cannot be written onto it as a valid study; each
+    // sample puts a shape on the resolved study, which is what the mesh key reads.
+    type Shaper = fn(&mut ResolvedStudy);
+    let shapes: [(&str, Shaper); 6] = [
+        ("step_height", |r| {
+            r.domain.shape = Some(ResolvedShape::BackwardStep {
+                step_height: 0.01,
+                upstream_length: 0.05,
+                startup_length: 0.0,
+            })
+        }),
+        ("upstream_length", |r| {
+            r.domain.shape = Some(ResolvedShape::BackwardStep {
+                step_height: 0.02,
+                upstream_length: 0.06,
+                startup_length: 0.0,
+            })
+        }),
+        ("startup_length", |r| {
+            r.domain.shape = Some(ResolvedShape::BackwardStep {
+                step_height: 0.02,
+                upstream_length: 0.05,
+                startup_length: 0.01,
+            })
+        }),
+        ("diameter", |r| {
+            r.domain.shape = Some(ResolvedShape::CylinderChannel {
+                diameter: 0.01,
+                centre_x: 0.05,
+                centre_y: 0.05,
+            })
+        }),
+        ("centre_x", |r| {
+            r.domain.shape = Some(ResolvedShape::CylinderChannel {
+                diameter: 0.02,
+                centre_x: 0.04,
+                centre_y: 0.05,
+            })
+        }),
+        ("centre_y", |r| {
+            r.domain.shape = Some(ResolvedShape::CylinderChannel {
+                diameter: 0.02,
+                centre_x: 0.05,
+                centre_y: 0.04,
+            })
+        }),
+    ];
+    out.push(Sample {
+        row: "/domain/shape".to_string(),
+        setting: "/domain/shape".to_string(),
+        how: How::Resolved(|r| {
+            r.domain.shape = Some(ResolvedShape::BackwardStep {
+                step_height: 0.02,
+                upstream_length: 0.05,
+                startup_length: 0.0,
+            })
+        }),
+        changes: true,
+    });
+    for (member, edit) in shapes {
+        for suffix in ["", "/value", "/unit"] {
+            let setting = format!("/domain/shape/{member}{suffix}");
+            out.push(Sample {
+                row: setting.clone(),
+                setting,
+                how: How::Resolved(edit),
+                changes: true,
+            });
+        }
     }
     out.push(Sample {
         row: "/domain/open".to_string(),
@@ -320,7 +421,177 @@ fn samples() -> Vec<Sample> {
         "/monitors/centreline_u_sample_count",
         json!(32),
     ));
+    thermal_and_profile_samples(&mut out);
+    physics_samples(&mut out);
     out
+}
+
+fn resolved_sample(row: &str, setting: &str, how: How) -> Sample {
+    Sample {
+        row: row.to_string(),
+        setting: setting.to_string(),
+        how,
+        changes: true,
+    }
+}
+
+/// The cavity with the walls held at 300 K.
+fn walls_at_300(r: &mut ResolvedStudy) {
+    r.boundary_conditions.get_mut("walls").unwrap().thermal =
+        Some(ResolvedThermal::FixedTemperature { value: 300.0 });
+}
+
+fn thermal_and_profile_samples(out: &mut Vec<Sample>) {
+    out.push(resolved_sample(
+        "/boundary_conditions/<label>/thermal",
+        "/boundary_conditions/walls/thermal",
+        How::Resolved(walls_at_300),
+    ));
+    // Only the temperature changes, and the walls stay the only fixed temperature, so the mesh
+    // keeps its patches.
+    for suffix in ["", "/value", "/unit"] {
+        let row = format!("/boundary_conditions/<label>/thermal/value{suffix}");
+        let setting = format!("/boundary_conditions/walls/thermal/value{suffix}");
+        out.push(resolved_sample(
+            &row,
+            &setting,
+            How::ResolvedOn(walls_at_300, |r| {
+                r.boundary_conditions.get_mut("walls").unwrap().thermal =
+                    Some(ResolvedThermal::FixedTemperature { value: 310.0 });
+            }),
+        ));
+    }
+    out.push(resolved_sample(
+        "/boundary_conditions/<label>/profile",
+        "/boundary_conditions/lid/profile",
+        How::Resolved(|r| {
+            r.boundary_conditions.get_mut("lid").unwrap().profile = Some(InletProfile::Parabolic);
+        }),
+    ));
+}
+
+/// The cavity with every physics member stated.
+fn full_physics(r: &mut ResolvedStudy) {
+    r.physics = Some(ResolvedPhysics {
+        time: ResolvedTime::Transient { delta_t: 0.001 },
+        turbulence: ResolvedTurbulence {
+            model: TurbulenceModel::KOmegaSst,
+            intensity: Some(0.05),
+            viscosity_ratio: Some(10.0),
+            reference_velocity: Some(1.0),
+        },
+        buoyancy: Some(ResolvedBuoyancy {
+            gravity: 9.81,
+            beta: 0.003,
+            reference_temperature: 300.0,
+            prandtl: 0.71,
+            turbulent_prandtl: 0.85,
+        }),
+        init: InitMode::Potential,
+    });
+}
+
+fn physics_mut(r: &mut ResolvedStudy) -> &mut ResolvedPhysics {
+    r.physics.as_mut().unwrap()
+}
+
+fn physics_samples(out: &mut Vec<Sample>) {
+    // The cavity's solver kind is SimpleLaminar, which refuses any physics as a valid study, so
+    // the whole record is put on the resolved study like the members below.
+    out.push(resolved_sample(
+        "/physics",
+        "/physics",
+        How::Resolved(full_physics),
+    ));
+    type Edit = fn(&mut ResolvedStudy);
+    let edits: [(&[&str], Edit); 11] = [
+        (&["/physics/time", "/physics/time/mode"], |r| {
+            physics_mut(r).time = ResolvedTime::Steady;
+        }),
+        (
+            &[
+                "/physics/time/delta_t",
+                "/physics/time/delta_t/value",
+                "/physics/time/delta_t/unit",
+            ],
+            |r| physics_mut(r).time = ResolvedTime::Transient { delta_t: 0.002 },
+        ),
+        (&["/physics/turbulence"], |r| {
+            physics_mut(r).turbulence = ResolvedTurbulence {
+                model: TurbulenceModel::Laminar,
+                intensity: None,
+                viscosity_ratio: None,
+                reference_velocity: None,
+            };
+        }),
+        (&["/physics/turbulence/model"], |r| {
+            physics_mut(r).turbulence.model = TurbulenceModel::RealizableKe;
+        }),
+        (&["/physics/turbulence/intensity"], |r| {
+            physics_mut(r).turbulence.intensity = Some(0.1);
+        }),
+        (&["/physics/turbulence/viscosity_ratio"], |r| {
+            physics_mut(r).turbulence.viscosity_ratio = Some(5.0);
+        }),
+        (
+            &[
+                "/physics/turbulence/reference_velocity",
+                "/physics/turbulence/reference_velocity/value",
+                "/physics/turbulence/reference_velocity/unit",
+            ],
+            |r| physics_mut(r).turbulence.reference_velocity = Some(2.0),
+        ),
+        (&["/physics/buoyancy"], |r| physics_mut(r).buoyancy = None),
+        (&["/physics/buoyancy/gravity"], |r| {
+            physics_mut(r).buoyancy.as_mut().unwrap().gravity = 1.62;
+        }),
+        (&["/physics/buoyancy/beta"], |r| {
+            physics_mut(r).buoyancy.as_mut().unwrap().beta = 0.004;
+        }),
+        (&["/physics/init"], |r| {
+            physics_mut(r).init = InitMode::Uniform
+        }),
+    ];
+    for (rows, edit) in edits {
+        for row in rows {
+            out.push(resolved_sample(
+                row,
+                row,
+                How::ResolvedOn(full_physics, edit),
+            ));
+        }
+    }
+    let buoyancy: [(&[&str], Edit); 3] = [
+        (
+            &[
+                "/physics/buoyancy/reference_temperature",
+                "/physics/buoyancy/reference_temperature/value",
+                "/physics/buoyancy/reference_temperature/unit",
+            ],
+            |r| {
+                physics_mut(r)
+                    .buoyancy
+                    .as_mut()
+                    .unwrap()
+                    .reference_temperature = 310.0
+            },
+        ),
+        (&["/physics/buoyancy/prandtl"], |r| {
+            physics_mut(r).buoyancy.as_mut().unwrap().prandtl = 0.7;
+        }),
+        (&["/physics/buoyancy/turbulent_prandtl"], |r| {
+            physics_mut(r).buoyancy.as_mut().unwrap().turbulent_prandtl = 0.9;
+        }),
+    ];
+    for (rows, edit) in buoyancy {
+        for row in rows {
+            out.push(resolved_sample(
+                row,
+                row,
+                How::ResolvedOn(full_physics, edit),
+            ));
+        }
+    }
 }
 
 #[test]
@@ -340,7 +611,7 @@ fn every_known_setting_has_a_sample_and_every_sample_a_row() {
 
 #[test]
 fn the_mesh_key_moves_exactly_for_geometry_class_settings() {
-    let before = keys_of(&cavity());
+    let plain = keys_of(&cavity());
     for sample in samples() {
         let (_, class) = KNOWN_SETTINGS
             .iter()
@@ -352,19 +623,26 @@ fn the_mesh_key_moves_exactly_for_geometry_class_settings() {
             "{} is not classed as its row",
             sample.setting
         );
-        let after = match &sample.how {
+        let (before, after) = match &sample.how {
             How::Override(value) => {
                 let item = set(&sample.setting, value.clone());
                 assert_eq!(
                     classify(&cavity_json(), std::slice::from_ref(&item)),
                     *class
                 );
-                keys_after(&[item])
+                (plain, keys_after(&[item]))
             }
             How::Resolved(change) => {
                 let mut resolved = cavity();
                 change(&mut resolved);
-                keys_of(&resolved)
+                (plain, keys_of(&resolved))
+            }
+            How::ResolvedOn(base, change) => {
+                let mut resolved = cavity();
+                base(&mut resolved);
+                let before = keys_of(&resolved);
+                change(&mut resolved);
+                (before, keys_of(&resolved))
             }
         };
         let mesh_moved = before.mesh != after.mesh;

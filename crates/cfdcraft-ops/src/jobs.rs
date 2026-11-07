@@ -16,20 +16,20 @@ use std::path::{Path, PathBuf};
 
 use cfdcraft_assess::Spec;
 use cfdcraft_backend_esi::{
-    CaseFile, CaseTree, Dialect,
+    CaseFile, CaseTree, Dialect, SolverPlan,
     case::{CaseOptions, continue_case},
-    export::export_tree_for,
+    export::export_tree_with,
 };
 use cfdcraft_capture::{
-    CaptureError, checkpoint_bundle, key_numbers, latest_time_dir, mesh_bundle, read_entry,
-    result_bundle, store_bundle,
+    CaptureError, CapturePlan, checkpoint_bundle_with, key_numbers_with, latest_time_dir,
+    mesh_bundle, read_entry, result_bundle_with, store_bundle,
 };
 use cfdcraft_compare::{Comparison, KeyNumbers, Tolerance, compare};
 use cfdcraft_doc::{
     DocError, Document, Opened, Stamp, open, open_stamped, save_if_unchanged, store_dir,
 };
 use cfdcraft_keys::{Stage, StageKeys, StageRecipes, ToolIdentity, diff_mesh};
-use cfdcraft_model::{Diagnostic, Severity, Study};
+use cfdcraft_model::{Diagnostic, ResolvedStudy, Severity, Study};
 use cfdcraft_runs::{
     Check, Checkpoint, ContinuedFrom, Item, Output, Provenance, RunRecord, StageState, Status,
     find_run, is_plain_name, latest_mesh, latest_result, next_run_id, status_for, verify_runs,
@@ -38,6 +38,7 @@ use cfdcraft_settle::{Settings, Verdict};
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
 
+use crate::benchmarks::{DirFiles, quantities_for};
 use crate::convergence::{assess_dir, settings_for, spec_for};
 use crate::documents::{
     DocOutcome, Finding, finding, is_pack_name, migration_with, not_written, pack_kept, problem,
@@ -166,15 +167,37 @@ pub struct DocJob {
     continue_from: Option<ContinuedFrom>,
     /// For a continued run, the saved state it starts from: the blob and its size.
     checkpoint: Option<(ContentHash, u64)>,
+    /// What is kept of the folder the run leaves: the solver log, the fields, the residuals.
+    capture: CapturePlan,
+    /// The study as resolved, for the numbers a benchmark records.
+    bench_study: ResolvedStudy,
+}
+
+/// What is kept of the results of a run of this study, from its solver plan. The centreline
+/// samples are kept for a box, the only layout the sampled lines are written for.
+pub fn capture_plan_for(resolved: &ResolvedStudy) -> CapturePlan {
+    let solver = SolverPlan::for_study(resolved);
+    let mut residual_fields = vec!["Ux".to_owned(), "Uy".to_owned(), solver.pressure_field];
+    if solver.buoyant {
+        residual_fields.push("T".to_owned());
+    }
+    CapturePlan {
+        log: solver.log_file,
+        fields: solver.final_fields,
+        centreline: resolved.domain.shape.is_none(),
+        residual_fields,
+    }
 }
 
 /// The cells of the mesh a study makes.
-fn cells_of(resolved: &cfdcraft_model::ResolvedStudy) -> u64 {
-    resolved
-        .mesh
-        .cells_x
-        .saturating_mul(resolved.mesh.cells_y)
-        .saturating_mul(resolved.mesh.cells_z)
+fn cells_of(resolved: &ResolvedStudy) -> u64 {
+    resolved.cell_count().unwrap_or_else(|| {
+        resolved
+            .mesh
+            .cells_x
+            .saturating_mul(resolved.mesh.cells_y)
+            .saturating_mul(resolved.mesh.cells_z)
+    })
 }
 
 /// An id given by a person, shortened and with control characters replaced, for a message.
@@ -555,6 +578,7 @@ fn plan_make(
     let runs = &document.artifacts.runs;
     let assess = (spec_for(&resolved), settings_for(&effective));
     let cells = cells_of(&resolved);
+    let capture = capture_plan_for(&resolved);
 
     let keys = recipes.keys();
     let pruned = Pruned {
@@ -619,6 +643,8 @@ fn plan_make(
         cells,
         continue_from: None,
         checkpoint: None,
+        capture,
+        bench_study: resolved,
     })
 }
 
@@ -708,6 +734,7 @@ fn plan_rerun(
     let scenario = original.scenario.clone();
     let assess = (spec_for(&prepared.resolved), settings_for(&effective));
     let cells = cells_of(&prepared.resolved);
+    let capture = capture_plan_for(&prepared.resolved);
     let repeat = Repeat {
         original: original.clone(),
         tolerance,
@@ -737,6 +764,8 @@ fn plan_rerun(
         cells,
         continue_from: None,
         checkpoint: None,
+        capture,
+        bench_study: prepared.resolved,
     })
 }
 
@@ -829,6 +858,7 @@ fn plan_continue(
     let held = (checkpoint.blob, checkpoint.size);
     let assess = (spec_for(&prepared.resolved), settings_for(&effective));
     let cells = cells_of(&prepared.resolved);
+    let capture = capture_plan_for(&prepared.resolved);
     Ok(DocJob {
         path: path.to_owned(),
         action: JobAction::Continue {
@@ -851,6 +881,8 @@ fn plan_continue(
         cells,
         continue_from: Some(from),
         checkpoint: Some(held),
+        capture,
+        bench_study: prepared.resolved,
     })
 }
 
@@ -928,7 +960,8 @@ impl DocJob {
             };
             Box::new(refused(CONTINUE, problem((CONTINUE_REFUSED, line))).report)
         })?;
-        Ok(export_tree_for(&continued, &prepared.hash, np))
+        let plan = SolverPlan::for_study(&prepared.resolved);
+        Ok(export_tree_with(&continued, &prepared.hash, np, &plan))
     }
 
     /// Record what the runner made. Nothing is recorded unless every check held and the whole
@@ -1009,11 +1042,18 @@ impl DocJob {
         let result = self
             .pending
             .result
-            .then(|| result_bundle(dir, self.end_time))
+            .then(|| result_bundle_with(dir, self.end_time, &self.capture))
             .transpose()
             .map_err(|e| e.to_string())?;
         let numbers = if self.pending.result {
-            key_numbers(dir, self.end_time).map_err(|e| e.to_string())?
+            let mut numbers =
+                key_numbers_with(dir, self.end_time, &self.capture).map_err(|e| e.to_string())?;
+            // The numbers of the benchmark the study is, named `bench.<benchmark>.<quantity>`.
+            let files = DirFiles {
+                root: dir.to_path_buf(),
+            };
+            numbers.extend(quantities_for(&self.bench_study, &files));
+            numbers
         } else {
             KeyNumbers::new()
         };
@@ -1053,7 +1093,7 @@ impl DocJob {
             .then(|| mesh_bundle(dir))
             .transpose()
             .map_err(|e| e.to_string())?;
-        let saved = checkpoint_bundle(dir, time).map_err(|e| e.to_string())?;
+        let saved = checkpoint_bundle_with(dir, time, &self.capture).map_err(|e| e.to_string())?;
 
         let store = Store::create(store_dir(&self.path)).map_err(|e| e.to_string())?;
         let mesh = mesh

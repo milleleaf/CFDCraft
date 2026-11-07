@@ -7,12 +7,16 @@
 
 use std::{collections::BTreeMap, fmt};
 
+use cfdcraft_shapes::Segment;
 use serde_json::Value;
 
 use crate::{
     Diagnostic, Location, ResolvedStudy,
     diagnostics::{kind_name, pointer_token, setting_label, side_name},
-    study::{Face, MonitorField, SurfaceQuantity},
+    resolve::{ResolvedThermal, inlet_turbulence},
+    study::{
+        BoundaryKind, Face, InitMode, InletProfile, MonitorField, SurfaceQuantity, TurbulenceModel,
+    },
 };
 
 /// The kind written for the front and back faces, which every two-dimensional case leaves empty.
@@ -105,9 +109,10 @@ pub struct Expected {
 }
 
 fn expected(key: String, value: FactValue, source_pointers: Vec<String>) -> Expected {
-    let setting = source_pointers
-        .first()
-        .map_or_else(|| key_label(&key), |pointer| setting_label(pointer));
+    let setting = match source_pointers.first() {
+        Some(pointer) if !labelled_by_key(&key) => setting_label(pointer),
+        _ => key_label(&key),
+    };
     Expected {
         key,
         value,
@@ -140,6 +145,7 @@ fn quantity_word(quantity: SurfaceQuantity) -> &'static str {
         SurfaceQuantity::Flux => "flux",
         SurfaceQuantity::PressureAverage => "pressure_average",
         SurfaceQuantity::PressureIntegral => "pressure_integral",
+        SurfaceQuantity::HeatFlux => "heat_flux",
     }
 }
 
@@ -168,6 +174,13 @@ fn monitor_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
             FactValue::Text(field_word(probe.field).into()),
             from,
         ));
+        if probe.boundary.is_some() {
+            out.push(monitor_fact(
+                format!("/monitors/probe/{n}/on_boundary"),
+                FactValue::Flag(true),
+                from,
+            ));
+        }
     }
     for line in &plan.lines {
         let n = monitor_number(&line.fo);
@@ -209,11 +222,223 @@ fn monitor_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
             from,
         ));
     }
+    // The patch a force or a boundary probe sits on is named by the backend, so its fact
+    // (`/monitors/force/<n>/patch`, `/monitors/probe/<n>/patch`) comes in through the extras.
+    for force in &plan.forces {
+        let n = monitor_number(&force.fo);
+        let from = listed("/monitors/forces");
+        for (name, value) in [
+            ("reference_velocity", force.reference_velocity),
+            ("reference_length", force.reference_length),
+        ] {
+            out.push(monitor_fact(
+                format!("/monitors/force/{n}/{name}"),
+                FactValue::Number(value),
+                from,
+            ));
+        }
+        // The coefficients are always taken with lift along y.
+        out.push(monitor_fact(
+            format!("/monitors/force/{n}/lift_axis"),
+            FactValue::Text("y".into()),
+            from,
+        ));
+    }
 }
 
-/// Every fact the written case must hold for `study`, sorted by key.
-pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
-    let mut out = Vec::new();
+/// The binary the written case runs: steady or transient, with or without buoyancy.
+fn application_word(study: &ResolvedStudy) -> &'static str {
+    let buoyant = study.physics.as_ref().is_some_and(|p| p.buoyancy.is_some());
+    match (buoyant, study.effective_delta_t().is_some()) {
+        (false, false) => "simpleFoam",
+        (false, true) => "pimpleFoam",
+        (true, false) => "buoyantBoussinesqSimpleFoam",
+        (true, true) => "buoyantBoussinesqPimpleFoam",
+    }
+}
+
+/// The name the written case gives the turbulence model.
+fn turbulence_word(study: &ResolvedStudy) -> &'static str {
+    let model = study
+        .physics
+        .as_ref()
+        .map_or(TurbulenceModel::Laminar, |p| p.turbulence.model);
+    match model {
+        TurbulenceModel::Laminar => "laminar",
+        TurbulenceModel::KOmegaSst => "kOmegaSST",
+        TurbulenceModel::RealizableKe => "realizableKE",
+        TurbulenceModel::RngKEpsilon => "RNGkEpsilon",
+    }
+}
+
+/// The speed of the first boundary of `kind` that has one, with the pointer of the leaf it is.
+fn driven_speed(study: &ResolvedStudy, kind: BoundaryKind) -> Option<(f64, String)> {
+    study
+        .boundary_conditions
+        .iter()
+        .filter(|(_, b)| b.kind == kind)
+        .find_map(|(name, b)| {
+            let speed = b.velocity.filter(|v| *v != 0.0)?;
+            Some((
+                speed.abs(),
+                format!("/boundary_conditions/{}/velocity", pointer_token(name)),
+            ))
+        })
+}
+
+/// The speed the inflow values of a turbulence model are built from: the reference velocity of the
+/// study, else the speed of a velocity inlet, else the speed of a moving wall.
+fn reference_speed(study: &ResolvedStudy) -> Option<(f64, String)> {
+    let given = study.physics.as_ref()?.turbulence.reference_velocity;
+    given
+        .map(|v| (v, "/physics/turbulence/reference_velocity".to_owned()))
+        .or_else(|| driven_speed(study, BoundaryKind::VelocityInlet))
+        .or_else(|| driven_speed(study, BoundaryKind::MovingWall))
+}
+
+/// The application, the turbulence model and its inflow values, the start-up field, the time step
+/// and the buoyancy values.
+fn physics_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
+    let physics = study.physics.as_ref();
+    let model = physics.map_or(TurbulenceModel::Laminar, |p| p.turbulence.model);
+    out.push(expected(
+        "/solver/application".into(),
+        FactValue::Text(application_word(study).into()),
+        vec![],
+    ));
+    // A laminar run takes no turbulence settings, so any that the study states are accepted here
+    // and nothing is written for them.
+    let mut turbulence_leaves = vec!["/physics/turbulence/model".to_owned()];
+    if model == TurbulenceModel::Laminar {
+        turbulence_leaves.extend(
+            ["intensity", "viscosity_ratio", "reference_velocity"]
+                .map(|member| format!("/physics/turbulence/{member}")),
+        );
+    }
+    out.push(expected(
+        "/solver/turbulence".into(),
+        FactValue::Text(turbulence_word(study).into()),
+        turbulence_leaves,
+    ));
+    let init = physics.map_or(InitMode::Uniform, |p| p.init);
+    out.push(expected(
+        "/solver/init".into(),
+        FactValue::Text(
+            match init {
+                InitMode::Uniform => "uniform",
+                InitMode::Potential => "potential",
+            }
+            .into(),
+        ),
+        vec!["/physics/init".into()],
+    ));
+    if let Some(step) = study.effective_delta_t() {
+        out.push(expected(
+            "/solver/time/delta_t".into(),
+            FactValue::Number(step),
+            vec!["/physics/time".into(), "/mesh/level".into()],
+        ));
+        out.push(expected(
+            "/solver/time/write_control".into(),
+            FactValue::Text("runTime".into()),
+            vec![],
+        ));
+    }
+    if let Some(b) = physics.and_then(|p| p.buoyancy) {
+        for (member, value) in [
+            ("gravity", b.gravity),
+            ("beta", b.beta),
+            ("reference_temperature", b.reference_temperature),
+            ("prandtl", b.prandtl),
+            ("turbulent_prandtl", b.turbulent_prandtl),
+        ] {
+            out.push(expected(
+                format!("/physics/buoyancy/{member}"),
+                FactValue::Number(value),
+                vec![format!("/physics/buoyancy/{member}")],
+            ));
+        }
+    }
+    inlet_turbulence_facts(study, out);
+}
+
+/// The inflow values of k and of omega or epsilon, from `inlet_turbulence`.
+fn inlet_turbulence_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
+    let Some(t) = study.physics.as_ref().map(|p| &p.turbulence) else {
+        return;
+    };
+    let (Some(intensity), Some(ratio), Some((speed, speed_leaf))) =
+        (t.intensity, t.viscosity_ratio, reference_speed(study))
+    else {
+        return;
+    };
+    let Some(values) = inlet_turbulence(intensity, ratio, speed, study.fluid.kinematic_viscosity)
+    else {
+        return;
+    };
+    let second = match t.model {
+        TurbulenceModel::Laminar => return,
+        TurbulenceModel::KOmegaSst => ("omega", values.omega),
+        TurbulenceModel::RealizableKe | TurbulenceModel::RngKEpsilon => ("epsilon", values.epsilon),
+    };
+    let from_speed = vec!["/physics/turbulence/intensity".to_owned(), speed_leaf];
+    let mut with_ratio = from_speed.clone();
+    with_ratio.push("/physics/turbulence/viscosity_ratio".into());
+    out.push(expected(
+        "/physics/turbulence/k".into(),
+        FactValue::Number(values.k),
+        from_speed,
+    ));
+    out.push(expected(
+        format!("/physics/turbulence/{}", second.0),
+        FactValue::Number(second.1),
+        with_ratio,
+    ));
+}
+
+/// The text of a block's grading as the written case holds it, one entry per axis: `1` for an even
+/// axis, otherwise the sections `((length cells expansion) ...)`, every number printed with the
+/// Rust `Display` of the value.
+pub fn grading_text(grading: &[Vec<Segment>; 3]) -> String {
+    let axis = |segments: &[Segment]| {
+        if let [s] = segments
+            && s.length_fraction == 1.0
+            && s.cell_fraction == 1.0
+            && s.expansion == 1.0
+        {
+            return "1".to_owned();
+        }
+        let sections: Vec<String> = segments
+            .iter()
+            .map(|s| {
+                format!(
+                    "({} {} {})",
+                    s.length_fraction, s.cell_fraction, s.expansion
+                )
+            })
+            .collect();
+        format!("({})", sections.join(" "))
+    };
+    grading
+        .iter()
+        .map(|segments| axis(segments.as_slice()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The grading text of a box study: `1 1 1` unless a wall grading is set.
+fn box_grading_text(study: &ResolvedStudy) -> String {
+    if let Some(layout) = study.block_layout()
+        && let [block] = layout.blocks.as_slice()
+    {
+        return grading_text(&block.grading);
+    }
+    "1 1 1".into()
+}
+
+/// The geometry and the mesh of a box: a single block whose sizes and counts are read back one by
+/// one.
+fn box_geometry_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
     let axes = [
         ("x", study.domain.length_x, study.mesh.cells_x),
         ("y", study.domain.length_y, study.mesh.cells_y),
@@ -230,21 +455,161 @@ pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
             FactValue::Number(0.0),
             vec![],
         ));
+        // The counts are the effective ones, so the level they were refined by is accounted for
+        // with the x count.
+        let mut leaves = vec![format!("/mesh/cells_{axis}")];
+        if axis == "x" {
+            leaves.push("/mesh/level".into());
+        }
         out.push(expected(
             format!("/mesh/cells_{axis}"),
             FactValue::Count(cells),
-            vec![format!("/mesh/cells_{axis}")],
+            leaves,
         ));
+    }
+    out.push(expected(
+        "/mesh/grading".into(),
+        FactValue::Text(box_grading_text(study)),
+        vec!["/mesh/grading".into()],
+    ));
+}
+
+fn is_wall(kind: BoundaryKind) -> bool {
+    matches!(
+        kind,
+        BoundaryKind::NoSlipWall | BoundaryKind::SlipWall | BoundaryKind::MovingWall
+    )
+}
+
+/// The kind, speed, temperature and inlet profile of every face of a box.
+fn box_boundary_facts(study: &ResolvedStudy, out: &mut Vec<Expected>) {
+    let buoyant = study
+        .physics
+        .as_ref()
+        .is_some_and(|physics| physics.buoyancy.is_some());
+    for (name, boundary) in &study.boundary_conditions {
+        let base = format!("/boundary_conditions/{}", pointer_token(name));
+        for face in &boundary.faces {
+            let at = format!("/boundary_conditions/by_face/{face:?}");
+            let mut sources = vec![format!("{base}/kind"), format!("{base}/faces")];
+            // An explicit uniform profile writes the same bytes as none, so it leaves no fact of
+            // its own: its leaf is covered by the kind fact.
+            if boundary.profile == Some(InletProfile::Uniform) {
+                sources.push(format!("{base}/profile"));
+            }
+            out.push(expected(
+                format!("{at}/kind"),
+                FactValue::Text(kind_name(boundary.kind).into()),
+                sources,
+            ));
+            if let Some(speed) = boundary.velocity {
+                out.push(expected(
+                    format!("{at}/velocity"),
+                    FactValue::Number(speed),
+                    vec![format!("{base}/velocity")],
+                ));
+            }
+            match boundary.thermal {
+                Some(ResolvedThermal::FixedTemperature { value }) => {
+                    out.push(expected(
+                        format!("{at}/thermal"),
+                        FactValue::Text("fixed".into()),
+                        vec![format!("{base}/thermal")],
+                    ));
+                    out.push(expected(
+                        format!("{at}/temperature"),
+                        FactValue::Number(value),
+                        vec![format!("{base}/thermal")],
+                    ));
+                }
+                Some(ResolvedThermal::Adiabatic) => out.push(expected(
+                    format!("{at}/thermal"),
+                    FactValue::Text("adiabatic".into()),
+                    vec![format!("{base}/thermal")],
+                )),
+                // A wall that states no thermal condition in a buoyant study is written with a
+                // zero-gradient temperature: the writer's default, read back as adiabatic.
+                None if buoyant && is_wall(boundary.kind) => out.push(expected(
+                    format!("{at}/thermal"),
+                    FactValue::Text("adiabatic".into()),
+                    vec![],
+                )),
+                None => {}
+            }
+            if boundary.profile == Some(InletProfile::Parabolic) {
+                out.push(expected(
+                    format!("{at}/profile"),
+                    FactValue::Text("parabolic".into()),
+                    vec![format!("{base}/profile")],
+                ));
+            }
+        }
+    }
+    for face in ["ZMin", "ZMax"] {
+        out.push(expected(
+            format!("/boundary_conditions/by_face/{face}/kind"),
+            FactValue::Text(EMPTY_KIND.into()),
+            vec![],
+        ));
+    }
+}
+
+/// The resolved-study leaves a shaped study (the step, the cylinder) leaves to the backend: its
+/// geometry, its mesh and its per-boundary conditions are read back from a multi-block dictionary
+/// that only the backend knows how to lay out. Empty for a box. The backend's extra facts must
+/// cover every pointer listed here, or [`uncovered_leaves_with`] reports it.
+pub fn shape_delegated_pointers(study: &ResolvedStudy) -> Vec<String> {
+    if study.domain.shape.is_none() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = [
+        "/domain/length_x",
+        "/domain/length_y",
+        "/domain/length_z",
+        "/domain/shape",
+        "/mesh/cells_x",
+        "/mesh/cells_y",
+        "/mesh/cells_z",
+    ]
+    .map(String::from)
+    .into();
+    if study.mesh.level != 0 {
+        out.push("/mesh/level".into());
+    }
+    if study.mesh.grading.is_some() {
+        out.push("/mesh/grading".into());
+    }
+    for (name, boundary) in &study.boundary_conditions {
+        let base = format!("/boundary_conditions/{}", pointer_token(name));
+        out.push(format!("{base}/kind"));
+        out.push(format!("{base}/faces"));
+        if boundary.velocity.is_some() {
+            out.push(format!("{base}/velocity"));
+        }
+        if boundary.profile.is_some() {
+            out.push(format!("{base}/profile"));
+        }
+        if boundary.thermal.is_some() {
+            out.push(format!("{base}/thermal"));
+        }
+    }
+    out
+}
+
+/// Every fact the written case must hold for `study`, sorted by key.
+///
+/// A shaped study has no box geometry and no per-face conditions here: the backend supplies those
+/// as extra facts (see [`shape_delegated_pointers`]).
+pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
+    let mut out = Vec::new();
+    let shaped = study.domain.shape.is_some();
+    if !shaped {
+        box_geometry_facts(study, &mut out);
     }
     out.push(expected(
         "/domain/open".into(),
         FactValue::Flag(study.domain.open),
         vec!["/domain/open".into()],
-    ));
-    out.push(expected(
-        "/mesh/grading".into(),
-        FactValue::Text("1 1 1".into()),
-        vec![],
     ));
     out.push(expected(
         "/fluid/kinematic_viscosity".into(),
@@ -261,16 +626,7 @@ pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
         FactValue::Number(study.solver.write_interval),
         vec!["/solver/write_interval".into()],
     ));
-    out.push(expected(
-        "/solver/application".into(),
-        FactValue::Text("simpleFoam".into()),
-        vec![],
-    ));
-    out.push(expected(
-        "/solver/turbulence".into(),
-        FactValue::Text("laminar".into()),
-        vec![],
-    ));
+    physics_facts(study, &mut out);
     for profile in ["vertical", "horizontal"] {
         out.push(expected(
             format!("/monitors/centreline_u_sample_count/{profile}"),
@@ -279,29 +635,8 @@ pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
         ));
     }
     monitor_facts(study, &mut out);
-    for (name, boundary) in &study.boundary_conditions {
-        let base = format!("/boundary_conditions/{}", pointer_token(name));
-        for face in &boundary.faces {
-            out.push(expected(
-                format!("/boundary_conditions/by_face/{face:?}/kind"),
-                FactValue::Text(kind_name(boundary.kind).into()),
-                vec![format!("{base}/kind"), format!("{base}/faces")],
-            ));
-            if let Some(speed) = boundary.velocity {
-                out.push(expected(
-                    format!("/boundary_conditions/by_face/{face:?}/velocity"),
-                    FactValue::Number(speed),
-                    vec![format!("{base}/velocity")],
-                ));
-            }
-        }
-    }
-    for face in ["ZMin", "ZMax"] {
-        out.push(expected(
-            format!("/boundary_conditions/by_face/{face}/kind"),
-            FactValue::Text(EMPTY_KIND.into()),
-            vec![],
-        ));
+    if !shaped {
+        box_boundary_facts(study, &mut out);
     }
     out.sort_by(|a, b| a.key.cmp(&b.key));
     out
@@ -310,8 +645,18 @@ pub fn expected_facts(study: &ResolvedStudy) -> Vec<Expected> {
 /// Leaves of the resolved study (as JSON) that no expected fact covers and that are not on the
 /// evidence-only list. Empty means a new resolved field cannot be forgotten.
 pub fn uncovered_leaves(resolved: &Value, expected: &[Expected]) -> Vec<String> {
+    uncovered_leaves_with(resolved, expected, &[])
+}
+
+/// [`uncovered_leaves`] with the extra facts a backend supplies counted as covering their leaves.
+pub fn uncovered_leaves_with(
+    resolved: &Value,
+    expected: &[Expected],
+    extra: &[Expected],
+) -> Vec<String> {
     let covered: Vec<&str> = expected
         .iter()
+        .chain(extra)
         .flat_map(|e| e.source_pointers.iter().map(String::as_str))
         .chain(EVIDENCE_ONLY.iter().copied())
         .collect();
@@ -351,12 +696,43 @@ pub fn check_roundtrip(
     files: &[SourceFile],
     study: &ResolvedStudy,
 ) -> Vec<Diagnostic> {
+    check_roundtrip_with(reader, files, study, &[])
+}
+
+/// [`check_roundtrip`] with extra expected facts the backend supplies, for what the model cannot
+/// lay out itself (a shaped study's geometry and per-patch conditions). An extra whose key is
+/// already expected is a fault in the caller and is reported as such.
+pub fn check_roundtrip_with(
+    reader: &dyn CaseReader,
+    files: &[SourceFile],
+    study: &ResolvedStudy,
+    extra: &[Expected],
+) -> Vec<Diagnostic> {
+    let mut wanted = expected_facts(study);
+    let mut found = Vec::new();
+    for add in extra {
+        if wanted.iter().any(|w| w.key == add.key) {
+            found.push(Diagnostic::error(
+                "CFD-RT-001",
+                key_label(&add.key),
+                "",
+                format!(
+                    "The expected fact {} was supplied twice, which is a fault in the check and \
+                     not in the case.",
+                    add.key
+                ),
+            ));
+        } else {
+            wanted.push(add.clone());
+        }
+    }
     let facts = match reader.read(files) {
         Ok(facts) => facts,
-        Err(error) => return vec![unreadable(&error)],
+        Err(error) => {
+            found.push(unreadable(&error));
+            return found;
+        }
     };
-    let wanted = expected_facts(study);
-    let mut found = Vec::new();
     for want in &wanted {
         match facts.get(&want.key) {
             None => found.push(
@@ -507,12 +883,38 @@ fn place(key: &str) -> String {
         })
 }
 
+/// Whether a fact is named by its own key rather than by the setting it covers, because the key
+/// says more (the solver words, the physics values, the grading, the per-face conditions).
+fn labelled_by_key(key: &str) -> bool {
+    let solver_word = key.starts_with("/solver/time/")
+        || matches!(
+            key,
+            "/solver/application" | "/solver/turbulence" | "/solver/init"
+        );
+    let face_condition = key.starts_with("/boundary_conditions/by_face/")
+        && ["/thermal", "/temperature", "/profile"]
+            .iter()
+            .any(|end| key.ends_with(end));
+    key == "/mesh/grading" || key.starts_with("/physics/") || solver_word || face_condition
+}
+
 /// The user's words for a fact that has no setting in the study.
 fn key_label(key: &str) -> String {
     match key {
         "/mesh/grading" => "mesh grading".into(),
         "/solver/application" => "solver application".into(),
         "/solver/turbulence" => "turbulence model".into(),
+        "/solver/init" => "initial field".into(),
+        "/solver/time/delta_t" => "time step".into(),
+        "/solver/time/write_control" => "write control".into(),
+        "/physics/buoyancy/gravity" => "buoyancy gravity".into(),
+        "/physics/buoyancy/beta" => "buoyancy expansion coefficient".into(),
+        "/physics/buoyancy/reference_temperature" => "buoyancy reference temperature".into(),
+        "/physics/buoyancy/prandtl" => "buoyancy Prandtl number".into(),
+        "/physics/buoyancy/turbulent_prandtl" => "buoyancy turbulent Prandtl number".into(),
+        "/physics/turbulence/k" => "inlet turbulent kinetic energy".into(),
+        "/physics/turbulence/omega" => "inlet specific dissipation rate".into(),
+        "/physics/turbulence/epsilon" => "inlet dissipation rate".into(),
         _ => {
             if let Some(axis) = key.strip_prefix("/domain/origin_") {
                 format!("domain origin in {axis}")
@@ -525,10 +927,12 @@ fn key_label(key: &str) -> String {
                     "back face boundary kind".into()
                 }
             } else if key.starts_with("/boundary_conditions/by_face/") {
-                if key.ends_with("/velocity") {
-                    "boundary velocity".into()
-                } else {
-                    "boundary kind".into()
+                match key.rsplit('/').next() {
+                    Some("velocity") => "boundary velocity".into(),
+                    Some("thermal") => "boundary thermal condition".into(),
+                    Some("temperature") => "boundary temperature".into(),
+                    Some("profile") => "boundary velocity profile".into(),
+                    _ => "boundary kind".into(),
                 }
             } else {
                 setting_label(key)
@@ -537,18 +941,19 @@ fn key_label(key: &str) -> String {
     }
 }
 
-/// `/monitors/probe/2/x` reads as `probe 2 x`; a surface's `kind` is its boundary kind.
+/// `/monitors/probe/2/x` reads as `probe 2 x`; a surface's `kind` is its boundary kind and
+/// `/monitors/force/1/lift_axis` reads as `force 1 lift axis`.
 fn monitor_key_label(key: &str) -> Option<String> {
     let rest = key.strip_prefix("/monitors/")?;
     let mut parts = rest.split('/');
-    let (kind @ ("probe" | "line" | "surface"), Some(n), Some(member), None) =
+    let (kind @ ("probe" | "line" | "surface" | "force"), Some(n), Some(member), None) =
         (parts.next()?, parts.next(), parts.next(), parts.next())
     else {
         return None;
     };
     let member = match member {
-        "kind" => "boundary kind",
-        other => other,
+        "kind" => "boundary kind".to_owned(),
+        other => other.replace('_', " "),
     };
     Some(format!("{kind} {n} {member}"))
 }

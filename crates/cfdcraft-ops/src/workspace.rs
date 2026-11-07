@@ -5,7 +5,9 @@
 //! where it lives; the callers only supply names, modes and a study.
 
 use crate::{
+    benchmark_ops::BenchmarkOptions,
     cases::{cli_problem, compile_study, export_study},
+    gci_ops::{DEFAULT_LEVELS, GciRequest},
     host_runner::finish_job,
     jobs::{JobAction, JobOptions, operation_of, plan_scenario_job_with},
     prepare::prepare,
@@ -41,6 +43,9 @@ const MAX_PLAN_DOCUMENTS: usize = 16;
 
 /// The most documents looked through for a queue job whose document was not named.
 const MAX_JOB_SEARCH: usize = 256;
+
+/// The longest name of a key number a report may be asked for.
+const MAX_QUANTITY: usize = 120;
 
 /// The directories under a workspace root, each a real directory.
 #[derive(Debug, Clone)]
@@ -356,6 +361,100 @@ impl Workspace {
     pub fn sweep_preflight(&self, name: &str, sweep_id: &str) -> Report {
         self.named("sweep_preflight", name, || {
             crate::sweep_ops::sweep_preflight(&self.document_file(name), sweep_id).report
+        })
+    }
+
+    /// The benchmark templates and the benchmark that judges a run of each. Nothing is read from
+    /// the workspace, written or started.
+    pub fn benchmark_list(&self) -> Report {
+        crate::benchmark_ops::benchmark_list().for_operation("benchmark_list")
+    }
+
+    /// The text of a complete study for the benchmark template `benchmark` with `options`, after
+    /// the model's own checks accepted it. The text is returned and never stored: nothing in the
+    /// workspace is written. A refusal has no text.
+    pub fn benchmark_create(
+        &self,
+        benchmark: &str,
+        options: &BenchmarkOptions,
+    ) -> (Report, Option<String>) {
+        const OP: &str = "benchmark_create";
+        if !Self::valid_name(benchmark) {
+            return (Self::bad_name(OP), None);
+        }
+        let (report, study) = crate::benchmark_ops::benchmark_create(benchmark, options);
+        (report.for_operation(OP), study)
+    }
+
+    /// Check a recorded run of the document (the newest result that is not a rerun when `run` is
+    /// not given) against the published reference of its benchmark (the one the study is when
+    /// `benchmark` is not given). A failed gate is exit class 1. Nothing is written or started.
+    pub fn benchmark_check(
+        &self,
+        name: &str,
+        run: Option<&str>,
+        benchmark: Option<&str>,
+    ) -> Report {
+        const OP: &str = "benchmark_check";
+        if [run, benchmark]
+            .into_iter()
+            .flatten()
+            .any(|word| !Self::valid_name(word))
+        {
+            return Self::bad_name(OP);
+        }
+        self.named(OP, name, || {
+            crate::benchmark_ops::benchmark_check(&self.document_file(name), run, benchmark, None)
+                .report
+        })
+    }
+
+    /// Store a mesh independence sweep in the document: one variant for each mesh level, from the
+    /// variant `scenario` (the study itself when not given), at `levels` (0, 1 and 2 when not
+    /// given). Only the named document changes, and nothing is started.
+    pub fn gci_create(
+        &self,
+        name: &str,
+        sweep: &str,
+        scenario: Option<&str>,
+        levels: Option<&[u32]>,
+    ) -> Report {
+        const OP: &str = "gci_create";
+        let scenario = scenario.unwrap_or("base");
+        if !Self::valid_name(sweep) || !Self::valid_name(scenario) {
+            return Self::bad_name(OP);
+        }
+        let request = GciRequest {
+            sweep: sweep.to_owned(),
+            scenario: scenario.to_owned(),
+            levels: levels.map_or_else(|| DEFAULT_LEVELS.to_vec(), <[u32]>::to_vec),
+        };
+        self.named(OP, name, || {
+            crate::gci_ops::gci_create(&self.document_file(name), &request).report
+        })
+    }
+
+    /// The observed order and the grid convergence index of the key number `quantity` over the
+    /// points of the stored sweep, from the results already recorded. Nothing is written or
+    /// started.
+    pub fn gci_report(&self, name: &str, sweep: &str, quantity: &str) -> Report {
+        const OP: &str = "gci_report";
+        if !Self::valid_name(sweep) {
+            return Self::bad_name(OP);
+        }
+        if quantity.is_empty()
+            || quantity.chars().count() > MAX_QUANTITY
+            || quantity.chars().any(char::is_control)
+        {
+            return failed(
+                OP,
+                cli_problem(format!(
+                    "A quantity is the name of a key number: 1 to {MAX_QUANTITY} characters, with no control characters."
+                )),
+            );
+        }
+        self.named(OP, name, || {
+            crate::gci_ops::gci_report(&self.document_file(name), sweep, quantity).report
         })
     }
 

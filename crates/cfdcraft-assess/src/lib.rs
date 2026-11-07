@@ -8,4 +8,7 @@ mod assess;
 mod spec;
 
 pub use assess::{Assessment, ResidualRow, assess};
-pub use spec::{Files, LineSpec, PatchSpec, ProbeSpec, Spec, SurfaceQuantityKind, SurfaceSpec};
+pub use spec::{
+    Files, ForceSpec, HeatSpec, LineSpec, PatchSpec, ProbeSpec, Spec, SurfaceQuantityKind,
+    SurfaceSpec,
+};

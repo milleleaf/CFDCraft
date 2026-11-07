@@ -1,0 +1,76 @@
+[source]
+paper = "G. de Vahl Davis, Natural convection of air in a square cavity: a bench mark numerical solution, Int. J. Numer. Meth. Fluids 3, 249-264 (1983)"
+doi = "10.1002/fld.1650030305"
+table = "V"
+page = 256
+prandtl = 0.71
+terms = "no terms stated; the table values are quoted as facts"
+accuracy = "The solutions are believed to be accurate to better than 1 per cent at the highest Rayleigh number and down to one tenth of that at the lowest value."
+
+[definition]
+fluid = "Boussinesq fluid, Pr 0.71"
+domain = "square cavity of side L, no slip on every wall, the two horizontal walls insulated, the vertical walls at Th (left) and Tc (right)"
+velocity_scale = "kappa / L, so u* = u L Pr / nu"
+temperature_scale = "T* = (T - Tc) / (Th - Tc)"
+rayleigh = "Ra = g beta dT L^3 / (nu kappa), with kappa = nu / Pr"
+positions = "lengths in units of L; u_max_z is the height of the largest horizontal velocity on the vertical mid-plane, w_max_x the distance from the hot wall of the largest vertical velocity on the horizontal mid-plane"
+
+[[row]]
+ra = 1000.0
+u_max = 3.649
+u_max_z = 0.813
+w_max = 3.697
+w_max_x = 0.178
+nu_avg = 1.118
+nu_0 = 1.117
+nu_max = 1.505
+nu_max_z = 0.092
+nu_min = 0.692
+nu_min_z = 1.0
+
+[[row]]
+ra = 10000.0
+u_max = 16.178
+u_max_z = 0.823
+w_max = 19.617
+w_max_x = 0.119
+nu_avg = 2.243
+nu_0 = 2.238
+nu_max = 3.528
+nu_max_z = 0.143
+nu_min = 0.586
+nu_min_z = 1.0
+
+[[row]]
+ra = 100000.0
+u_max = 34.73
+u_max_z = 0.855
+w_max = 68.59
+w_max_x = 0.066
+nu_avg = 4.519
+nu_0 = 4.509
+nu_max = 7.717
+nu_max_z = 0.081
+nu_min = 0.729
+nu_min_z = 1.0
+
+[[row]]
+ra = 1000000.0
+u_max = 64.63
+u_max_z = 0.85
+w_max = 219.36
+w_max_x = 0.0379
+nu_avg = 8.8
+nu_0 = 8.817
+nu_max = 17.925
+nu_max_z = 0.0378
+nu_min = 0.989
+nu_min_z = 1.0
+
+[tolerance]
+nu_rel = 0.02
+nu_rel_top = 0.03
+velocity_rel = 0.03
+velocity_rel_top = 0.05
+position_abs = 0.03
+justification = "Initial settings, to be approved after real runs. The allowances are fractions of the published value (positions are absolute, in units of the cavity side). The paper's accuracy is far tighter than a second-order finite-volume mesh will reach, so the gate is wider than the paper. Ra 1e6 is held looser because the paper calls its extrapolation there exceptionally sensitive. A user file may widen an allowance by at most three times and must say why."

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "domain": {
+    "length_x": {
+      "value": 2.2,
+      "unit": "m"
+    },
+    "length_y": {
+      "value": 0.41,
+      "unit": "m"
+    },
+    "length_z": {
+      "value": 0.01,
+      "unit": "m"
+    },
+    "open": true,
+    "shape": {
+      "kind": "cylinder_channel",
+      "diameter": {
+        "value": 0.1,
+        "unit": "m"
+      },
+      "centre_x": {
+        "value": 0.2,
+        "unit": "m"
+      },
+      "centre_y": {
+        "value": 0.2,
+        "unit": "m"
+      }
+    }
+  },
+  "fluid": {
+    "kinematic_viscosity": {
+      "value": 0.001,
+      "unit": "m2/s"
+    }
+  },
+  "boundary_conditions": {
+    "inlet": {
+      "faces": [
+        "XMin"
+      ],
+      "kind": "VelocityInlet",
+      "velocity": {
+        "value": 1.0,
+        "unit": "m/s"
+      },
+      "profile": "parabolic"
+    },
+    "outlet": {
+      "faces": [
+        "XMax"
+      ],
+      "kind": "PressureOutlet"
+    },
+    "channel_walls": {
+      "faces": [
+        "YMin",
+        "YMax"
+      ],
+      "kind": "NoSlipWall"
+    },
+    "cylinder": {
+      "faces": [
+        "Obstacle"
+      ],
+      "kind": "NoSlipWall"
+    }
+  },
+  "mesh": {
+    "cells_x": 220,
+    "cells_y": 41,
+    "cells_z": 1,
+    "level": 1
+  },
+  "solver": {
+    "solver": "FromPhysics",
+    "end_time": {
+      "value": 8,
+      "unit": "s"
+    },
+    "write_interval": {
+      "value": 0.1,
+      "unit": "s"
+    },
+    "convergence": {
+      "p": 1e-06,
+      "U": 1e-06
+    }
+  },
+  "monitors": {
+    "centreline_u_sample_count": 64,
+    "probes": {
+      "front": {
+        "x": {
+          "value": 0.15,
+          "unit": "m"
+        },
+        "y": {
+          "value": 0.2,
+          "unit": "m"
+        },
+        "field": "pressure",
+        "boundary": "cylinder"
+      }
+    },
+    "forces": {
+      "cylinder_forces": {
+        "boundary": "cylinder",
+        "reference_velocity": {
+          "value": 1.0,
+          "unit": "m/s"
+        },
+        "reference_length": {
+          "value": 0.1,
+          "unit": "m"
+        }
+      }
+    }
+  },
+  "physics": {
+    "time": {
+      "mode": "transient",
+      "delta_t": {
+        "value": 0.005,
+        "unit": "s"
+      }
+    }
+  }
+}

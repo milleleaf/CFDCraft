@@ -52,6 +52,12 @@ fn write_study(file: &Path, out: &Path) -> Option<DocOutcome> {
             });
         }
     };
+    write_new_text(OP, out, &text)
+}
+
+/// Writes `text` to the new file `out`. `None` when it was written; otherwise the finished,
+/// classified outcome of `operation` that says why not. An existing file is never touched.
+pub(super) fn write_new_text(operation: &str, out: &Path, text: &str) -> Option<DocOutcome> {
     let e = craft_atomic::write_new(out, text.as_bytes()).err()?;
     let path = out.display().to_string();
     let (code, line) = if e.kind() == ErrorKind::AlreadyExists {
@@ -67,7 +73,7 @@ fn write_study(file: &Path, out: &Path) -> Option<DocOutcome> {
     };
     let message = Text::english().render(&line);
     Some(finished(
-        OP,
+        operation,
         Diagnostic::error(code, "study file", "", message),
     ))
 }

@@ -5,18 +5,18 @@
 //! Nothing here prints; everything comes back as a [`Finished`].
 
 use crate::{
+    benchmarks::{self, DirFiles},
     cases::cli_problem,
-    ghia,
     prepare::{Prepared, prepare, rel_name},
     report::{EvidenceReport, ExitClass, HolderInfo, InfraReport, Report, RunInfo},
 };
 use cfdcraft_backend_esi::{
-    CaseTree, Dialect, EvidenceExpectations, RunEvidence, SmokeExpectations, Verdict, dialect,
-    evidence::{PartialExpectations, judge_partial},
-    judge_run, judge_smoke, write_to_disk,
+    CaseTree, Dialect, EvidenceExpectations, EvidencePlan, RunEvidence, SmokeExpectations,
+    SolverPlan, Verdict, dialect, evidence::PartialExpectations, judge_partial_with,
+    judge_run_with, judge_smoke_with, write_to_disk,
 };
-use cfdcraft_bench_ghia::GhiaTable;
 use cfdcraft_executor::{HostProfile, Job, RunConfig, RunError, docker::RunSpec, lock};
+use cfdcraft_gate::Benchmark;
 use cfdcraft_model::{Diagnostic, ResolvedStudy};
 use std::{
     collections::BTreeMap,
@@ -110,8 +110,10 @@ pub struct Begun {
     results: PathBuf,
     run_dir: PathBuf,
     cap_seconds: u64,
-    /// The reference for a validate run.
-    table: Option<GhiaTable>,
+    /// The benchmark a validate run is compared with, chosen by what the study is.
+    pub benchmark: Option<Box<dyn Benchmark>>,
+    /// A tolerance file replaced the shipped tolerances of the benchmark.
+    override_used: bool,
 }
 
 impl Begun {
@@ -231,24 +233,38 @@ fn mode_problem(mode: RunMode, r: &ResolvedStudy) -> Option<Diagnostic> {
         )),
         RunMode::Smoke => None,
         RunMode::Validate => {
+            let rejected = benchmarks::select(r, None).err()?;
             let not_cavity = |message: String| {
                 Diagnostic::error("CFD-RUN-002", "reference comparison", "", message).with_hint(
                     "Use a study of the square lid-driven cavity at Reynolds number 100.",
                 )
             };
-            let Some(lid) = r.lid_velocity() else {
+            let differences: Vec<_> = rejected.into_iter().flat_map(|(_, found)| found).collect();
+            let differs = |what: &str| differences.iter().any(|d| d.what == what);
+            if differs("lid") {
                 return Some(not_cavity(
                     "The reference comparison needs a lid-driven cavity: exactly one moving wall on the top face.".into(),
                 ));
-            };
-            let re = lid * r.domain.length_y / r.fluid.kinematic_viscosity;
-            let square = (r.domain.length_x / r.domain.length_y - 1.0).abs() <= 1e-10;
-            (!square || (re - 100.0).abs() > 1e-8).then(|| {
-                not_cavity(format!(
+            }
+            if differs("reynolds number") || differs("shape") {
+                let re = r.lid_velocity().map_or(f64::NAN, |lid| {
+                    lid * r.domain.length_y / r.fluid.kinematic_viscosity
+                });
+                let square = (r.domain.length_x / r.domain.length_y - 1.0).abs() <= 1e-10;
+                return Some(not_cavity(format!(
                     "The reference comparison is defined for a square cavity at Reynolds number 100; this study has Reynolds number {re}{}.",
                     if square { "" } else { " and is not square" }
-                ))
-            })
+                )));
+            }
+            Some(
+                Diagnostic::error(
+                    "CFD-RUN-002",
+                    "reference comparison",
+                    "",
+                    benchmarks::mismatch_sentence("ghia", &differences),
+                )
+                .with_hint("Use steady, laminar flow without buoyancy and with a uniform start."),
+            )
         }
     }
 }
@@ -350,8 +366,11 @@ pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> 
     if let Some(found) = mode_problem(request.mode, &prepared.resolved) {
         return Err(refused(operation, &prepared, found));
     }
-    let table = if request.mode == RunMode::Validate {
-        let loaded = ghia::load_table(request.tolerance_override.as_deref()).map_err(|e| {
+    let benchmark = if request.mode == RunMode::Validate {
+        let built = benchmarks::select_id(&prepared.resolved)
+            .map_err(|_| "the study is not a known benchmark".to_owned())
+            .and_then(|id| benchmarks::build(id, request.tolerance_override.as_deref()));
+        let loaded = built.map_err(|e| {
             let found = cli_problem(format!("The tolerance file cannot be used: {e}."));
             refused(operation, &prepared, found)
         })?;
@@ -394,7 +413,8 @@ pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> 
     Ok(Begun {
         results: run_dir.join("results"),
         cap_seconds: profile.wall_clock_seconds,
-        table,
+        override_used: benchmark.is_some() && request.tolerance_override.is_some(),
+        benchmark,
         job,
         prepared,
         mode: request.mode,
@@ -403,26 +423,65 @@ pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> 
     })
 }
 
-/// The three logs and the numeric time directories a run left in its results directory.
-fn read_evidence(results: &Path) -> (String, String, String, Vec<f64>) {
-    let log = |name: &str| std::fs::read_to_string(results.join(name)).unwrap_or_default();
-    let times = std::fs::read_dir(results)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_string_lossy().parse::<f64>().ok())
-        .collect();
-    (
-        log("log.blockMesh"),
-        log("log.checkMesh"),
-        log("log.simpleFoam"),
-        times,
-    )
+/// The logs and the numeric time directories a run left in its results directory.
+struct Evidence {
+    block_mesh: String,
+    check_mesh: String,
+    solver: String,
+    /// The log of the potential-flow step, when the plan has one.
+    potential: Option<String>,
+    times: Vec<f64>,
 }
 
-/// True when the final time directory holds a non-empty `U` and `p`.
-fn final_fields_present(results: &Path, end_time: f64) -> bool {
+impl Evidence {
+    /// The logs are read by the names the plan gives; a missing log is an empty text, which the
+    /// judge fails on its missing end marker.
+    fn read(results: &Path, plan: &SolverPlan) -> Self {
+        let log = |name: &str| std::fs::read_to_string(results.join(name)).unwrap_or_default();
+        let times = std::fs::read_dir(results)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_string_lossy().parse::<f64>().ok())
+            .collect();
+        Self {
+            block_mesh: log("log.blockMesh"),
+            check_mesh: log("log.checkMesh"),
+            solver: log(&plan.log_file),
+            potential: plan.potential.then(|| log("log.potentialFoam")),
+            times,
+        }
+    }
+
+    fn run_evidence(&self) -> RunEvidence<'_> {
+        RunEvidence {
+            block_mesh_log: &self.block_mesh,
+            check_mesh_log: &self.check_mesh,
+            solver_log: &self.solver,
+            time_directories: &self.times,
+        }
+    }
+
+    /// The plan's view for the judge, with the potential-flow log it needs.
+    fn judge_plan(&self, plan: &SolverPlan) -> EvidencePlan {
+        let mut judge = plan.evidence_plan();
+        judge.potential_log.clone_from(&self.potential);
+        judge
+    }
+}
+
+/// Field names as a phrase: `U and p`, `U, p_rgh and T`.
+fn field_phrase(fields: &[String]) -> String {
+    match fields.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((last, _)) => last.clone(),
+        None => String::new(),
+    }
+}
+
+/// True when the final time directory holds every named field, non-empty.
+fn final_fields_present(results: &Path, end_time: f64, fields: &[String]) -> bool {
     std::fs::read_dir(results)
         .into_iter()
         .flatten()
@@ -434,7 +493,7 @@ fn final_fields_present(results: &Path, end_time: f64) -> bool {
                 .is_ok_and(|t| (t - end_time).abs() < 1e-6)
         })
         .any(|dir| {
-            ["U", "p"].iter().all(|name| {
+            fields.iter().all(|name| {
                 std::fs::metadata(dir.path().join(name)).is_ok_and(|m| m.is_file() && m.len() > 0)
             })
         })
@@ -443,49 +502,45 @@ fn final_fields_present(results: &Path, end_time: f64) -> bool {
 /// Judge a finished run from its logs and output directories. The solver's exit status takes no
 /// part in it.
 pub fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> EvidenceReport {
-    let (block, mesh, solver, times) = read_evidence(results);
-    let evidence = RunEvidence {
-        block_mesh_log: &block,
-        check_mesh_log: &mesh,
-        solver_log: &solver,
-        time_directories: &times,
-    };
-    let cells = r
-        .mesh
-        .cells_x
-        .checked_mul(r.mesh.cells_y)
-        .and_then(|x| x.checked_mul(r.mesh.cells_z));
-    let volume = r.domain.length_x * r.domain.length_y * r.domain.length_z;
+    let plan = SolverPlan::for_study(r);
+    let read = Evidence::read(results, &plan);
+    let evidence = read.run_evidence();
+    let judge = read.judge_plan(&plan);
     let mut reasons = Vec::new();
-    let verdict = match cells {
+    let verdict = match r.cell_count() {
         None => {
             reasons.push("the study's cell count overflows".to_owned());
             None
         }
-        Some(cell_count) if mode == RunMode::Smoke => Some(judge_smoke(
+        Some(cell_count) if mode == RunMode::Smoke => Some(judge_smoke_with(
             &evidence,
             &SmokeExpectations {
                 end_time: r.solver.end_time,
                 cell_count,
-                domain_volume: volume,
+                domain_volume: r.meshed_volume(),
             },
+            &judge,
         )),
-        Some(cell_count) => Some(judge_run(
+        Some(cell_count) => Some(judge_run_with(
             &evidence,
             &EvidenceExpectations {
                 end_time: r.solver.end_time,
                 cell_count,
-                domain_volume: volume,
+                domain_volume: r.meshed_volume(),
                 p_threshold: r.solver.convergence.p,
                 u_threshold: r.solver.convergence.u,
             },
+            &judge,
         )),
     };
     if let Some(Verdict::Failed(found)) = &verdict {
         reasons.extend(found.iter().cloned());
     }
-    if !final_fields_present(results, r.solver.end_time) {
-        reasons.push("the final-time U and p field files are missing or empty".to_owned());
+    if !final_fields_present(results, r.solver.end_time, &plan.final_fields) {
+        reasons.push(format!(
+            "the final-time {} field files are missing or empty",
+            field_phrase(&plan.final_fields)
+        ));
     }
     let verdict = if !reasons.is_empty() {
         "failed"
@@ -514,31 +569,25 @@ pub fn judge_finished_results(results: &Path, r: &ResolvedStudy) -> EvidenceRepo
 
 /// Judge a run that was stopped on request at `time`: every log ends, nothing is fatal, the mesh is
 /// good, the residuals are well formed, the last logged time is the newest time folder, and that
-/// folder holds a non-empty `U` and `p`. There is no residual limit and no end time to reach. The
+/// folder holds a non-empty `U` and pressure field (`p`, or `p_rgh` when buoyant). There is no
+/// residual limit and no end time to reach. The
 /// verdict word is `passed` or `failed`.
 pub fn judge_stopped_results(results: &Path, r: &ResolvedStudy, time: &str) -> EvidenceReport {
-    let (block, mesh, solver, times) = read_evidence(results);
-    let evidence = RunEvidence {
-        block_mesh_log: &block,
-        check_mesh_log: &mesh,
-        solver_log: &solver,
-        time_directories: &times,
-    };
-    let cells = r
-        .mesh
-        .cells_x
-        .checked_mul(r.mesh.cells_y)
-        .and_then(|x| x.checked_mul(r.mesh.cells_z));
+    let plan = SolverPlan::for_study(r);
+    let read = Evidence::read(results, &plan);
+    let evidence = read.run_evidence();
     let mut reasons = Vec::new();
-    match cells {
+    match r.cell_count() {
         None => reasons.push("the study's cell count overflows".to_owned()),
         Some(cell_count) => {
             let expected = PartialExpectations {
                 end_time: r.solver.end_time,
                 cell_count,
-                domain_volume: r.domain.length_x * r.domain.length_y * r.domain.length_z,
+                domain_volume: r.meshed_volume(),
             };
-            if let Verdict::Failed(found) = judge_partial(&evidence, &expected) {
+            if let Verdict::Failed(found) =
+                judge_partial_with(&evidence, &expected, &read.judge_plan(&plan))
+            {
                 reasons.extend(found);
             }
         }
@@ -552,9 +601,12 @@ pub fn judge_stopped_results(results: &Path, r: &ResolvedStudy, time: &str) -> E
             && std::fs::metadata(results.join(time).join(name))
                 .is_ok_and(|m| m.is_file() && m.len() > 0)
     };
-    if !(filled("U") && filled("p")) {
+    // A stopped run is held to the velocity and the pressure it solves for.
+    let needed = ["U".to_owned(), plan.pressure_field.clone()];
+    if !needed.iter().all(|name| filled(name)) {
         reasons.push(format!(
-            "the U and p field files of the stopped time {time} are missing or empty"
+            "the {} field files of the stopped time {time} are missing or empty",
+            field_phrase(&needed)
         ));
     }
     EvidenceReport {
@@ -578,7 +630,8 @@ pub fn execute(begun: Begun) -> Finished {
         case,
         results,
         run_dir,
-        table,
+        benchmark,
+        override_used,
         ..
     } = begun;
     let operation = mode.operation();
@@ -597,8 +650,14 @@ pub fn execute(begun: Begun) -> Finished {
             )
             .with_migration(prepared.migration.clone());
             let mut passed = evidence.verdict != "failed";
-            if let (true, RunMode::Validate, Some(table)) = (passed, mode, &table) {
-                let gate = ghia::compare_results(&outcome.results_dir, &prepared.resolved, table);
+            if let (true, RunMode::Validate, Some(benchmark)) = (passed, mode, &benchmark) {
+                let files = DirFiles {
+                    root: outcome.results_dir.clone(),
+                };
+                let mut gate = benchmark.compare(&files, &prepared.resolved);
+                if override_used {
+                    gate.note_override("the tolerances come from the file given with the run");
+                }
                 passed = gate.passed;
                 report.gate = Some(gate);
             }

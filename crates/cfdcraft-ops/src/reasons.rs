@@ -5,7 +5,7 @@
 //! 0.1 → 0.2 m/s`. Numbers print as Rust prints a decimal (no exponent, `0.1` and `128`), an
 //! absent velocity as `none`, and a long image digest in its first 19 characters.
 
-use cfdcraft_keys::{Axis, Change, Residual, Stage, ToolPart};
+use cfdcraft_keys::{Axis, Change, PhysicsPart, Residual, Stage, ToolPart};
 use cfdcraft_text::{Line, Text};
 
 /// How many characters of an image digest a sentence shows (`sha256:` and twelve more).
@@ -33,6 +33,20 @@ fn short_digest(digest: &str) -> String {
         digest.chars().take(DIGEST_SHOWN).collect()
     } else {
         digest.to_owned()
+    }
+}
+
+/// The part of the physics in the snake_case word of a study file.
+fn physics_word(part: PhysicsPart) -> &'static str {
+    match part {
+        PhysicsPart::Time => "time",
+        PhysicsPart::DeltaT => "delta_t",
+        PhysicsPart::Turbulence => "turbulence",
+        PhysicsPart::Intensity => "intensity",
+        PhysicsPart::ViscosityRatio => "viscosity_ratio",
+        PhysicsPart::ReferenceVelocity => "reference_velocity",
+        PhysicsPart::Buoyancy => "buoyancy",
+        PhysicsPart::Init => "init",
     }
 }
 
@@ -74,7 +88,35 @@ pub fn change_line(change: &Change) -> Line {
             from: from.to_string(),
             to: to.to_string(),
         },
+        Change::MeshLevel { from, to } => Line::ReasonMeshLevel {
+            from: from.to_string(),
+            to: to.to_string(),
+        },
+        Change::Grading { axis, from, to } => Line::ReasonGrading {
+            axis: axis_word(*axis),
+            from: number(*from),
+            to: number(*to),
+        },
+        Change::Shape { from, to } => Line::ReasonShape {
+            from: from.clone().unwrap_or_else(|| "none".to_owned()),
+            to: to.clone().unwrap_or_else(|| "none".to_owned()),
+        },
         Change::Layout => Line::ReasonLayout,
+        Change::InletProfile { boundary, from, to } => Line::ReasonInletProfile {
+            boundary: boundary.clone(),
+            from: from.clone().unwrap_or_else(|| "none".to_owned()),
+            to: to.clone().unwrap_or_else(|| "none".to_owned()),
+        },
+        Change::Physics { what, from, to } => Line::ReasonPhysics {
+            what: physics_word(*what).to_owned(),
+            from: from.clone(),
+            to: to.clone(),
+        },
+        Change::Thermal { boundary, from, to } => Line::ReasonThermal {
+            boundary: boundary.clone(),
+            from: from.clone().unwrap_or_else(|| "none".to_owned()),
+            to: to.clone().unwrap_or_else(|| "none".to_owned()),
+        },
         Change::Viscosity { from, to } => Line::ReasonViscosity {
             from: number(*from),
             to: number(*to),
@@ -371,6 +413,71 @@ mod tests {
         for (change, expected) in table {
             assert_eq!(text(&change), expected, "{change:?}");
         }
+    }
+
+    #[test]
+    fn the_mesh_level_grading_and_shape_changes_have_their_lines() {
+        assert_eq!(
+            change_line(&Change::MeshLevel { from: 0, to: 2 }),
+            Line::ReasonMeshLevel {
+                from: "0".to_owned(),
+                to: "2".to_owned(),
+            }
+        );
+        assert_eq!(
+            change_line(&Change::Grading {
+                axis: Axis::Y,
+                from: 1.0,
+                to: 1.05,
+            }),
+            Line::ReasonGrading {
+                axis: "y".to_owned(),
+                from: "1".to_owned(),
+                to: "1.05".to_owned(),
+            }
+        );
+        assert_eq!(
+            change_line(&Change::Shape {
+                from: None,
+                to: Some("cylinder, diameter 0.1 m at (0.2, 0.2) m".to_owned()),
+            }),
+            Line::ReasonShape {
+                from: "none".to_owned(),
+                to: "cylinder, diameter 0.1 m at (0.2, 0.2) m".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_physics_thermal_and_profile_changes_have_their_lines() {
+        assert_eq!(
+            change_line(&Change::Physics {
+                what: PhysicsPart::ViscosityRatio,
+                from: "none".to_owned(),
+                to: "10".to_owned(),
+            }),
+            Line::ReasonPhysics {
+                what: "viscosity_ratio".to_owned(),
+                from: "none".to_owned(),
+                to: "10".to_owned(),
+            }
+        );
+        assert_eq!(
+            reason_text(&[Change::Thermal {
+                boundary: "hot".to_owned(),
+                from: None,
+                to: Some("fixed 307.8 K".to_owned()),
+            }]),
+            "hot thermal condition none → fixed 307.8 K"
+        );
+        assert_eq!(
+            reason_text(&[Change::InletProfile {
+                boundary: "feed".to_owned(),
+                from: Some("uniform".to_owned()),
+                to: Some("parabolic".to_owned()),
+            }]),
+            "feed inlet profile uniform → parabolic"
+        );
     }
 
     #[test]

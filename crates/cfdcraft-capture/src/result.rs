@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::bundle::{Bundle, read_all, walk_dirs};
 use crate::monitors::monitor_names;
-use crate::{CaptureError, FILE_CAP};
+use crate::{CaptureError, CapturePlan, FILE_CAP};
 
 /// The folder below `base` (relative to `results`) whose name, read as a number, is the end time.
 /// `5000` and `5000.0` are the same time. Only real folders count; when several match, the
@@ -56,9 +56,9 @@ pub(crate) fn centreline_folder(results: &Path, end_time: f64) -> Result<String,
     )
 }
 
-/// The final fields, centreline samples and logs of a run.
+/// The final fields, centreline samples and logs of a cavity run.
 pub fn result_bundle(results: &Path, end_time: f64) -> Result<Bundle, CaptureError> {
-    result_bundle_limited(results, end_time, FILE_CAP)
+    result_bundle_with(results, end_time, &CapturePlan::cavity())
 }
 
 /// [`result_bundle`] with a smaller cap per file (for tests).
@@ -67,18 +67,41 @@ pub fn result_bundle_limited(
     end_time: f64,
     file_cap: u64,
 ) -> Result<Bundle, CaptureError> {
+    result_bundle_limited_with(results, end_time, file_cap, &CapturePlan::cavity())
+}
+
+/// The final fields, logs and monitor files of a run, named by `plan`.
+pub fn result_bundle_with(
+    results: &Path,
+    end_time: f64,
+    plan: &CapturePlan,
+) -> Result<Bundle, CaptureError> {
+    result_bundle_limited_with(results, end_time, FILE_CAP, plan)
+}
+
+/// [`result_bundle_with`] with a smaller cap per file (for tests).
+pub fn result_bundle_limited_with(
+    results: &Path,
+    end_time: f64,
+    file_cap: u64,
+    plan: &CapturePlan,
+) -> Result<Bundle, CaptureError> {
     let end = find_time_dir(results, end_time)?;
-    let centre = centreline_folder(results, end_time)?;
-    let mut names = vec![
-        format!("{end}/U"),
-        format!("{end}/p"),
+    let mut names: Vec<String> = plan.fields.iter().map(|f| format!("{end}/{f}")).collect();
+    names.extend([
         "log.blockMesh".to_owned(),
         "log.checkMesh".to_owned(),
-        "log.simpleFoam".to_owned(),
-        format!("postProcessing/centreline/{centre}/vertical_U.xy"),
-        format!("postProcessing/centreline/{centre}/horizontal_U.xy"),
-    ];
+        plan.log.clone(),
+    ]);
+    if plan.centreline {
+        let centre = centreline_folder(results, end_time)?;
+        names.push(format!("postProcessing/centreline/{centre}/vertical_U.xy"));
+        names.push(format!(
+            "postProcessing/centreline/{centre}/horizontal_U.xy"
+        ));
+    }
     push_if_present(results, format!("{end}/phi"), &mut names)?;
+    push_if_present(results, "log.potentialFoam".to_owned(), &mut names)?;
     names.extend(monitor_names(results)?);
     read_all(results, names, file_cap)
 }

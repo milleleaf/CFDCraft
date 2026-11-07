@@ -3,22 +3,31 @@
 //! A file that cannot be read makes its quantity an error, a function object with no file yet
 //! makes its quantities too early, and a missing flux file fails the mass balance. None of these
 //! can look settled, so none can make a run converged.
+//!
+//! A transient run has no residual limit (the caller passes `None`), and with `Spec::periodic` its
+//! probe, surface and force series are judged on periodic settledness: "settled" then means the
+//! cycles are steady, not that the value is flat. A series that is flat within the steady rules is
+//! settled either way, so a constant drag stays settled beside a shedding lift, and a series with
+//! no cycle at all keeps its steady verdict. Line monitors keep the write-time rules whatever the
+//! flag says.
 
 use std::collections::BTreeMap;
 
 use cfdcraft_logscan::{Divergence, Limits, LogState, Scanner, divergence};
 use cfdcraft_monitors::{
-    FieldKind, LineFile, Series, join_series, line_mean_series, parse_probes, parse_surface,
-    parse_xy, probe_series, surface_series,
+    FieldKind, LineFile, Series, coefficient_series, join_series, line_mean_series,
+    parse_coefficients, parse_probes, parse_surface, parse_xy, probe_series, surface_series,
+    surface_series_component,
 };
 use cfdcraft_settle::{
-    Balance, BalanceStatus, PatchFlux, QuantityState, SOLVER_FAILED, SampleKind, Samples, Settings,
-    Status, Verdict, assess_series, energy_balance, mass_balance, verdict,
+    Balance, BalanceStatus, PatchFlux, PeriodicOptions, PeriodicState, PeriodicStatus,
+    QuantityState, SOLVER_FAILED, SampleKind, Samples, Settings, Status, Verdict, assess_periodic,
+    assess_series, energy_balance, mass_balance, verdict,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{Files, Spec, SurfaceQuantityKind};
+use crate::spec::{Files, Spec, SurfaceQuantityKind, SurfaceSpec};
 
 /// The first and the latest initial residual of one solved field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -76,10 +85,40 @@ fn failed_balance() -> Balance {
     }
 }
 
+/// The two series of a force coefficient file that are judged.
+const COEFFICIENTS: [&str; 2] = ["Cd", "Cl"];
+
 #[derive(Default)]
 struct Out {
     quantities: Vec<QuantityState>,
     notes: Vec<String>,
+    periodic: bool,
+}
+
+/// Add a note unless the same one is already there.
+fn note_once(notes: &mut Vec<String>, note: String) {
+    if !notes.contains(&note) {
+        notes.push(note);
+    }
+}
+
+/// A periodic state as a quantity, status for status.
+fn from_periodic(samples: &Samples<'_>, p: &PeriodicState) -> QuantityState {
+    QuantityState {
+        name: samples.name.to_owned(),
+        last: samples.values.last().copied().unwrap_or(0.0),
+        mean: p.mean,
+        spread: p.amplitude.unwrap_or(0.0),
+        drift: p.disagreement.unwrap_or(0.0),
+        status: match p.status {
+            PeriodicStatus::Settled => Status::Settled,
+            PeriodicStatus::Drifting => Status::Drifting,
+            PeriodicStatus::TooEarly => Status::TooEarly,
+            PeriodicStatus::TooFewSamples => Status::TooFewSamples,
+            PeriodicStatus::Error => Status::Error,
+        },
+        samples: samples.values.len() as u64,
+    }
 }
 
 impl Out {
@@ -104,7 +143,17 @@ impl Out {
             times: &series.times,
             values: &series.values,
         };
-        self.quantities.push(assess_series(&samples, kind, s));
+        let steady = assess_series(&samples, kind, s);
+        let periodic =
+            (self.periodic && kind == SampleKind::Iteration && steady.status != Status::Settled)
+                .then(|| assess_periodic(&samples, &PeriodicOptions::default()))
+                // A series with no cycle at all (a ramp, a short one) keeps its steady verdict.
+                .filter(|p| p.cycles > 0);
+        let state = match periodic {
+            Some(p) => from_periodic(&samples, &p),
+            None => steady,
+        };
+        self.quantities.push(state);
     }
 
     /// Join the pieces of each series across start-time folders and judge the results.
@@ -177,16 +226,76 @@ fn surface_joined(fo: &str, found: Pieces<'_>, column: &str, suffix: &str) -> Op
     Some(join_series(parts))
 }
 
-fn surface(out: &mut Out, files: &Files, fo: &str, quantity: SurfaceQuantityKind, s: &Settings) {
-    let (column, suffix) = quantity.column();
+/// One component of a vector column of a surface function object, joined across its start-time
+/// folders and named `<fo>.<suffix>`.
+fn surface_vector(
+    fo: &str,
+    found: Pieces<'_>,
+    column: &str,
+    component: usize,
+    suffix: &str,
+) -> Option<Series> {
+    let prefix = format!("{fo}.{column}.");
+    let parts = found
+        .iter()
+        .map(|(_, text)| {
+            let file = parse_surface(text).ok()?;
+            surface_series_component(&file, fo, component)
+                .into_iter()
+                .find(|s| s.name.starts_with(&prefix))
+        })
+        .collect::<Option<Vec<Series>>>()?;
+    let mut joined = join_series(parts);
+    joined.name = format!("{fo}.{suffix}");
+    Some(joined)
+}
+
+fn surface(out: &mut Out, files: &Files, sf: &SurfaceSpec, s: &Settings) {
+    let fo = sf.fo.as_str();
+    let (column, suffix) = sf.quantity.column();
     let found = pieces(files, fo);
     if found.is_empty() {
         out.missing(fo, &[suffix]);
         return;
     }
-    match surface_joined(fo, found, column, suffix) {
+    let joined = match (sf.quantity, sf.component) {
+        (SurfaceQuantityKind::HeatFlux, Some(c)) => surface_vector(fo, found, column, c, suffix),
+        _ => surface_joined(fo, found, column, suffix),
+    };
+    match joined {
         Some(series) => out.judge(&series, SampleKind::Iteration, s),
         None => out.unreadable(fo, format!("{fo}.{suffix}")),
+    }
+}
+
+/// The drag and lift series of a force coefficient function object, joined across its start-time
+/// folders. A column the files do not hold is an error, never a settled quantity.
+fn force(out: &mut Out, files: &Files, fo: &str, s: &Settings) {
+    let found = pieces(files, fo);
+    if found.is_empty() {
+        out.missing(fo, &COEFFICIENTS);
+        return;
+    }
+    let parsed: Result<Vec<Vec<Series>>, _> = found
+        .iter()
+        .map(|(_, text)| parse_coefficients(text).map(|f| coefficient_series(&f, fo)))
+        .collect();
+    let Ok(parts) = parsed else {
+        out.unreadable(fo, format!("{fo}.coefficients"));
+        return;
+    };
+    for suffix in COEFFICIENTS {
+        let name = format!("{fo}.{suffix}");
+        let wanted: Vec<Series> = parts
+            .iter()
+            .filter_map(|p| p.iter().find(|x| x.name == name).cloned())
+            .collect();
+        if wanted.is_empty() {
+            note_once(&mut out.notes, format!("parse:{fo}"));
+            out.quantities.push(state(name, Status::Error));
+        } else {
+            out.judge(&join_series(wanted), SampleKind::Iteration, s);
+        }
     }
 }
 
@@ -226,6 +335,47 @@ fn mass(spec: &Spec, files: &Files, s: &Settings, notes: &mut Vec<String>) -> Ba
     }
 }
 
+/// The last heat flow of one wall surface, or `None` with the reason in the notes.
+///
+/// The component defaults to x, the first part of the vector.
+fn wall_heat(spec: &Spec, files: &Files, fo: &str, notes: &mut Vec<String>) -> Option<f64> {
+    let (column, suffix) = SurfaceQuantityKind::HeatFlux.column();
+    let found = pieces(files, fo);
+    let Some(sf) = spec.surfaces.iter().find(|sf| sf.fo == fo) else {
+        note_once(notes, format!("missing:{fo}"));
+        return None;
+    };
+    if found.is_empty() {
+        note_once(notes, format!("missing:{fo}"));
+        return None;
+    }
+    let last = surface_vector(fo, found, column, sf.component.unwrap_or(0), suffix)
+        .and_then(|j| j.values.last().copied());
+    if last.is_none() {
+        note_once(notes, format!("parse:{fo}"));
+    }
+    last
+}
+
+/// The energy balance. Where energy is not solved it is not applicable. Where it is, the net heat
+/// flow is the hot wall's minus the cold wall's, measured against the hot wall's; a missing or
+/// unreadable flow, or no wall monitors at all, fails the balance.
+fn energy(spec: &Spec, files: &Files, s: &Settings, notes: &mut Vec<String>) -> Balance {
+    if !spec.solves_energy {
+        return energy_balance(None, s);
+    }
+    let Some(heat) = &spec.heat else {
+        notes.push("unavailable:energy".to_owned());
+        return failed_balance();
+    };
+    let hot = wall_heat(spec, files, &heat.hot, notes);
+    let cold = wall_heat(spec, files, &heat.cold, notes);
+    match (hot, cold) {
+        (Some(h), Some(c)) => energy_balance(Some((h - c, h.abs())), s),
+        _ => failed_balance(),
+    }
+}
+
 fn residuals(log: &LogState) -> Vec<ResidualRow> {
     log.last_initial
         .iter()
@@ -237,17 +387,22 @@ fn residuals(log: &LogState) -> Vec<ResidualRow> {
         .collect()
 }
 
-/// Whether the last initial residuals are under the limits: pressure under the first, every
-/// velocity component under the second. No limits is no check; limits with no residual yet fail.
-fn residuals_ok(limits: Option<(f64, f64)>, rows: &[ResidualRow]) -> bool {
-    let Some((p_limit, u_limit)) = limits else {
+/// Whether the last initial residuals are under the limits: the spec's pressure field under the
+/// first, every velocity component (and the temperature, when it is solved) under the second.
+/// Other fields are shown and not gated. No limits is no check; limits with no residual yet fail.
+fn residuals_ok(spec: &Spec, rows: &[ResidualRow]) -> bool {
+    let Some((p_limit, u_limit)) = spec.residual_limits else {
         return true;
     };
     !rows.is_empty()
-        && rows.iter().all(|r| match r.field.as_str() {
-            "p" => r.last <= p_limit,
-            f if f.starts_with('U') => r.last <= u_limit,
-            _ => true,
+        && rows.iter().all(|r| {
+            if r.field == spec.pressure_field {
+                r.last <= p_limit
+            } else if r.field.starts_with('U') || (spec.temperature && r.field == "T") {
+                r.last <= u_limit
+            } else {
+                true
+            }
         })
 }
 
@@ -259,7 +414,10 @@ pub fn assess(spec: &Spec, files: &Files, settings: &Settings) -> Assessment {
     scanner.feed(&files.log);
     let log = scanner.state();
 
-    let mut out = Out::default();
+    let mut out = Out {
+        periodic: spec.periodic,
+        ..Out::default()
+    };
     let mut labels = BTreeMap::new();
     for p in &spec.probes {
         labels.insert(p.fo.clone(), p.label.clone());
@@ -269,21 +427,20 @@ pub fn assess(spec: &Spec, files: &Files, settings: &Settings) -> Assessment {
         labels.insert(l.fo.clone(), l.label.clone());
         line(&mut out, files, &l.fo, l.field, settings);
     }
+    for f in &spec.forces {
+        labels.insert(f.fo.clone(), f.label.clone());
+        force(&mut out, files, &f.fo, settings);
+    }
     for sf in &spec.surfaces {
         labels.insert(sf.fo.clone(), sf.label.clone());
-        surface(&mut out, files, &sf.fo, sf.quantity, settings);
+        surface(&mut out, files, sf, settings);
     }
 
     let mass = mass(spec, files, settings, &mut out.notes);
-    let energy = if spec.solves_energy {
-        out.notes.push("unavailable:energy".to_owned());
-        failed_balance()
-    } else {
-        energy_balance(None, settings)
-    };
+    let energy = energy(spec, files, settings, &mut out.notes);
 
     let rows = residuals(log);
-    let ok = residuals_ok(spec.residual_limits, &rows);
+    let ok = residuals_ok(spec, &rows);
     let verdict = verdict(
         out.quantities.clone(),
         mass.clone(),

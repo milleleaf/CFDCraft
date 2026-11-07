@@ -234,10 +234,14 @@ fn the_monitor_codes_are_listed() {
         "CFD-INFRA-007",
         "CFD-INFRA-008",
         "CFD-INFRA-009",
+        // Plan 07-01 added the force, boundary probe and heat-flux monitor codes.
+        "CFD-MON-007",
+        "CFD-MON-008",
+        "CFD-MON-009",
     ] {
         assert!(is_known_code(code), "{code}");
     }
-    assert!(!is_known_code("CFD-MON-007") && !is_known_code("CFD-RUN-009"));
+    assert!(!is_known_code("CFD-MON-010") && !is_known_code("CFD-RUN-009"));
 }
 
 #[test]

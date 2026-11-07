@@ -13,12 +13,19 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
 const MANIFEST: &[u8] = include_bytes!("fixtures/handwritten/manifest.json");
+const MANIFEST_V4: &[u8] = include_bytes!("fixtures/handwritten-v4/manifest.json");
 const MANIFEST_V3: &[u8] = include_bytes!("fixtures/handwritten-v3/manifest.json");
 const MANIFEST_V1: &[u8] = include_bytes!("fixtures/handwritten-v1/manifest.json");
 const MANIFEST_V2: &[u8] = include_bytes!("fixtures/handwritten-v2/manifest.json");
 const STUDY: &[u8] = include_bytes!("fixtures/handwritten/study.json");
 const ARTIFACTS: &[u8] = include_bytes!("fixtures/handwritten/artifacts.json");
 const QUEUE: &str = include_str!("fixtures/handwritten/queue.json");
+const STUDY_PHYSICS: &str = include_str!("fixtures/handwritten/study_physics.json");
+const STUDY_SHAPE: &str = include_str!("fixtures/handwritten/study_shape.json");
+const STUDY_UNKNOWN_PHYSICS_MEMBER: &str =
+    include_str!("fixtures/invalid/study_unknown_physics_member.json");
+const STUDY_BAD_TURBULENCE_WORD: &str =
+    include_str!("fixtures/invalid/study_bad_turbulence_word.json");
 
 #[derive(Clone, Copy)]
 enum Member {
@@ -135,7 +142,77 @@ fn a_file_assembled_by_plain_zip_code_opens_with_the_expected_study() {
 }
 
 #[test]
-fn a_handwritten_schema_3_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+fn a_handwritten_schema_4_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+    let manifest: Value = serde_json::from_slice(MANIFEST_V4).unwrap();
+    let study: Value = serde_json::from_slice(STUDY).unwrap();
+    let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
+    assert_eq!(
+        validate(&frozen_schema(Member::Manifest, 4), &manifest),
+        Ok(())
+    );
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    assert_eq!(
+        validate(&frozen_schema(Member::Artifacts, 4), &artifacts),
+        Ok(())
+    );
+    // The current manifest file allows its own number only.
+    assert!(validate(&published_schema(Member::Manifest), &manifest).is_err());
+
+    let opened = from_bytes(&archive(MANIFEST_V4, STUDY, ARTIFACTS)).unwrap();
+    assert_eq!(opened.schema_version, 4);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (4, 5));
+    assert!(opened.document.artifacts.runs.is_empty());
+}
+
+#[test]
+fn the_handwritten_schema_5_manifest_validates() {
+    let manifest: Value = serde_json::from_slice(MANIFEST).unwrap();
+    assert_eq!(manifest["schema_version"], json!(5));
+    assert_eq!(CURRENT_SCHEMA, 5);
+    assert_eq!(
+        validate(&published_schema(Member::Manifest), &manifest),
+        Ok(())
+    );
+    // The frozen schema 4 manifest file allows its own number only.
+    assert!(validate(&frozen_schema(Member::Manifest, 4), &manifest).is_err());
+}
+
+#[test]
+fn a_physics_study_validates_and_opens() {
+    let study: Value = serde_json::from_str(STUDY_PHYSICS).unwrap();
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    let opened = Study::from_json(STUDY_PHYSICS).unwrap();
+    let physics = opened.physics.as_ref().expect("the study states physics");
+    assert!(physics.buoyancy.is_some());
+    assert_eq!(opened.monitors.forces.len(), 1);
+    assert_eq!(opened.monitors.surfaces.len(), 1);
+}
+
+#[test]
+fn a_shape_study_validates_and_opens() {
+    let study: Value = serde_json::from_str(STUDY_SHAPE).unwrap();
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    let opened = Study::from_json(STUDY_SHAPE).unwrap();
+    assert!(opened.domain.shape.is_some());
+    assert_eq!(opened.mesh.level, 1);
+    assert_eq!(
+        opened.monitors.probes["front"].boundary.as_deref(),
+        Some("cylinder")
+    );
+}
+
+#[test]
+fn unknown_members_and_bad_words_are_refused_by_both() {
+    for text in [STUDY_UNKNOWN_PHYSICS_MEMBER, STUDY_BAD_TURBULENCE_WORD] {
+        let study: Value = serde_json::from_str(text).unwrap();
+        assert!(validate(&published_schema(Member::Study), &study).is_err());
+        assert!(Study::from_json(text).is_err());
+    }
+}
+
+#[test]
+fn a_handwritten_schema_3_file_validates_against_the_frozen_files_and_opens_with_two_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V3).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -153,13 +230,14 @@ fn a_handwritten_schema_3_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V3, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 3);
-    assert_eq!(opened.notes.len(), 1);
+    assert_eq!(opened.notes.len(), 2);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (3, 4));
+    assert_eq!((opened.notes[1].from, opened.notes[1].to), (4, 5));
     assert!(opened.document.artifacts.runs.is_empty());
 }
 
 #[test]
-fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with_two_notes() {
+fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with_three_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V2).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -177,16 +255,17 @@ fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V2, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 2);
-    assert_eq!(opened.notes.len(), 2);
+    assert_eq!(opened.notes.len(), 3);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (2, 3));
     assert_eq!((opened.notes[1].from, opened.notes[1].to), (3, 4));
+    assert_eq!((opened.notes[2].from, opened.notes[2].to), (4, 5));
     assert!(opened.document.artifacts.scenarios.is_empty());
     assert!(opened.document.artifacts.sweeps.is_empty());
     assert!(opened.document.artifacts.pruned.is_empty());
 }
 
 #[test]
-fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_three_notes() {
+fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_four_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V1).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -204,9 +283,9 @@ fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V1, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 1);
-    assert_eq!(opened.notes.len(), 3);
+    assert_eq!(opened.notes.len(), 4);
     let steps: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
-    assert_eq!(steps, [(1, 2), (2, 3), (3, 4)]);
+    assert_eq!(steps, [(1, 2), (2, 3), (3, 4), (4, 5)]);
     assert!(opened.document.artifacts.runs.is_empty());
 }
 
@@ -221,6 +300,8 @@ const CASES: &[(&str, Member, bool, bool)] = &[
     ("handwritten/study.json", Member::Study, true, true),
     ("handwritten/artifacts.json", Member::Artifacts, true, true),
     ("handwritten/queue.json", Member::Queue, true, true),
+    ("handwritten/study_physics.json", Member::Study, true, true),
+    ("handwritten/study_shape.json", Member::Study, true, true),
     (
         "invalid/study_extra_top_level_key.json",
         Member::Study,
@@ -266,6 +347,20 @@ const CASES: &[(&str, Member, bool, bool)] = &[
     (
         "invalid/artifacts_unknown_blob_kind.json",
         Member::Artifacts,
+        false,
+        false,
+    ),
+    // A member the physics does not define, and a turbulence model that is not one of the four
+    // words, are refused by both.
+    (
+        "invalid/study_unknown_physics_member.json",
+        Member::Study,
+        false,
+        false,
+    ),
+    (
+        "invalid/study_bad_turbulence_word.json",
+        Member::Study,
         false,
         false,
     ),

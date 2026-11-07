@@ -30,8 +30,6 @@ use crate::tick::{Drain, STUDY, run_id_of};
 
 /// The control file of a case, below the run folder.
 const CONTROL: &str = "system/controlDict";
-/// The solver log, in the mirror.
-const SOLVER_LOG: &str = "log.simpleFoam";
 /// The code of a run that could not be confirmed stopped.
 const NOT_CONFIRMED: &str = "CFD-RUN-008";
 /// The seconds a container is given to end when it is stopped by force.
@@ -226,7 +224,8 @@ pub fn classify_end<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Ended, Dra
     ) {
         return Ok(Ended::Normal);
     }
-    let log = ctx.mirror(job)?.read_to_string(SOLVER_LOG)?;
+    let solver_log = ctx.solver_log(job)?;
+    let log = ctx.mirror(job)?.read_to_string(&solver_log)?;
     let last = last_logged_time(&log).filter(|t| t.is_finite() && *t > 0.0);
     let Some(last) = last.filter(|_| ends_with_end(&log)) else {
         return Ok(Ended::Normal);

@@ -23,7 +23,7 @@ use cfdcraft_text::{Line, Text};
 use crate::disk::DiskRefusal;
 use crate::finalize::first_error_code;
 use crate::mirror::{Mirror, MirrorError};
-use crate::watch::LiveSpec;
+use crate::watch::{LiveSpec, solver_log_of};
 use crate::{DrainConfig, DrainError, case, disk, explain, finalize, reattach, stop, watchdog};
 
 /// The file in the live folder that holds what the verdict is made from.
@@ -34,8 +34,14 @@ pub const STUDY: &str = "study.json";
 pub const MISS_LIMIT: u32 = 6;
 /// The most bytes fetched from one file in one tick.
 pub const FETCH_CAP: u64 = 1024 * 1024;
-/// The log files mirrored, in the order they are written.
-const LOGS: [&str; 3] = ["log.blockMesh", "log.checkMesh", "log.simpleFoam"];
+/// The log files mirrored, in the order they are written; `solver_log` is the job's own.
+fn logs_of(solver_log: &str) -> [String; 3] {
+    [
+        "log.blockMesh".to_owned(),
+        "log.checkMesh".to_owned(),
+        solver_log.to_owned(),
+    ]
+}
 /// The folder of the host that holds the monitor files.
 const POST: &str = "postProcessing";
 
@@ -172,6 +178,11 @@ impl<H: Host> Drain<H> {
         self.queue
             .live_dir(&job.id)
             .ok_or_else(|| io_reason("the job id names no folder"))
+    }
+
+    /// The name of the job's solver log, from its live specification.
+    pub(crate) fn solver_log(&self, job: &Job) -> Result<String, DrainError> {
+        Ok(solver_log_of(&self.live_dir(job)?))
     }
 
     /// The mirror of a job.
@@ -444,17 +455,18 @@ impl<H: Host> Drain<H> {
     }
 }
 
-/// Brings the mirror of a job up to date with the host: the three logs, and every monitor file.
-/// Returns whether any file grew.
+/// Brings the mirror of a job up to date with the host: the three logs (the solver's under the name
+/// the job's specification gives it), and every monitor file. Returns whether any file grew.
 pub(crate) fn pull<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<bool, DrainError> {
     let run_id = run_id_of(job)?.to_owned();
     let mirror = ctx.mirror(job)?;
     let mut moved = false;
-    for rel in LOGS {
-        if rel != "log.simpleFoam" && ended(&mirror.read_to_string(rel)?) {
+    let solver_log = ctx.solver_log(job)?;
+    for rel in logs_of(&solver_log) {
+        if rel != solver_log && ended(&mirror.read_to_string(&rel)?) {
             continue;
         }
-        moved |= pull_file(&mut ctx.host, &mirror, &run_id, rel, None)?;
+        moved |= pull_file(&mut ctx.host, &mirror, &run_id, &rel, None)?;
     }
     for file in ctx.host.files(&run_id, POST)? {
         if valid_rel(&file.rel) {

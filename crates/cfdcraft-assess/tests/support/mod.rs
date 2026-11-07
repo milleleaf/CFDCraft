@@ -178,6 +178,7 @@ pub fn surface_spec(fo: &str, quantity: SurfaceQuantityKind) -> SurfaceSpec {
         fo: fo.to_owned(),
         label: format!("label of {fo}"),
         quantity,
+        component: None,
     }
 }
 

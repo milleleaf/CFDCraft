@@ -250,9 +250,11 @@ fn the_readme_names_every_published_file() {
         "cfdcraft-manifest-v1.json",
         "cfdcraft-manifest-v2.json",
         "cfdcraft-manifest-v3.json",
+        "cfdcraft-manifest-v4.json",
         "cfdcraft-artifacts-v1.json",
         "cfdcraft-artifacts-v2.json",
         "cfdcraft-artifacts-v3.json",
+        "cfdcraft-artifacts-v4.json",
     ]
     .map(str::to_owned);
     let published_files = published().into_iter().map(|(file, _)| file);
@@ -381,7 +383,9 @@ fn the_artifact_index_schema_describes_variants_sweeps_and_the_pruned_list() {
     assert_eq!(property_names(&defs["Sweep"]), ["base", "id", "parameters"]);
     assert_eq!(
         property_names(&defs["MeshRecipe"]),
-        ["cells", "geometry", "patches", "raw", "tool"]
+        [
+            "cells", "geometry", "grading", "level", "patches", "raw", "shape", "tool"
+        ]
     );
     assert_eq!(
         property_names(&defs["ResultRecipe"]),
@@ -390,6 +394,7 @@ fn the_artifact_index_schema_describes_variants_sweeps_and_the_pruned_list() {
             "fluid",
             "mesh_key",
             "monitors",
+            "physics",
             "raw",
             "solver",
             "tool"
@@ -551,14 +556,26 @@ fn the_artifact_index_schema_describes_the_new_run_members() {
     }
     assert_eq!(
         property_names(&defs["MonitorsRecipe"]),
-        ["centreline_u_sample_count", "lines", "probes", "surfaces"]
+        [
+            "centreline_u_sample_count",
+            "forces",
+            "lines",
+            "probes",
+            "surfaces"
+        ]
     );
-    assert_eq!(property_names(&defs["ProbeRecipe"]), ["field", "x", "y"]);
+    assert_eq!(
+        property_names(&defs["ProbeRecipe"]),
+        ["field", "on", "x", "y"]
+    );
     assert_eq!(
         property_names(&defs["LineRecipe"]),
         ["field", "samples", "x0", "x1", "y0", "y1"]
     );
-    assert_eq!(property_names(&defs["SurfaceRecipe"]), ["kind", "quantity"]);
+    assert_eq!(
+        property_names(&defs["SurfaceRecipe"]),
+        ["boundary", "kind", "quantity"]
+    );
     assert_eq!(
         property_names(&defs["Checkpoint"]),
         ["blob", "size", "time"]
@@ -689,4 +706,237 @@ fn published_includes_the_queue_file() {
             .count(),
         1
     );
+}
+
+/// The schema 4 files as they stood when schema 5 was introduced: the length in bytes and an
+/// FNV-1a 64-bit checksum of each.
+const FROZEN_SUMS_V4: [(&str, usize, u64); 2] = [
+    ("cfdcraft-artifacts-v4.json", 51391, 0x29dc_0307_a5d2_8f4f),
+    ("cfdcraft-manifest-v4.json", 1289, 0x6d4e_e149_1469_6555),
+];
+
+#[test]
+fn the_frozen_v4_files_are_byte_identical_to_the_published_v4_files_and_pinned() {
+    let frozen_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frozen");
+    for (file, length, sum) in FROZEN_SUMS_V4 {
+        let published = fs::read(schema_dir().join(file)).unwrap();
+        let frozen = fs::read(frozen_dir.join(file)).unwrap();
+        assert_eq!(published, frozen, "{file}: the frozen copy differs");
+        assert_eq!(
+            (frozen.len(), checksum(&frozen)),
+            (length, sum),
+            "{file} is not the text recorded when it was frozen; a published file is never \
+             edited, so raise the schema number instead"
+        );
+    }
+}
+
+/// Whether an enum definition written as `oneOf` or as `enum` holds the word.
+fn has_word(definition: &Value, word: &str) -> bool {
+    let listed = definition["oneOf"].as_array().is_some_and(|variants| {
+        variants.iter().any(|variant| {
+            variant["const"] == word
+                || variant["enum"]
+                    .as_array()
+                    .is_some_and(|words| words.contains(&json!(word)))
+        })
+    });
+    listed
+        || definition["enum"]
+            .as_array()
+            .is_some_and(|words| words.contains(&json!(word)))
+}
+
+#[test]
+fn the_artifact_index_schema_describes_the_new_recipe_members() {
+    let schema = artifacts_schema();
+    let defs = &schema["$defs"];
+    for (definition, member) in [
+        ("MeshRecipe", "level"),
+        ("MeshRecipe", "grading"),
+        ("MeshRecipe", "shape"),
+        ("PatchRecipe", "thermal"),
+        ("ResultRecipe", "physics"),
+        ("BoundaryRecipe", "profile"),
+        ("BoundaryRecipe", "thermal"),
+        ("MonitorsRecipe", "forces"),
+        ("ProbeRecipe", "on"),
+        ("SurfaceRecipe", "boundary"),
+    ] {
+        let found = &defs[definition];
+        assert!(
+            found["properties"].get(member).is_some(),
+            "{definition}.{member}"
+        );
+        let required = found["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.contains(&json!(member)),
+            "{definition}.{member} must be optional"
+        );
+    }
+    assert_eq!(
+        property_names(&defs["ForceRecipe"]),
+        ["boundary", "reference_length", "reference_velocity"]
+    );
+    assert_eq!(property_names(&defs["GradingRecipe"]), ["x", "y"]);
+    assert_eq!(
+        property_names(&defs["PhysicsRecipe"]),
+        ["buoyancy", "init", "time", "turbulence"]
+    );
+    assert_eq!(
+        property_names(&defs["TurbulenceRecipe"]),
+        [
+            "intensity",
+            "model",
+            "reference_velocity",
+            "viscosity_ratio"
+        ]
+    );
+    assert_eq!(
+        property_names(&defs["BuoyancyRecipe"]),
+        [
+            "beta",
+            "gravity",
+            "prandtl",
+            "reference_temperature",
+            "turbulent_prandtl"
+        ]
+    );
+    assert!(has_word(&defs["SurfaceQuantity"], "heat_flux"));
+    for word in ["laminar", "k_omega_sst", "realizable_ke", "rng_k_epsilon"] {
+        assert!(has_word(&defs["TurbulenceModel"], word), "{word}");
+    }
+    // The study carried inside the index is the same study definition the study schema holds.
+    let study = study_schema();
+    for name in [
+        "Domain",
+        "MeshSpec",
+        "BoundaryCondition",
+        "Monitors",
+        "Probe",
+        "Face",
+    ] {
+        assert_eq!(defs[name], study["$defs"][name], "{name}");
+    }
+}
+
+fn study_member(extra: Value) -> Value {
+    let mut study = cavity();
+    for (name, value) in extra.as_object().unwrap() {
+        let mut at = &mut study;
+        let mut path = name.split('/').peekable();
+        while let Some(step) = path.next() {
+            if path.peek().is_none() {
+                at[step] = value.clone();
+            } else {
+                at = &mut at[step];
+            }
+        }
+    }
+    study
+}
+
+#[test]
+fn the_study_schema_is_extended_not_changed_again() {
+    let schema = study_schema();
+    assert_eq!(schema["$id"], "urn:cfdcraft:schema:study:1");
+    assert_eq!(
+        schema["properties"]["schema_version"]["const"],
+        json!(Study::SCHEMA_VERSION)
+    );
+    let defs = &schema["$defs"];
+    for (parent, members) in [
+        (
+            "Domain",
+            vec!["length_x", "length_y", "length_z", "open", "shape"],
+        ),
+        (
+            "MeshSpec",
+            vec!["cells_x", "cells_y", "cells_z", "grading", "level"],
+        ),
+        (
+            "BoundaryCondition",
+            vec!["faces", "kind", "profile", "thermal", "velocity"],
+        ),
+        (
+            "Monitors",
+            vec![
+                "centreline_u_sample_count",
+                "forces",
+                "lines",
+                "probes",
+                "settle",
+                "surfaces",
+            ],
+        ),
+        ("Probe", vec!["boundary", "field", "x", "y"]),
+    ] {
+        assert_eq!(property_names(&defs[parent]), members, "{parent}");
+    }
+    assert!(schema["properties"].get("physics").is_some());
+    assert!(has_word(&defs["Face"], "Obstacle"));
+    assert!(has_word(&defs["SolverKind"], "FromPhysics"));
+    assert!(has_word(&defs["SolverKind"], "SimpleLaminar"));
+    assert!(has_word(&defs["SurfaceQuantity"], "heat_flux"));
+    assert!(has_word(&defs["SurfaceQuantity"], "flux"));
+
+    let length = |value: f64| json!({ "value": value, "unit": "m" });
+    let shaped = study_member(json!({
+        "domain/shape": {
+            "kind": "backward_step",
+            "step_height": length(0.01),
+            "upstream_length": length(0.05),
+            "startup_length": length(0.0)
+        },
+        "mesh/level": 2,
+        "mesh/grading": { "x": 1.2 },
+        "boundary_conditions/walls/profile": "parabolic",
+        "boundary_conditions/walls/thermal": { "kind": "adiabatic" },
+        "monitors/forces": {
+            "drag": {
+                "boundary": "walls",
+                "reference_velocity": { "value": 1.0, "unit": "m/s" },
+                "reference_length": length(0.1)
+            }
+        },
+        "physics": {
+            "time": { "mode": "transient", "delta_t": { "value": 0.001, "unit": "s" } },
+            "turbulence": { "model": "k_omega_sst", "intensity": 0.05 },
+            "init": "potential"
+        }
+    }));
+    assert_eq!(validate(&schema, &shaped), Ok(()));
+    Study::from_json(&shaped.to_string()).unwrap();
+
+    let mut sphere = shaped.clone();
+    sphere["domain"]["shape"]["kind"] = json!("sphere");
+    assert!(validate(&schema, &sphere).is_err());
+
+    let mut extra = shaped.clone();
+    extra["domain"]["shape"]["comment"] = json!("x");
+    assert!(validate(&schema, &extra).is_err());
+
+    let mut word = shaped.clone();
+    word["physics"]["turbulence"]["model"] = json!("k_epsilon");
+    assert!(validate(&schema, &word).is_err());
+
+    let mut unknown = shaped;
+    unknown["physics"]["turbulence"]["wall_law"] = json!("standard");
+    assert!(validate(&schema, &unknown).is_err());
+}
+
+#[test]
+fn the_readme_says_what_each_number_is() {
+    let readme = fs::read_to_string(schema_dir().join("README.md")).unwrap();
+    for text in [
+        "cfdcraft-manifest-v5.json",
+        "cfdcraft-artifacts-v5.json",
+        "cfdcraft-study-v1.json",
+        "cfdcraft-queue-v1.json",
+        "cfdcraft-manifest-v4.json",
+        "cfdcraft-artifacts-v4.json",
+    ] {
+        assert!(readme.contains(text), "{text}");
+    }
+    assert!(readme.contains("the file number is 5"), "the file number");
 }

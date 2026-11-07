@@ -230,12 +230,17 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
     assert_eq!(
         s.tool_names(),
         [
+            "benchmark_check",
+            "benchmark_create",
+            "benchmark_list",
             "compare_runs",
             "compile",
             "create_study",
             "disk_use",
             "document_status",
             "export",
+            "gci_create",
+            "gci_report",
             "get_provenance",
             "get_result",
             "get_run_result",
@@ -942,12 +947,12 @@ fn surface_problems(tools: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_surface_is_still_closed_with_thirty_five_tools() {
+fn the_surface_is_still_closed_with_forty_tools() {
     let root = fresh("closed");
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 35);
+    assert_eq!(tools.as_array().unwrap().len(), 40);
     for name in [
         "save_document",
         "open_document",
@@ -1010,6 +1015,22 @@ fn the_surface_is_still_closed_with_thirty_five_tools() {
             "scenario_label",
             &["name", "notes", "pinned", "scenario", "title"][..],
         ),
+        ("benchmark_check", &["benchmark", "name", "run"][..]),
+        (
+            "benchmark_create",
+            &[
+                "benchmark",
+                "delta_t",
+                "init",
+                "mesh",
+                "rayleigh",
+                "reynolds",
+                "time",
+                "turbulence",
+            ][..],
+        ),
+        ("gci_create", &["levels", "name", "scenario", "sweep"][..]),
+        ("gci_report", &["name", "quantity", "sweep"][..]),
     ] {
         let tool = tools
             .as_array()
@@ -1029,6 +1050,18 @@ fn the_surface_is_still_closed_with_thirty_five_tools() {
             "{name} takes names, runs, tolerances or items only"
         );
     }
+    let list = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "benchmark_list")
+        .unwrap_or_else(|| panic!("benchmark_list is advertised"));
+    assert!(
+        list["inputSchema"]["properties"]
+            .as_object()
+            .is_none_or(|inputs| inputs.is_empty()),
+        "benchmark_list takes nothing: {list}"
+    );
     for tool in tools.as_array().unwrap() {
         assert_eq!(
             tool["inputSchema"]["additionalProperties"], false,
@@ -1088,7 +1121,7 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
     let mut s = Server::start(&root, "ok");
     store_cavity(&mut s);
     let before = files_under(&root.join("ws"));
-    let valid: [(&str, Value); 22] = [
+    let valid: [(&str, Value); 27] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -1138,6 +1171,14 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
         ),
         ("disk_use", json!({"name": "cavity"})),
         ("prune", json!({"name": "cavity", "apply": true})),
+        ("benchmark_list", json!({})),
+        ("benchmark_create", json!({"benchmark": "lid-cavity"})),
+        ("benchmark_check", json!({"name": "cavity"})),
+        ("gci_create", json!({"name": "cavity", "sweep": "mesh"})),
+        (
+            "gci_report",
+            json!({"name": "cavity", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
+        ),
     ];
     for (tool, arguments) in valid {
         for extra in ["dictionary", "path", "key", "host", "command"] {
@@ -1526,7 +1567,14 @@ fn these_tools_never_write_and_never_start_a_run() {
     let log = events(&root);
     let ssh = ssh_log(&root);
 
-    let calls: [(&str, Value); 8] = [
+    let calls: [(&str, Value); 12] = [
+        ("benchmark_list", json!({})),
+        ("benchmark_create", json!({"benchmark": "lid-cavity"})),
+        ("benchmark_check", json!({"name": "cavity"})),
+        (
+            "gci_report",
+            json!({"name": "cavity", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
+        ),
         ("document_status", json!({"name": "cavity"})),
         ("list_runs", json!({"name": "cavity"})),
         ("get_run_result", json!({"name": "cavity"})),
@@ -1893,7 +1941,17 @@ fn the_read_tools_never_write_and_never_start_a_run() {
     let log = events(&root);
     let ssh = ssh_log(&root);
 
-    let calls: [(&str, Value); 7] = [
+    let calls: [(&str, Value); 11] = [
+        ("benchmark_list", json!({})),
+        (
+            "benchmark_create",
+            json!({"benchmark": "cylinder", "mesh": "fine"}),
+        ),
+        ("benchmark_check", json!({"name": "cavity"})),
+        (
+            "gci_report",
+            json!({"name": "cavity", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
+        ),
         ("scenario_list", json!({"name": "cavity"})),
         ("scenario_list", json!({"name": "absent"})),
         (
@@ -2096,6 +2154,8 @@ fn only_the_named_document_changes() {
         "scenario_label",
         json!({"name": "cavity", "scenario": "base", "notes": "the reference"}),
     );
+    let sweep = s.tool("gci_create", json!({"name": "cavity", "sweep": "mesh"}));
+    assert_eq!(sweep["exit_class"], 0, "{sweep}");
     assert_eq!(
         std::fs::read(document_file(&root, "other")).unwrap(),
         other,
@@ -2912,7 +2972,7 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
     let tar = results_tar(&root);
     let mut s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
     store_cavity(&mut s);
-    let calls: [(&str, Value); 35] = [
+    let calls: [(&str, Value); 40] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -2981,6 +3041,14 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
         ("run_stop", json!({"name": "cavity", "job": "q-001"})),
         ("run_monitors", json!({"name": "cavity"})),
         ("run_log", json!({"name": "cavity", "job": "q-001"})),
+        ("benchmark_list", json!({})),
+        ("benchmark_create", json!({"benchmark": "lid-cavity"})),
+        ("benchmark_check", json!({"name": "absent"})),
+        ("gci_create", json!({"name": "absent", "sweep": "mesh"})),
+        (
+            "gci_report",
+            json!({"name": "absent", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
+        ),
     ];
     let mut called = std::collections::BTreeSet::new();
     for (tool, arguments) in calls {
@@ -2999,6 +3067,12 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
             json!({"name": "cavity", "scenarios": ["nope"], "apply": true}),
         ),
         ("disk_use", json!({"name": "absent"})),
+        ("benchmark_check", json!({"name": "cavity"})),
+        ("benchmark_create", json!({"benchmark": "nope"})),
+        (
+            "gci_report",
+            json!({"name": "cavity", "sweep": "nope", "quantity": "x"}),
+        ),
     ] {
         s.tool(tool, arguments);
     }

@@ -1,0 +1,10 @@
+[package]
+name = "cfdcraft-gci"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"

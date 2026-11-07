@@ -13,14 +13,12 @@ use cfdcraft_remote::Host;
 use crate::DrainError;
 use crate::tick::Drain;
 
-/// The solver log in the mirror.
-pub(crate) const SOLVER_LOG: &str = "log.simpleFoam";
-
 /// What the mirrored solver log shows so far. The mirror holds only whole lines.
 // ponytail: the whole mirror is read again every tick (at most 64 MiB); keep a scanner and its
 // offset in memory if a long run makes this slow.
 pub(crate) fn scan_log<H: Host>(ctx: &Drain<H>, job: &Job) -> Result<LogState, DrainError> {
-    let text = ctx.mirror(job)?.read_to_string(SOLVER_LOG)?;
+    let log = ctx.solver_log(job)?;
+    let text = ctx.mirror(job)?.read_to_string(&log)?;
     let mut scanner = Scanner::new();
     scanner.feed(&text);
     Ok(scanner.state().clone())

@@ -174,9 +174,9 @@ fn a_value_that_looks_like_a_placeholder_is_inserted_as_written() {
 
 #[test]
 fn the_samples_still_cover_every_variant() {
-    // The 53 sentences of the run phase are the last samples; each has its own variant and source.
+    // The sentences of the run phase and every later one are the last samples; each has its own variant and source.
     let samples = Line::samples();
-    let new = &samples[samples.len() - 53..];
+    let new = &samples[samples.len() - 77..];
     let sources: std::collections::BTreeSet<&str> = new.iter().map(|l| l.source()).collect();
     assert_eq!(sources.len(), new.len());
 }
@@ -317,7 +317,7 @@ fn the_balance_and_verdict_sentences_render() {
 #[test]
 fn no_sentence_names_a_path_or_a_host() {
     let samples = Line::samples();
-    for line in &samples[samples.len() - 53..] {
+    for line in &samples[samples.len() - 77..] {
         let out = english(line);
         for bad in ["/data", "ssh", ".ssh", "@"] {
             assert!(!out.contains(bad), "{out}");

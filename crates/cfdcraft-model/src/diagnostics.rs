@@ -8,11 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cfdcraft_shapes::{DomainSpec, ShapeSpec};
+
 use crate::{
     Quantity, StudyError,
     quantity::Dimension,
     raw::{MAX_RAW_OVERRIDES, RawBackend},
-    study::{BoundaryKind, Face, Study},
+    study::{
+        BoundaryKind, Face, InitMode, MAX_LEVEL, Physics, Shape, SolverKind, Study,
+        SurfaceQuantity, ThermalCondition, TimeMode, TurbulenceModel,
+    },
     units::si_value,
 };
 
@@ -196,6 +201,79 @@ pub const CODES: &[(&str, &str)] = &[
     ("CFD-INFRA-007", "a detached start failed"),
     ("CFD-INFRA-008", "the host state does not match the queue"),
     ("CFD-INFRA-009", "the compute host stayed unreachable"),
+    (
+        "CFD-MESH-002",
+        "the mesh level or wall grading is out of range, or the refined mesh has too many cells",
+    ),
+    (
+        "CFD-SHAPE-001",
+        "a shape size is not positive or does not fit in the domain",
+    ),
+    ("CFD-SHAPE-002", "a shape needs an open domain"),
+    (
+        "CFD-SHAPE-003",
+        "the obstacle face is used where there is no cylinder, is missing on a cylinder channel, or is not a wall",
+    ),
+    (
+        "CFD-SHAPE-004",
+        "the cell counts differ from the shape's reference totals",
+    ),
+    (
+        "CFD-BC-007",
+        "an inlet profile is set on something that is not a velocity inlet on an XMin or XMax face",
+    ),
+    ("CFD-PHYS-001", "a transient run has no positive time step"),
+    (
+        "CFD-PHYS-002",
+        "turbulence has no usable inlet values or reference velocity",
+    ),
+    ("CFD-PHYS-003", "buoyancy values are out of range"),
+    (
+        "CFD-PHYS-004",
+        "a thermal condition and buoyancy do not go together, or a thermal condition is not on a wall",
+    ),
+    (
+        "CFD-PHYS-005",
+        "potential-flow initialisation does not apply to this study",
+    ),
+    (
+        "CFD-PHYS-006",
+        "the laminar steady solver kind is combined with physics that is not steady laminar",
+    ),
+    ("CFD-PHYS-007", "more than four distinct wall temperatures"),
+    (
+        "CFD-MON-007",
+        "a force monitor names an unknown or non-wall boundary, or there are too many",
+    ),
+    (
+        "CFD-MON-008",
+        "a boundary probe names an unknown boundary or its point is not on it",
+    ),
+    (
+        "CFD-MON-009",
+        "a heat-flux surface is on a boundary with no thermal condition",
+    ),
+    (
+        "CFD-BENCH-001",
+        "the study is not the benchmark it was checked against",
+    ),
+    (
+        "CFD-BENCH-002",
+        "the results lack a file the benchmark comparison needs",
+    ),
+    (
+        "CFD-BENCH-003",
+        "the force coefficient file is not for lift along y",
+    ),
+    ("CFD-BENCH-004", "too few shedding cycles to compare"),
+    (
+        "CFD-GCI-001",
+        "fewer than three finished runs, or the quantity is missing",
+    ),
+    (
+        "CFD-GCI-002",
+        "the mesh levels are not systematically refined",
+    ),
 ];
 // END OF CATALOGUE: code literals below this line are the ones the model emits.
 
@@ -320,6 +398,18 @@ pub const ALL_KINDS: [BoundaryKind; 6] = [
 ];
 
 const FACES: [Face; 4] = [Face::XMin, Face::XMax, Face::YMin, Face::YMax];
+/// The faces a cylinder channel must cover: the four sides and the cylinder's own surface.
+const CYLINDER_FACES: [Face; 5] = [
+    Face::XMin,
+    Face::XMax,
+    Face::YMin,
+    Face::YMax,
+    Face::Obstacle,
+];
+/// The most cells a mesh may hold once its level is applied.
+const MAX_CELLS: u64 = 1 << 26;
+/// The widest growth ratio a wall grading may use.
+const MAX_GRADING: f64 = 1.5;
 
 pub(crate) fn side_name(face: Face) -> &'static str {
     match face {
@@ -327,6 +417,7 @@ pub(crate) fn side_name(face: Face) -> &'static str {
         Face::XMax => "the right side of the domain (XMax)",
         Face::YMin => "the bottom of the domain (YMin)",
         Face::YMax => "the top of the domain (YMax)",
+        Face::Obstacle => "the obstacle surface (Obstacle)",
     }
 }
 
@@ -350,8 +441,11 @@ pub fn diagnose(study: &Study, capabilities: &Capabilities) -> Vec<Diagnostic> {
         ));
     }
     values(study, &mut found);
+    mesh_size(study, &mut found);
+    shape(study, &mut found);
     monitors(study, &mut found);
     boundaries(study, &mut found);
+    physics(study, &mut found);
     face_coverage(study, &mut found);
     domain_consistency(study, &mut found);
     capability_limits(study, capabilities, &mut found);
@@ -457,6 +551,29 @@ fn whole_count(
     Some(value)
 }
 
+/// A time of a transient run: any number of seconds above zero.
+fn time_above_zero(
+    found: &mut Vec<Diagnostic>,
+    value: Option<f64>,
+    setting: &str,
+    pointer: &str,
+) -> Option<f64> {
+    let value = value?;
+    if value <= 0.0 {
+        found.push(
+            Diagnostic::error(
+                "CFD-VAL-004",
+                setting,
+                pointer,
+                format!("The {setting} of a transient run must be greater than zero."),
+            )
+            .with_hint("Enter a time in seconds, such as 10 s."),
+        );
+        return None;
+    }
+    Some(value)
+}
+
 fn values(study: &Study, found: &mut Vec<Diagnostic>) {
     for (axis, q) in [
         ("x", &study.domain.length_x),
@@ -517,9 +634,25 @@ fn values(study: &Study, found: &mut Vec<Diagnostic>) {
         "write interval",
         "/solver/write_interval",
     );
-    let end = whole_count(found, end, "end time", "/solver/end_time");
-    let interval = whole_count(found, interval, "write interval", "/solver/write_interval");
-    if let (Some(end), Some(interval)) = (end, interval)
+    // A transient run counts real seconds, so its times need only be positive; the step and the
+    // write interval are checked against them with the physics.
+    let transient = matches!(
+        study.physics.as_ref().map(|p| p.time),
+        Some(TimeMode::Transient { .. })
+    );
+    let (end, interval) = if transient {
+        (
+            time_above_zero(found, end, "end time", "/solver/end_time"),
+            time_above_zero(found, interval, "write interval", "/solver/write_interval"),
+        )
+    } else {
+        (
+            whole_count(found, end, "end time", "/solver/end_time"),
+            whole_count(found, interval, "write interval", "/solver/write_interval"),
+        )
+    };
+    if !transient
+        && let (Some(end), Some(interval)) = (end, interval)
         && (interval > end || end % interval != 0.0)
     {
         found.push(
@@ -566,6 +699,333 @@ fn values(study: &Study, found: &mut Vec<Diagnostic>) {
                 "A centreline profile needs at least two sample points.",
             )
             .with_hint("Use 32 or more for a useful profile."),
+        );
+    }
+}
+
+/// The mesh level, the wall grading and the size of the refined mesh.
+fn mesh_size(study: &Study, found: &mut Vec<Diagnostic>) {
+    let mesh = &study.mesh;
+    if mesh.level > MAX_LEVEL {
+        found.push(
+            Diagnostic::error(
+                "CFD-MESH-002",
+                "mesh level",
+                "/mesh/level",
+                format!(
+                    "The mesh level is {}, but the highest is {MAX_LEVEL}. Each level doubles \
+                     the cells along x and y.",
+                    mesh.level
+                ),
+            )
+            .with_hint(format!("Use a level from 0 to {MAX_LEVEL}.")),
+        );
+    } else {
+        let scale = 1u64 << mesh.level;
+        let total = mesh
+            .cells_x
+            .checked_mul(scale)
+            .zip(mesh.cells_y.checked_mul(scale))
+            .and_then(|(x, y)| x.checked_mul(y))
+            .and_then(|xy| xy.checked_mul(mesh.cells_z));
+        if total.is_none_or(|total| total > MAX_CELLS) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MESH-002",
+                    "cell count",
+                    "/mesh",
+                    format!(
+                        "A mesh of {} by {} by {} cells at level {} would hold more than \
+                         {MAX_CELLS} cells, more than a run can hold.",
+                        mesh.cells_x, mesh.cells_y, mesh.cells_z, mesh.level
+                    ),
+                )
+                .with_hint("Lower the cell counts or the mesh level."),
+            );
+        }
+    }
+    let Some(grading) = &mesh.grading else { return };
+    if study.domain.shape.is_some() {
+        found.push(
+            Diagnostic::error(
+                "CFD-MESH-002",
+                "wall grading",
+                "/mesh/grading",
+                "Wall grading applies to a plain box domain; a shaped domain sets its own cell \
+                 sizes.",
+            )
+            .with_hint("Remove the grading, or remove the shape."),
+        );
+    }
+    for (axis, ratio, cells) in [
+        ("x", grading.x, mesh.cells_x),
+        ("y", grading.y, mesh.cells_y),
+    ] {
+        let Some(ratio) = ratio else { continue };
+        let pointer = format!("/mesh/grading/{axis}");
+        let setting = format!("wall grading in {axis}");
+        if !ratio.is_finite() || !(1.0..=MAX_GRADING).contains(&ratio) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MESH-002",
+                    setting.clone(),
+                    pointer,
+                    format!("The {setting} must be a number from 1 to {MAX_GRADING}."),
+                )
+                .with_hint("Use 1 for even cells, or a value such as 1.05 to shrink them toward the walls."),
+            );
+        } else if ratio != 1.0 && cells % 2 != 0 {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MESH-002",
+                    setting.clone(),
+                    pointer,
+                    format!(
+                        "The {setting} grades from both walls toward the middle, so the cell \
+                         count in {axis} must be even, not {cells}."
+                    ),
+                )
+                .with_hint("Use an even cell count along a graded axis."),
+            );
+        }
+    }
+}
+
+/// A shape size that does not fit.
+fn bad_size(found: &mut Vec<Diagnostic>, setting: &str, pointer: &str, message: String) {
+    found.push(
+        Diagnostic::error("CFD-SHAPE-001", setting, pointer, message).with_hint(
+            "Give a size that fits inside the domain; the domain lengths are the bounding box.",
+        ),
+    );
+}
+
+/// A shape lays out its own blocks, so the authored cell counts must be the totals along its two
+/// reference lines. Left to the size checks when a size is already refused.
+fn reference_cells(study: &Study, found: &mut Vec<Diagnostic>, what: &str, shape: ShapeSpec) {
+    if found.iter().any(|d| d.code == "CFD-SHAPE-001") {
+        return;
+    }
+    // The totals do not depend on the lengths of the domain.
+    let domain = DomainSpec {
+        length_x: 0.0,
+        length_y: 0.0,
+        length_z: 0.0,
+    };
+    let Some((want_x, want_y)) = cfdcraft_shapes::reference_totals(&shape, &domain) else {
+        return;
+    };
+    for (axis, have, want) in [
+        ("x", study.mesh.cells_x, want_x),
+        ("y", study.mesh.cells_y, want_y),
+    ] {
+        if have != want {
+            found.push(
+                Diagnostic::error(
+                    "CFD-SHAPE-004",
+                    format!("cell count in {axis}"),
+                    format!("/mesh/cells_{axis}"),
+                    format!(
+                        "A {what} lays out its own blocks, with {want} cells along {axis} at \
+                         level 0, but the mesh asks for {have}."
+                    ),
+                )
+                .with_hint(format!(
+                    "Use cells_x {want_x} and cells_y {want_y}, and set mesh.level to refine."
+                )),
+            );
+        }
+    }
+}
+
+/// The shape of the domain, and the rules for the obstacle face.
+fn shape(study: &Study, found: &mut Vec<Diagnostic>) {
+    let cylinder = matches!(study.domain.shape, Some(Shape::CylinderChannel(_)));
+    if let Some(shape) = &study.domain.shape {
+        let width = side_length(&study.domain.length_x);
+        let height = side_length(&study.domain.length_y);
+        if !study.domain.open {
+            found.push(
+                Diagnostic::error(
+                    "CFD-SHAPE-002",
+                    "open-domain flag",
+                    "/domain/open",
+                    "A backward step or a cylinder channel is a flow through the domain, so the \
+                     domain must be open.",
+                )
+                .with_hint("Set the domain to open, with an inlet and a pressure outlet."),
+            );
+        }
+        let length = |found: &mut Vec<Diagnostic>, q: &Quantity, setting: &str, member: &str| {
+            quantity(
+                found,
+                q,
+                Dimension::Length,
+                setting,
+                &format!("/domain/shape/{member}"),
+            )
+        };
+        match shape {
+            Shape::BackwardStep(s) => {
+                let h = length(found, &s.step_height, "step height", "step_height");
+                let up = length(
+                    found,
+                    &s.upstream_length,
+                    "upstream length",
+                    "upstream_length",
+                );
+                let start = length(
+                    found,
+                    &s.startup_length,
+                    "start-up length",
+                    "startup_length",
+                );
+                if let Some(h) = h
+                    && (h <= 0.0 || height.is_some_and(|y| h >= y))
+                {
+                    bad_size(
+                        found,
+                        "step height",
+                        "/domain/shape/step_height",
+                        format!(
+                            "The step height ({h} m) must be greater than zero and less than \
+                             the domain length in y."
+                        ),
+                    );
+                }
+                if let Some(up) = up
+                    && (up <= 0.0 || width.is_some_and(|x| up >= x))
+                {
+                    bad_size(
+                        found,
+                        "upstream length",
+                        "/domain/shape/upstream_length",
+                        format!(
+                            "The upstream length ({up} m) must be greater than zero and less \
+                             than the domain length in x."
+                        ),
+                    );
+                }
+                if let Some(start) = start
+                    && (start < 0.0 || up.is_some_and(|up| up > 0.0 && start > up))
+                {
+                    bad_size(
+                        found,
+                        "start-up length",
+                        "/domain/shape/startup_length",
+                        format!(
+                            "The start-up length ({start} m) must be zero or more and no longer \
+                             than the upstream length."
+                        ),
+                    );
+                }
+                reference_cells(
+                    study,
+                    found,
+                    "backward step",
+                    ShapeSpec::BackwardStep {
+                        step_height: h.unwrap_or(0.0),
+                        upstream_length: up.unwrap_or(0.0),
+                        startup_length: start.unwrap_or(0.0),
+                    },
+                );
+            }
+            Shape::CylinderChannel(c) => {
+                let d = length(found, &c.diameter, "cylinder diameter", "diameter");
+                let cx = length(found, &c.centre_x, "cylinder centre in x", "centre_x");
+                let cy = length(found, &c.centre_y, "cylinder centre in y", "centre_y");
+                if let Some(d) = d {
+                    if d <= 0.0 {
+                        bad_size(
+                            found,
+                            "cylinder diameter",
+                            "/domain/shape/diameter",
+                            format!("The cylinder diameter ({d} m) must be greater than zero."),
+                        );
+                    } else {
+                        // The mesh around the cylinder reaches one diameter out from its surface.
+                        for (centre, limit, member) in
+                            [(cx, width, "centre_x"), (cy, height, "centre_y")]
+                        {
+                            if let (Some(centre), Some(limit)) = (centre, limit)
+                                && (centre - d <= 0.0 || centre + d >= limit)
+                            {
+                                bad_size(
+                                    found,
+                                    &format!("cylinder {}", member.replace('_', " ")),
+                                    &format!("/domain/shape/{member}"),
+                                    format!(
+                                        "The cylinder and a clearance of one diameter around it \
+                                         must lie inside the domain, but the centre ({centre} m) \
+                                         is too close to an edge of the {limit} m domain."
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+                reference_cells(
+                    study,
+                    found,
+                    "cylinder channel",
+                    ShapeSpec::CylinderChannel {
+                        diameter: d.unwrap_or(0.0),
+                        centre_x: cx.unwrap_or(0.0),
+                        centre_y: cy.unwrap_or(0.0),
+                    },
+                );
+            }
+        }
+    }
+    let mut covered = false;
+    for (name, boundary) in &study.boundary_conditions {
+        if !boundary.faces.contains(&Face::Obstacle) {
+            continue;
+        }
+        covered = true;
+        let shown = label(name);
+        let base = format!("/boundary_conditions/{}", pointer_token(name));
+        if !cylinder {
+            found.push(
+                Diagnostic::error(
+                    "CFD-SHAPE-003",
+                    format!("{shown} faces"),
+                    format!("{base}/faces"),
+                    format!(
+                        "The boundary \"{shown}\" uses the obstacle surface, but the domain has \
+                         no cylinder."
+                    ),
+                )
+                .with_hint("Use a cylinder channel shape, or remove Obstacle from the faces."),
+            );
+        } else if !matches!(
+            boundary.kind,
+            BoundaryKind::NoSlipWall | BoundaryKind::SlipWall
+        ) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-SHAPE-003",
+                    format!("{shown} boundary kind"),
+                    format!("{base}/kind"),
+                    format!(
+                        "The boundary \"{shown}\" covers the cylinder surface, so it must be a \
+                         wall, not a {}.",
+                        kind_name(boundary.kind)
+                    ),
+                )
+                .with_hint("Make it a no-slip wall."),
+            );
+        }
+    }
+    if cylinder && !covered {
+        found.push(
+            Diagnostic::error(
+                "CFD-SHAPE-003",
+                side_name(Face::Obstacle),
+                "/boundary_conditions",
+                "A cylinder channel needs a wall boundary on the cylinder surface (Obstacle).",
+            )
+            .with_hint("Add a no-slip wall boundary whose faces list includes Obstacle."),
         );
     }
 }
@@ -622,7 +1082,8 @@ fn monitors(study: &Study, found: &mut Vec<Diagnostic>) {
         .keys()
         .map(|n| ("probes", n))
         .chain(m.lines.keys().map(|n| ("lines", n)))
-        .chain(m.surfaces.keys().map(|n| ("surfaces", n)));
+        .chain(m.surfaces.keys().map(|n| ("surfaces", n)))
+        .chain(m.forces.keys().map(|n| ("forces", n)));
     for (kind, name) in labels {
         if !valid_boundary_name(name) {
             found.push(
@@ -690,6 +1151,29 @@ fn monitors(study: &Study, found: &mut Vec<Diagnostic>) {
             );
         }
     }
+    for (name, surface) in &m.surfaces {
+        let thermal = study
+            .boundary_conditions
+            .get(&surface.boundary)
+            .map(|b| b.thermal.is_some());
+        if surface.quantity == SurfaceQuantity::HeatFlux && thermal == Some(false) {
+            let what = format!("surface {} boundary", label(name));
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-009",
+                    what.clone(),
+                    format!("/monitors/surfaces/{}/boundary", pointer_token(name)),
+                    format!(
+                        "The {what} has no thermal condition, so there is no heat flux to \
+                         report through it."
+                    ),
+                )
+                .with_hint("Give the boundary a fixed temperature or an adiabatic condition."),
+            );
+        }
+    }
+    boundary_probes(study, found);
+    force_monitors(study, found);
     for (kind, count, limit) in [
         ("probes", m.probes.len(), MAX_PROBES),
         ("lines", m.lines.len(), MAX_LINES),
@@ -748,6 +1232,179 @@ fn monitors(study: &Study, found: &mut Vec<Diagnostic>) {
     }
 }
 
+/// A wall of the domain: something forces and heat pass through.
+fn is_wall(kind: BoundaryKind) -> bool {
+    matches!(
+        kind,
+        BoundaryKind::NoSlipWall | BoundaryKind::SlipWall | BoundaryKind::MovingWall
+    )
+}
+
+/// Whether the point (x, y) lies on `face` of the domain, or `None` when a size is unusable.
+/// A box face is matched by coordinate to 1e-9 of the domain, the cylinder to 1e-6 of its radius.
+fn on_face(study: &Study, face: Face, x: f64, y: f64) -> Option<bool> {
+    let lx = side_length(&study.domain.length_x)?;
+    let ly = side_length(&study.domain.length_y)?;
+    let (tx, ty) = (1e-9 * lx, 1e-9 * ly);
+    let near = |a: f64, b: f64, tol: f64| (a - b).abs() <= tol;
+    let within = |a: f64, lo: f64, hi: f64, tol: f64| a >= lo - tol && a <= hi + tol;
+    // The lowest y of the inlet side and the step, when the domain has a step.
+    let (inlet_floor, step_x) = match &study.domain.shape {
+        Some(Shape::BackwardStep(s)) => (
+            side_length(&s.step_height)?,
+            Some(side_length(&s.upstream_length)?),
+        ),
+        _ => (0.0, None),
+    };
+    Some(match (face, &study.domain.shape) {
+        (Face::Obstacle, Some(Shape::CylinderChannel(c))) => {
+            let r = side_length(&c.diameter)? / 2.0;
+            let (cx, cy) = (side_length(&c.centre_x)?, side_length(&c.centre_y)?);
+            near((x - cx).hypot(y - cy), r, 1e-6 * r)
+        }
+        (Face::Obstacle, _) => false,
+        (Face::XMin, _) => near(x, 0.0, tx) && within(y, inlet_floor, ly, ty),
+        (Face::XMax, _) => near(x, lx, tx) && within(y, 0.0, ly, ty),
+        (Face::YMax, _) => near(y, ly, ty) && within(x, 0.0, lx, tx),
+        (Face::YMin, _) => match step_x {
+            // The upstream floor, the face of the step and the downstream floor.
+            Some(u) => {
+                (near(y, inlet_floor, ty) && within(x, 0.0, u, tx))
+                    || (near(x, u, tx) && within(y, 0.0, inlet_floor, ty))
+                    || (near(y, 0.0, ty) && within(x, u, lx, tx))
+            }
+            None => near(y, 0.0, ty) && within(x, 0.0, lx, tx),
+        },
+    })
+}
+
+/// A probe that names a boundary: the boundary exists and the point lies on it.
+fn boundary_probes(study: &Study, found: &mut Vec<Diagnostic>) {
+    for (name, probe) in &study.monitors.probes {
+        let Some(wanted) = &probe.boundary else {
+            continue;
+        };
+        let base = format!("/monitors/probes/{}", pointer_token(name));
+        let what = format!("probe {} boundary", label(name));
+        let Some(boundary) = study.boundary_conditions.get(wanted) else {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-008",
+                    what.clone(),
+                    format!("{base}/boundary"),
+                    format!("The {what} is not one of the study's boundaries."),
+                )
+                .with_hint("Name one of the boundary labels of this study."),
+            );
+            continue;
+        };
+        let (Some(x), Some(y)) = (side_length(&probe.x), side_length(&probe.y)) else {
+            continue;
+        };
+        // A size that cannot be judged does not count against the point.
+        let on = boundary
+            .faces
+            .iter()
+            .any(|face| on_face(study, *face, x, y).unwrap_or(true));
+        if !on {
+            found.push(
+                Diagnostic::error(
+                    "CFD-MON-008",
+                    what.clone(),
+                    format!("{base}/boundary"),
+                    format!(
+                        "The point ({x} m, {y} m) of probe {} does not lie on the boundary \
+                         \"{}\".",
+                        label(name),
+                        label(wanted)
+                    ),
+                )
+                .with_hint("Move the point onto the boundary, or take a probe in the flow."),
+            );
+        }
+    }
+}
+
+/// The most force monitors a study may list.
+const MAX_FORCES: usize = 4;
+
+/// Force monitors: a wall boundary of the study and positive reference values.
+fn force_monitors(study: &Study, found: &mut Vec<Diagnostic>) {
+    let forces = &study.monitors.forces;
+    if forces.len() > MAX_FORCES {
+        found.push(
+            Diagnostic::error(
+                "CFD-MON-007",
+                "monitored forces",
+                "/monitors/forces",
+                format!(
+                    "The study lists {} force monitors, but at most {MAX_FORCES} are allowed.",
+                    forces.len()
+                ),
+            )
+            .with_hint("Remove the ones you no longer need."),
+        );
+    }
+    for (name, force) in forces {
+        let base = format!("/monitors/forces/{}", pointer_token(name));
+        let what = format!("force {}", label(name));
+        match study.boundary_conditions.get(&force.boundary) {
+            None => found.push(
+                Diagnostic::error(
+                    "CFD-MON-007",
+                    format!("{what} boundary"),
+                    format!("{base}/boundary"),
+                    format!("The {what} boundary is not one of the study's boundaries."),
+                )
+                .with_hint("Name one of the boundary labels of this study."),
+            ),
+            Some(boundary) if !is_wall(boundary.kind) => found.push(
+                Diagnostic::error(
+                    "CFD-MON-007",
+                    format!("{what} boundary"),
+                    format!("{base}/boundary"),
+                    format!(
+                        "The {what} boundary \"{}\" is a {}, but forces are taken on a wall.",
+                        label(&force.boundary),
+                        kind_name(boundary.kind)
+                    ),
+                )
+                .with_hint("Name a wall boundary."),
+            ),
+            Some(_) => {}
+        }
+        for (member, q, dimension, word) in [
+            (
+                "reference_velocity",
+                &force.reference_velocity,
+                Dimension::Velocity,
+                "reference velocity",
+            ),
+            (
+                "reference_length",
+                &force.reference_length,
+                Dimension::Length,
+                "reference length",
+            ),
+        ] {
+            let setting = format!("{what} {word}");
+            if let Some(v) = quantity(found, q, dimension, &setting, &format!("{base}/{member}"))
+                && v <= 0.0
+            {
+                found.push(
+                    Diagnostic::error(
+                        "CFD-MON-007",
+                        setting.clone(),
+                        format!("{base}/{member}"),
+                        format!("The {setting} must be greater than zero."),
+                    )
+                    .with_hint("Coefficients divide by it; enter a positive value."),
+                );
+            }
+        }
+    }
+}
+
 fn boundaries(study: &Study, found: &mut Vec<Diagnostic>) {
     for (name, boundary) in &study.boundary_conditions {
         let base = format!("/boundary_conditions/{}", pointer_token(name));
@@ -774,6 +1431,28 @@ fn boundaries(study: &Study, found: &mut Vec<Diagnostic>) {
                 )
                 .with_hint("List at least one of XMin, XMax, YMin, YMax."),
             );
+        }
+        if boundary.profile.is_some() {
+            let faces: BTreeSet<Face> = boundary.faces.iter().copied().collect();
+            let on_x_side =
+                faces.len() == 1 && (faces.contains(&Face::XMin) || faces.contains(&Face::XMax));
+            if boundary.kind != BoundaryKind::VelocityInlet || !on_x_side {
+                found.push(
+                    Diagnostic::error(
+                        "CFD-BC-007",
+                        format!("{shown} inlet profile"),
+                        format!("{base}/profile"),
+                        format!(
+                            "The boundary \"{shown}\" has an inlet profile, but a profile \
+                             belongs on one velocity inlet on the left or right side of the \
+                             domain."
+                        ),
+                    )
+                    .with_hint(
+                        "Remove the profile, or make this one velocity inlet on XMin or XMax.",
+                    ),
+                );
+            }
         }
         let setting = format!("{shown} velocity");
         let pointer = format!("{base}/velocity");
@@ -817,6 +1496,433 @@ fn boundaries(study: &Study, found: &mut Vec<Diagnostic>) {
             ),
             (_, None) => {}
         }
+    }
+}
+
+/// The most time steps a transient run may take.
+const MAX_STEPS: f64 = 5_000_000.0;
+/// The largest product of the expansion coefficient and a temperature difference the Boussinesq
+/// model is trusted for.
+const MAX_BOUSSINESQ: f64 = 0.1;
+/// The most distinct wall temperatures a case can name.
+const MAX_WALL_TEMPERATURES: usize = 4;
+
+/// The SI value of a time in the study when it is a finite number above zero.
+fn time_value(q: &Quantity) -> Option<f64> {
+    let v = si_value(q);
+    (q.unit.dimension() == Dimension::Time && v.is_finite() && v > 0.0).then_some(v)
+}
+
+/// The distinct fixed wall temperatures in kelvin, ascending.
+fn fixed_temperatures(study: &Study) -> Vec<f64> {
+    let mut temperatures: Vec<f64> = study
+        .boundary_conditions
+        .values()
+        .filter_map(|b| match &b.thermal {
+            Some(ThermalCondition::FixedTemperature { value })
+                if value.unit.dimension() == Dimension::Temperature =>
+            {
+                Some(si_value(value))
+            }
+            _ => None,
+        })
+        .filter(|v| v.is_finite())
+        .collect();
+    temperatures.sort_by(f64::total_cmp);
+    temperatures.dedup();
+    temperatures
+}
+
+/// The physics: the time step, the turbulence inflow values, buoyancy and its thermal conditions,
+/// the start-up field and the solver kind that must agree with them.
+fn physics(study: &Study, found: &mut Vec<Diagnostic>) {
+    let plain = Physics::default();
+    let p = study.physics.as_ref().unwrap_or(&plain);
+    time_step(study, p, found);
+    turbulence(study, p, found);
+    buoyancy(study, p, found);
+    thermal_conditions(study, p, found);
+    initial_field(study, p, found);
+    solver_kind(study, p, found);
+}
+
+fn time_step(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    let TimeMode::Transient { delta_t } = p.time else {
+        return;
+    };
+    let pointer = "/physics/time/delta_t";
+    if delta_t.unit.dimension() != Dimension::Time {
+        quantity(found, &delta_t, Dimension::Time, "time step", pointer);
+        return;
+    }
+    let step = si_value(&delta_t);
+    if !step.is_finite() || step <= 0.0 {
+        found.push(
+            Diagnostic::error(
+                "CFD-PHYS-001",
+                "time step",
+                pointer,
+                format!("A transient run needs a time step greater than zero, but it is {step} s."),
+            )
+            .with_hint("Give a step such as 0.001 s."),
+        );
+        return;
+    }
+    let end = time_value(&study.solver.end_time);
+    let interval = time_value(&study.solver.write_interval);
+    // Each mesh level halves the step.
+    let effective = step / f64::from(1u32 << study.mesh.level.min(MAX_LEVEL));
+    if let Some(end) = end {
+        if step >= end {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-001",
+                    "time step",
+                    pointer,
+                    format!(
+                        "The time step ({step} s) must be shorter than the end time ({end} s)."
+                    ),
+                )
+                .with_hint("Lower the time step, or raise the end time."),
+            );
+        } else if end / effective > MAX_STEPS {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-001",
+                    "time step",
+                    pointer,
+                    format!(
+                        "A time step of {effective} s over {end} s takes {:.0} steps, more than \
+                         the {MAX_STEPS:.0} a run may take.",
+                        end / effective
+                    ),
+                )
+                .with_hint("Raise the time step, lower the end time or lower the mesh level."),
+            );
+        }
+    }
+    if let (Some(end), Some(interval)) = (end, interval) {
+        let ratio = end / interval;
+        if interval > end || (ratio - ratio.round()).abs() > 1e-9 * ratio.max(1.0) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-001",
+                    "write interval",
+                    "/solver/write_interval",
+                    format!(
+                        "The end time ({end} s) must be a whole multiple of the write interval \
+                         ({interval} s), so the last results are written."
+                    ),
+                )
+                .with_hint("Pick an interval such as half or a tenth of the end time."),
+            );
+        }
+    }
+}
+
+/// One inflow value of a turbulence model: a finite number above zero and at most `max`.
+fn turbulence_value(
+    found: &mut Vec<Diagnostic>,
+    value: Option<f64>,
+    max: f64,
+    model: &str,
+    member: &str,
+    setting: &str,
+) {
+    let pointer = format!("/physics/turbulence/{member}");
+    match value {
+        None => found.push(
+            Diagnostic::error(
+                "CFD-PHYS-002",
+                setting,
+                pointer,
+                format!("The {model} turbulence model needs the {setting} of the inflow."),
+            )
+            .with_hint("Typical values are an intensity of 0.05 and a viscosity ratio of 10."),
+        ),
+        Some(v) if !v.is_finite() || v <= 0.0 || v > max => found.push(
+            Diagnostic::error(
+                "CFD-PHYS-002",
+                setting,
+                pointer,
+                format!(
+                    "The {setting} ({v}) must be a number above zero{}.",
+                    if max.is_finite() {
+                        format!(" and at most {max}")
+                    } else {
+                        String::new()
+                    }
+                ),
+            )
+            .with_hint("Typical values are an intensity of 0.05 and a viscosity ratio of 10."),
+        ),
+        Some(_) => {}
+    }
+}
+
+fn turbulence(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    let t = &p.turbulence;
+    if t.model == TurbulenceModel::Laminar {
+        return;
+    }
+    let model = t.model.word();
+    turbulence_value(
+        found,
+        t.intensity,
+        1.0,
+        model,
+        "intensity",
+        "turbulence intensity",
+    );
+    turbulence_value(
+        found,
+        t.viscosity_ratio,
+        f64::INFINITY,
+        model,
+        "viscosity_ratio",
+        "turbulence viscosity ratio",
+    );
+    let pointer = "/physics/turbulence/reference_velocity";
+    match &t.reference_velocity {
+        Some(q) => {
+            let setting = "turbulence reference velocity";
+            if quantity(found, q, Dimension::Velocity, setting, pointer).is_some_and(|v| v <= 0.0) {
+                found.push(
+                    Diagnostic::error(
+                        "CFD-PHYS-002",
+                        setting,
+                        pointer,
+                        format!("The {setting} must be greater than zero."),
+                    )
+                    .with_hint("Enter the speed the inflow values are built from, such as 1 m/s."),
+                );
+            }
+        }
+        None => {
+            let driven = study.boundary_conditions.values().any(|b| {
+                matches!(
+                    b.kind,
+                    BoundaryKind::VelocityInlet | BoundaryKind::MovingWall
+                ) && speed(b).is_some()
+            });
+            if !driven {
+                found.push(
+                    Diagnostic::error(
+                        "CFD-PHYS-002",
+                        "turbulence reference velocity",
+                        pointer,
+                        format!(
+                            "The {model} turbulence model builds its inflow values from a speed, \
+                             but the study has no velocity inlet or moving wall and gives no \
+                             reference velocity."
+                        ),
+                    )
+                    .with_hint("Add a reference velocity to the turbulence settings."),
+                );
+            }
+        }
+    }
+}
+
+fn buoyancy(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    let Some(b) = &p.buoyancy else {
+        return;
+    };
+    for (member, value) in [
+        ("gravity", b.gravity),
+        ("beta", b.beta),
+        ("prandtl", b.prandtl),
+        ("turbulent_prandtl", b.turbulent_prandtl),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            let setting = format!("buoyancy {}", member.replace('_', " "));
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-003",
+                    setting.clone(),
+                    format!("/physics/buoyancy/{member}"),
+                    format!("The {setting} must be a finite number greater than zero."),
+                )
+                .with_hint("Typical values: gravity 9.81, beta 0.003, Prandtl 0.71."),
+            );
+        }
+    }
+    let pointer = "/physics/buoyancy/reference_temperature";
+    let reference = quantity(
+        found,
+        &b.reference_temperature,
+        Dimension::Temperature,
+        "buoyancy reference temperature",
+        pointer,
+    );
+    if reference.is_some_and(|t| t <= 0.0) {
+        found.push(
+            Diagnostic::error(
+                "CFD-PHYS-003",
+                "buoyancy reference temperature",
+                pointer,
+                "The buoyancy reference temperature must be above zero kelvin.",
+            )
+            .with_hint("Give it in K, for example 300 K."),
+        );
+    }
+    let temperatures = fixed_temperatures(study);
+    if let (Some(low), Some(high)) = (temperatures.first(), temperatures.last())
+        && b.beta.is_finite()
+        && b.beta > 0.0
+    {
+        let product = b.beta * (high - low);
+        if product > MAX_BOUSSINESQ {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-003",
+                    "buoyancy beta",
+                    "/physics/buoyancy/beta",
+                    format!(
+                        "Beta times the largest wall temperature difference is {product}, but \
+                         the Boussinesq model holds only up to {MAX_BOUSSINESQ}."
+                    ),
+                )
+                .with_hint("Lower the temperature difference, or the expansion coefficient."),
+            );
+        }
+    }
+}
+
+fn thermal_conditions(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    for (name, boundary) in &study.boundary_conditions {
+        let Some(thermal) = &boundary.thermal else {
+            continue;
+        };
+        let shown = label(name);
+        let pointer = format!("/boundary_conditions/{}/thermal", pointer_token(name));
+        if let ThermalCondition::FixedTemperature { value } = thermal {
+            quantity(
+                found,
+                value,
+                Dimension::Temperature,
+                &format!("{shown} temperature"),
+                &format!("{pointer}/value"),
+            );
+        }
+        if p.buoyancy.is_none() {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-004",
+                    format!("{shown} thermal condition"),
+                    pointer.clone(),
+                    format!(
+                        "The boundary \"{shown}\" has a thermal condition, but buoyancy is off, \
+                         so the temperature would have no effect on the flow."
+                    ),
+                )
+                .with_hint("Turn on buoyancy in the physics, or remove the thermal condition."),
+            );
+        }
+        if !is_wall(boundary.kind) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-PHYS-004",
+                    format!("{shown} thermal condition"),
+                    pointer,
+                    format!(
+                        "The boundary \"{shown}\" is a {}, but a thermal condition belongs on a \
+                         wall.",
+                        kind_name(boundary.kind)
+                    ),
+                )
+                .with_hint("Remove the thermal condition, or make the boundary a wall."),
+            );
+        }
+    }
+    let temperatures = fixed_temperatures(study);
+    if p.buoyancy.is_some() && temperatures.is_empty() {
+        found.push(
+            Diagnostic::error(
+                "CFD-PHYS-004",
+                "buoyancy",
+                "/physics/buoyancy",
+                "Buoyancy is on, but no wall has a fixed temperature, so nothing sets the \
+                 temperature of the fluid.",
+            )
+            .with_hint("Give at least one wall a fixed temperature."),
+        );
+    }
+    if temperatures.len() > MAX_WALL_TEMPERATURES {
+        found.push(
+            Diagnostic::error(
+                "CFD-PHYS-007",
+                "wall temperatures",
+                "/boundary_conditions",
+                format!(
+                    "The walls name {} different fixed temperatures, but at most \
+                     {MAX_WALL_TEMPERATURES} are allowed.",
+                    temperatures.len()
+                ),
+            )
+            .with_hint("Share a temperature between walls."),
+        );
+    }
+}
+
+fn initial_field(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    if p.init != InitMode::Potential {
+        return;
+    }
+    let driven = study.boundary_conditions.values().any(|b| {
+        matches!(
+            b.kind,
+            BoundaryKind::VelocityInlet | BoundaryKind::MovingWall
+        )
+    });
+    let reason = if p.buoyancy.is_some() && !study.domain.open {
+        "a closed domain with buoyancy has no flow to start from"
+    } else if !driven {
+        "the study has no velocity inlet or moving wall to drive the flow"
+    } else {
+        return;
+    };
+    found.push(
+        Diagnostic::error(
+            "CFD-PHYS-005",
+            "initial field",
+            "/physics/init",
+            format!("A potential-flow start does not apply: {reason}."),
+        )
+        .with_hint("Start from a uniform field instead."),
+    );
+}
+
+fn solver_kind(study: &Study, p: &Physics, found: &mut Vec<Diagnostic>) {
+    if study.solver.solver != SolverKind::SimpleLaminar {
+        return;
+    }
+    let mut extra = Vec::new();
+    if matches!(p.time, TimeMode::Transient { .. }) {
+        extra.push("transient");
+    }
+    if p.turbulence.model != TurbulenceModel::Laminar {
+        extra.push("turbulent");
+    }
+    if p.buoyancy.is_some() {
+        extra.push("buoyant");
+    }
+    if p.init == InitMode::Potential {
+        extra.push("started from potential flow");
+    }
+    if !extra.is_empty() {
+        found.push(
+            Diagnostic::error(
+                "CFD-PHYS-006",
+                "solver kind",
+                "/solver/solver",
+                format!(
+                    "The solver kind SimpleLaminar is steady and laminar, but the physics is {}.",
+                    extra.join(", ")
+                ),
+            )
+            .with_hint("Use the solver kind FromPhysics, or remove those physics settings."),
+        );
     }
 }
 
@@ -1151,9 +2257,13 @@ fn face_coverage(study: &Study, found: &mut Vec<Diagnostic>) {
             claims.entry(face).or_default().push(name);
         }
     }
-    for face in FACES {
+    let cylinder = matches!(study.domain.shape, Some(Shape::CylinderChannel(_)));
+    let faces: &[Face] = if cylinder { &CYLINDER_FACES } else { &FACES };
+    for &face in faces {
         let claimants = claims.get(&face).map_or(&[][..], Vec::as_slice);
         match claimants {
+            // A missing cylinder surface is reported with the shape rules.
+            [] if face == Face::Obstacle => {}
             [] => found.push(
                 Diagnostic::error(
                     "CFD-BC-001",
@@ -1211,6 +2321,9 @@ pub fn setting_label(pointer: &str) -> String {
         ["mesh", axis @ ("cells_x" | "cells_y" | "cells_z")] => {
             format!("cell count in {}", &axis[6..])
         }
+        ["mesh", "level"] => "mesh level".into(),
+        ["mesh", "grading", axis @ ("x" | "y")] => format!("wall grading in {axis}"),
+        ["domain", "shape", member] => format!("shape {}", member.replace('_', " ")),
         ["solver", "end_time"] => "end time".into(),
         ["solver", "write_interval"] => "write interval".into(),
         ["solver", "convergence", "p"] => "convergence limit for pressure".into(),

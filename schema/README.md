@@ -4,10 +4,12 @@ These JSON Schema files describe the JSON inside a `.cfdcraft` study file, for p
 
 | File | Describes |
 |---|---|
-| `cfdcraft-manifest-v4.json` | `manifest.json` of a file at schema 4: the format name, the schema number and the program that wrote the file |
+| `cfdcraft-manifest-v5.json` | `manifest.json` of a file at schema 5: the format name, the schema number and the program that wrote the file |
 | `cfdcraft-study-v1.json` | `study.json`: the study itself, which carries its own number (1) |
-| `cfdcraft-artifacts-v4.json` | `artifacts.json` of a file at schema 4: stored results, linked files, the runs (including stopped and continued runs and the verdict on each), the variants, the sweeps and the pruned results |
+| `cfdcraft-artifacts-v5.json` | `artifacts.json` of a file at schema 5: stored results, linked files, the runs (including stopped and continued runs, the verdict on each, and the mesh level, shape, physics and thermal conditions their recipes record), the variants, the sweeps and the pruned results |
 | `cfdcraft-queue-v1.json` | `queue.json`, the list of jobs kept beside a study file; it carries its own number (1) |
+| `cfdcraft-manifest-v4.json` | `manifest.json` of a file written at schema 4; frozen (see Versions) |
+| `cfdcraft-artifacts-v4.json` | `artifacts.json` of a file written at schema 4; frozen (see Versions) |
 | `cfdcraft-manifest-v3.json` | `manifest.json` of a file written at schema 3; frozen (see Versions) |
 | `cfdcraft-artifacts-v3.json` | `artifacts.json` of a file written at schema 3; frozen (see Versions) |
 | `cfdcraft-manifest-v2.json` | `manifest.json` of a file written at schema 2; frozen (see Versions) |
@@ -34,15 +36,15 @@ CFDCraft writes the members in the order above, with the manifest first, and a t
 
 Two numbers are in play, and they are not the same thing.
 
-The number of the file is `schema_version` in the manifest. One integer covers the whole file (currently 4). The manifest and artifact-index schema files carry it in their names (`-v4` is file schema 4), and the manifest schema allows exactly its own number.
+The number of the file is `schema_version` in the manifest. One integer covers the whole file (the file number is 5). The manifest and artifact-index schema files carry it in their names (`-v5` is file schema 5), and the manifest schema allows exactly its own number.
 
-The study carries its own number in `schema_version` inside `study.json` (currently 1). It changes only when the study changes in a way that makes an earlier study unreadable, so a file at schema 4 holds a study at number 1, and `cfdcraft-study-v1.json` describes it.
+The study carries its own number in `schema_version` inside `study.json` (currently 1). It changes only when the study changes in a way that makes an earlier study unreadable, so a file at schema 5 holds a study at number 1, and `cfdcraft-study-v1.json` describes it.
 
-The study file has been extended twice without a new number. It gained the optional member `raw_overrides` (see Raw overrides), and then the optional members `probes`, `lines`, `surfaces` and `settle` inside `monitors` (see Monitors). Every study that was accepted before is still accepted by `cfdcraft-study-v1.json`, and a study that leaves the members out is unchanged, including its hash. The number stays 1 on purpose: raising it would change the canonical hash of every study.
+The study file has been extended three times without a new number. It gained the optional member `raw_overrides` (see Raw overrides), then the optional members `probes`, `lines`, `surfaces` and `settle` inside `monitors` (see Monitors), and then the optional members listed under Physics, shapes and thermal conditions. Every study that was accepted before is still accepted by `cfdcraft-study-v1.json`, and a study that leaves the members out is unchanged, including its hash. The number stays 1 on purpose: raising it would change the canonical hash of every study.
 
 A reader refuses a file whose number is newer than it knows, deciding from the manifest alone, before it reads the study. Older files are brought forward to the current number when they are opened, and the reader reports what changed.
 
-A schema file is never edited once its number has been superseded. A change to the format ships as a new version, with new files next to the old ones. The files for schemas 1, 2 and 3 stay in this folder, as they were when the next schema was introduced, for files written at those numbers. A test holds a copy of each and a recorded length and checksum, so an edit to one of them fails the build.
+A schema file is never edited once its number has been superseded. A change to the format ships as a new version, with new files next to the old ones. The files for schemas 1, 2, 3 and 4 stay in this folder, as they were when the next schema was introduced, for files written at those numbers. A test holds a copy of each and a recorded length and checksum, so an edit to one of them fails the build.
 
 One edit to a schema 1 file is on record, and it came before the freeze. The artifact-index file for schema 1 got the link `id` pattern (`^[a-z0-9][a-z0-9-]{0,39}$`) and its description about an hour and a quarter after the first schema files were written (the commits 60c1f9d and 844169c), before any release or tag, in a fix that made the schema state a rule the reader already enforced. No file the earlier text accepted and CFDCraft opened is refused by the later one, because the reader refused a link `id` outside that pattern already. The frozen schema 1 text is the text with the pattern.
 
@@ -50,7 +52,7 @@ One edit to a schema 1 file is on record, and it came before the freeze. The art
 
 Use any JSON Schema validator that supports draft 2020-12, with the file that matches the member and the version. The schemas contain no references to anything outside themselves, so a validator never needs to fetch anything. Their `$id` values are URNs (for example `urn:cfdcraft:schema:study:1`), not web addresses.
 
-A file written at schema 1 validates against the schema 1 manifest and artifact-index files with the study file. A file at schema 2 validates against the schema 2 files, a file at schema 3 against the schema 3 files and a file at schema 4 against the schema 4 files, in every case with the same study file. A `queue.json` validates against `cfdcraft-queue-v1.json`.
+A file written at schema 1 validates against the schema 1 manifest and artifact-index files with the study file. A file at schema 2 validates against the schema 2 files, a file at schema 3 against the schema 3 files, a file at schema 4 against the schema 4 files and a file at schema 5 against the schema 5 files, in every case with the same study file. A `queue.json` validates against `cfdcraft-queue-v1.json`.
 
 Unknown keys are rejected in the manifest, the study, the artifact index, links, stored results, run records, variants, sweeps and raw overrides (these records are closed). The labels under `boundary_conditions` and the names under `key_numbers` and a result recipe's `boundaries` are free-form keys. The recipe, tool, comparison and tolerance records inside a run record are not closed in the schema, and the reader ignores an unknown key there too.
 
@@ -60,9 +62,9 @@ Unknown keys are rejected in the manifest, the study, the artifact index, links,
 
 - `domain` has three lengths, `length_x`, `length_y` and `length_z`, and optionally `open` (true when the box has inlet or outlet faces; false when omitted).
 - `fluid` has `kinematic_viscosity`.
-- `boundary_conditions` is an object keyed by a label of your choice. Each entry has `faces` (a list of `XMin`, `XMax`, `YMin`, `YMax`), `kind` (one of `VelocityInlet`, `PressureOutlet`, `NoSlipWall`, `SlipWall`, `MovingWall`, `Symmetry`) and, for a velocity inlet and a moving wall, `velocity`.
+- `boundary_conditions` is an object keyed by a label of your choice. Each entry has `faces` (a list of `XMin`, `XMax`, `YMin`, `YMax` and, for a cylinder channel, `Obstacle`), `kind` (one of `VelocityInlet`, `PressureOutlet`, `NoSlipWall`, `SlipWall`, `MovingWall`, `Symmetry`) and, for a velocity inlet and a moving wall, `velocity`.
 - `mesh` has the whole numbers `cells_x`, `cells_y` and `cells_z`.
-- `solver` has `solver` (`SimpleLaminar`), `end_time` and `write_interval`, and optionally `convergence` with `p` and `U`.
+- `solver` has `solver` (`SimpleLaminar`, or `FromPhysics` to follow the physics), `end_time` and `write_interval`, and optionally `convergence` with `p` and `U`.
 - `monitors` has `centreline_u_sample_count` and, optionally, `probes`, `lines`, `surfaces` and `settle`; see Monitors.
 - `raw_overrides` is optional; see Raw overrides.
 
@@ -114,7 +116,7 @@ Each record may carry a `scenario`, the id of the variant it was made for. Witho
 
 The mesh recipe and the result recipe each have an optional `raw` member that holds the raw overrides the recipe depends on (see Raw overrides). Both are left out when there are none, so a recipe without raw overrides, and its key, are what they were.
 
-When an older file is opened it is brought forward to the current number and the reader says what changed, one note for each step. A schema 1 file opens with three notes (1 to 2: an empty history; 2 to 3: room for variants, sweeps and pruned results; 3 to 4: room for stopped and continued runs and the verdict on a result), a schema 2 file with two and a schema 3 file with one. Nothing else about the file changes.
+When an older file is opened it is brought forward to the current number and the reader says what changed, one note for each step. A schema 1 file opens with four notes (1 to 2: an empty history; 2 to 3: room for variants, sweeps and pruned results; 3 to 4: room for stopped and continued runs and the verdict on a result; 4 to 5: room for results of studies with a mesh level, other shapes, turbulence models, time-dependent and buoyant physics), a schema 2 file with three, a schema 3 file with two and a schema 4 file with one. Nothing else about the file changes.
 
 Schema 4 adds five optional members to a run record, and a run that has none of them is an ordinary complete run:
 
@@ -148,12 +150,24 @@ The `pruned` entry lists the hashes of stored results that were removed from the
 
 The optional members of `monitors` say what to watch while the solver runs. Each is an object keyed by a label of your choice (the same naming rule as a boundary label), and the label is for people only: it never reaches a solver case.
 
-- `probes`: each has `x` and `y` (quantities, a point in the plane of the case) and `field` (`velocity` or `pressure`). At most 16.
+- `probes`: each has `x` and `y` (quantities, a point in the plane of the case), `field` (`velocity` or `pressure`) and, for a reading at a wall, the `boundary` the point lies on. At most 16.
 - `lines`: each has the ends `x0`, `y0`, `x1`, `y1` (quantities), `samples` (2 to 2000 points, ends included) and `field`. At most 8.
-- `surfaces`: each has the `boundary` (the label of a boundary of the study) and the `quantity` (`flux`, `pressure_average` or `pressure_integral`). At most 8.
+- `surfaces`: each has the `boundary` (the label of a boundary of the study) and the `quantity` (`flux`, `pressure_average`, `pressure_integral` or `heat_flux`). At most 8.
+- `forces`: each has the `boundary` (the label of a wall), a `reference_velocity` and a `reference_length` (quantities); it reports the drag and lift coefficients of that wall. At most 4.
 - `settle`: optional tolerances for judging a monitored quantity settled: `tail_fraction`, `tail_floor`, `spread_rel` and `drift_rel`. A member left out uses the built-in value. They judge a run and do not change what is run.
 
 A study that lists no probe, line or surface is watched at five default velocity points. The schema checks the shape; the ranges, the labels and the positions inside the domain are checked by CFDCraft when it validates a study.
+
+## Physics, shapes and thermal conditions
+
+These members are optional, and a study that leaves them out is the plain steady laminar box, with the same hash as before.
+
+- `domain.shape` is a channel that is not a plain box, and needs an open domain. It has a `kind`: `backward_step` with `step_height`, `upstream_length` and `startup_length`, or `cylinder_channel` with `diameter`, `centre_x` and `centre_y` (all quantities). The domain lengths stay the bounding box. The face `Obstacle` is the surface of the cylinder.
+- `mesh.level` (0 to 4) refines the mesh: each level doubles the cells along x and y. `mesh.grading` holds the optional ratios `x` and `y` (1 to 1.5), which shrink the cells toward the walls of a plain box.
+- A boundary may carry `profile` (`uniform` or `parabolic`, on an inlet at a left or right face) and `thermal` (`{"kind": "fixed_temperature", "value": <quantity>}` or `{"kind": "adiabatic"}`, on a wall).
+- `physics` holds `time` (`{"mode": "steady"}` or `{"mode": "transient", "delta_t": <quantity>}`), `turbulence` (`model`: `laminar`, `k_omega_sst`, `realizable_ke` or `rng_k_epsilon`, with optional `intensity`, `viscosity_ratio` and `reference_velocity`), `buoyancy` (`gravity`, `beta`, `reference_temperature`, `prandtl`, `turbulent_prandtl`) and `init` (`uniform` or `potential`). Each member left out is at its default.
+
+The recipes in the artifact index record what they were made from: the mesh recipe the `level`, the `grading` and the `shape`, a patch the `thermal` place of its temperature among the distinct fixed temperatures, a boundary its `profile` and `thermal` condition, the result recipe the `physics`, and its monitors the `forces`, the `on` boundary of a probe and the `boundary` of a heat-flux surface. All of them are left out when absent, so a recipe and its key are what they were.
 
 ## The queue file
 

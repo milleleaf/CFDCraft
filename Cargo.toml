@@ -14,6 +14,10 @@ edition = "2024"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
+# The test suite links 60 integration test binaries per crate; full debug info filled the Linux runner's disk.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

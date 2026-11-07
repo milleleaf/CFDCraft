@@ -8,8 +8,9 @@ use toml::Value;
 /// same discipline: they stay off compute, UI and transport code so the per-crate CI gate
 /// stays fast and a browser viewer can reuse them. The keys, compare, runs and capture crates
 /// stay pure or off compute for the same reason, and so do the scenario, sweep, disk-use,
-/// dictionary-editing, queue, log-scanning, monitor-reading, settling and assessing crates. A
-/// crate that is not listed is unconstrained.
+/// dictionary-editing, queue, log-scanning, monitor-reading, settling and assessing crates, and
+/// for the convergence-index, shape, gate, benchmark and template crates. A crate that is not
+/// listed is unconstrained.
 const RULES: &[(&str, &[&str])] = &[
     (
         "cfdcraft-model",
@@ -20,6 +21,7 @@ const RULES: &[(&str, &[&str])] = &[
             "schemars",
             "serde_jcs",
             "blake3",
+            "cfdcraft-shapes",
         ],
     ),
     (
@@ -165,6 +167,67 @@ const RULES: &[(&str, &[&str])] = &[
             "cfdcraft-settle",
             "serde",
             "schemars",
+            "thiserror",
+            // The specification tests round-trip its JSON.
+            "serde_json",
+        ],
+    ),
+    ("cfdcraft-gci", &["serde", "schemars", "thiserror"]),
+    ("cfdcraft-shapes", &["thiserror"]),
+    (
+        "cfdcraft-gate",
+        &[
+            "cfdcraft-bench-ghia",
+            "cfdcraft-model",
+            "serde",
+            "schemars",
+            "thiserror",
+            // The report tests round-trip the Ghia JSON.
+            "serde_json",
+        ],
+    ),
+    (
+        "cfdcraft-bench-step",
+        &[
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-monitors",
+            "cfdcraft-settle",
+            "serde",
+            "toml",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-bench-cylinder",
+        &[
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-monitors",
+            "cfdcraft-settle",
+            "serde",
+            "toml",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-bench-dvd",
+        &[
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-monitors",
+            "cfdcraft-settle",
+            "serde",
+            "toml",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-templates",
+        &[
+            "cfdcraft-model",
+            "cfdcraft-shapes",
+            "serde_json",
             "thiserror",
         ],
     ),
@@ -313,6 +376,13 @@ mod tests {
             ("cfdcraft-monitors", "cfdcraft-store"),
             ("cfdcraft-settle", "cfdcraft-logscan"),
             ("cfdcraft-assess", "cfdcraft-model"),
+            ("cfdcraft-gci", "serde_json"),
+            ("cfdcraft-shapes", "serde_json"),
+            ("cfdcraft-gate", "cfdcraft-store"),
+            ("cfdcraft-bench-step", "cfdcraft-ops"),
+            ("cfdcraft-bench-cylinder", "cfdcraft-keys"),
+            ("cfdcraft-bench-dvd", "cfdcraft-doc"),
+            ("cfdcraft-templates", "cfdcraft-ops"),
         ] {
             let root = named_workspace(name, &deps_of(&[foreign]));
             let error = check_layers(&root).unwrap_err();
@@ -324,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn model_keeps_its_six_names_and_unlisted_crates_are_free() {
+    fn model_keeps_its_seven_names_and_unlisted_crates_are_free() {
         let model = RULES
             .iter()
             .find(|(n, _)| *n == "cfdcraft-model")
@@ -338,7 +408,8 @@ mod tests {
                 "thiserror",
                 "schemars",
                 "serde_jcs",
-                "blake3"
+                "blake3",
+                "cfdcraft-shapes"
             ]
         );
         let root = named_workspace("cfdcraft-ops", &deps_of(&["tokio", "egui"]));
@@ -371,6 +442,13 @@ mod tests {
                 "cfdcraft-monitors",
                 "cfdcraft-settle",
                 "cfdcraft-assess",
+                "cfdcraft-gci",
+                "cfdcraft-shapes",
+                "cfdcraft-gate",
+                "cfdcraft-bench-step",
+                "cfdcraft-bench-cylinder",
+                "cfdcraft-bench-dvd",
+                "cfdcraft-templates",
             ]
         );
     }
@@ -378,6 +456,7 @@ mod tests {
     #[test]
     fn runs_may_use_settle_and_schema_may_use_queue() {
         for (name, dep) in [
+            ("cfdcraft-model", "cfdcraft-shapes"),
             ("cfdcraft-runs", "cfdcraft-settle"),
             ("cfdcraft-schema", "cfdcraft-queue"),
         ] {

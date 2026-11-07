@@ -1,10 +1,76 @@
-use crate::{case::Patch, dictionary, scalar};
-use cfdcraft_model::ResolvedStudy;
+use crate::{case::Patch, dictionary, scalar, transport::component};
+use cfdcraft_shapes::{Block, Layout, Segment};
 
-pub(crate) fn block_mesh(s: &ResolvedStudy, patches: &[Patch]) -> String {
-    let x = scalar(s.domain.length_x);
-    let y = scalar(s.domain.length_y);
-    let z = scalar(s.domain.length_z);
+/// One axis grading: `1` for the single even section, the multi-grading sections otherwise.
+fn axis(segments: &[Segment]) -> String {
+    if let [s] = segments
+        && s.length_fraction == 1.0
+        && s.cell_fraction == 1.0
+        && s.expansion == 1.0
+    {
+        return "1".into();
+    }
+    let sections: Vec<String> = segments
+        .iter()
+        .map(|s| {
+            format!(
+                "({} {} {})",
+                scalar(s.length_fraction),
+                scalar(s.cell_fraction),
+                scalar(s.expansion)
+            )
+        })
+        .collect();
+    format!("({})", sections.join(" "))
+}
+
+fn block(b: &Block) -> String {
+    let vertices: Vec<String> = b.vertices.iter().map(|v| v.to_string()).collect();
+    format!(
+        "    hex ({}) ({} {} {}) simpleGrading ({} {} {})\n",
+        vertices.join(" "),
+        b.cells[0],
+        b.cells[1],
+        b.cells[2],
+        axis(&b.grading[0]),
+        axis(&b.grading[1]),
+        axis(&b.grading[2])
+    )
+}
+
+pub(crate) fn block_mesh(layout: &Layout, patches: &[Patch]) -> String {
+    let vertices: String = layout
+        .vertices
+        .iter()
+        .map(|v| {
+            format!(
+                "    ({} {} {})\n",
+                component(v[0]),
+                component(v[1]),
+                component(v[2])
+            )
+        })
+        .collect();
+    let blocks: String = layout.blocks.iter().map(block).collect();
+    let edges = if layout.arcs.is_empty() {
+        "edges ();\n".to_owned()
+    } else {
+        let arcs: String = layout
+            .arcs
+            .iter()
+            .map(|a| {
+                format!(
+                    "    arc {} {} ({} {} {})\n",
+                    a.from,
+                    a.to,
+                    component(a.through[0]),
+                    component(a.through[1]),
+                    component(a.through[2])
+                )
+            })
+            .collect();
+        format!("edges\n(\n{arcs});\n")
+    };
     let boundary: String = patches
         .iter()
         .map(|p| {
@@ -20,8 +86,7 @@ pub(crate) fn block_mesh(s: &ResolvedStudy, patches: &[Patch]) -> String {
         "blockMeshDict",
         "dictionary",
         &format!(
-            "convertToMeters 1;\nvertices\n(\n    (0 0 0)\n    ({x} 0 0)\n    ({x} {y} 0)\n    (0 {y} 0)\n    (0 0 {z})\n    ({x} 0 {z})\n    ({x} {y} {z})\n    (0 {y} {z})\n);\nblocks\n(\n    hex (0 1 2 3 4 5 6 7) ({} {} {}) simpleGrading (1 1 1)\n);\nedges ();\nboundary\n(\n{boundary});\nmergePatchPairs ();\n",
-            s.mesh.cells_x, s.mesh.cells_y, s.mesh.cells_z
+            "convertToMeters 1;\nvertices\n(\n{vertices});\nblocks\n(\n{blocks});\n{edges}boundary\n(\n{boundary});\nmergePatchPairs ();\n"
         ),
     )
 }

@@ -12,7 +12,7 @@ fn json_of(text: &str) -> Value {
 }
 
 #[test]
-fn cavity_v0_migrates_to_the_current_schema_with_four_notes() {
+fn cavity_v0_migrates_to_the_current_schema_with_five_notes() {
     let parts = Parts {
         study: json_of(V0),
         artifacts: None,
@@ -24,16 +24,17 @@ fn cavity_v0_migrates_to_the_current_schema_with_four_notes() {
     let expected: Study = serde_json::from_str(V1).unwrap();
     assert_eq!(migrated, expected);
     assert_eq!(out.artifacts, None);
-    assert_eq!(notes.len(), 4);
+    assert_eq!(notes.len(), 5);
     assert_eq!((notes[0].from, notes[0].to), (0, 1));
     assert!(notes[0].summary.contains("lid") && notes[0].summary.contains("walls"));
     assert_eq!((notes[1].from, notes[1].to), (1, 2));
     assert_eq!((notes[2].from, notes[2].to), (2, 3));
     assert_eq!((notes[3].from, notes[3].to), (3, 4));
+    assert_eq!((notes[4].from, notes[4].to), (4, 5));
 }
 
 #[test]
-fn a_schema_1_file_gets_an_empty_runs_list_and_three_notes() {
+fn a_schema_1_file_gets_an_empty_runs_list_and_four_notes() {
     let parts = Parts {
         study: json_of(V1),
         artifacts: Some(json!({"blobs": [], "links": []})),
@@ -44,11 +45,12 @@ fn a_schema_1_file_gets_an_empty_runs_list_and_three_notes() {
         out.artifacts,
         Some(json!({"blobs": [], "links": [], "runs": []}))
     );
-    assert_eq!(notes.len(), 3);
+    assert_eq!(notes.len(), 4);
     assert_eq!((notes[0].from, notes[0].to), (1, 2));
     assert!(notes[0].summary.contains("runs"));
     assert_eq!((notes[1].from, notes[1].to), (2, 3));
     assert_eq!((notes[2].from, notes[2].to), (3, 4));
+    assert_eq!((notes[3].from, notes[3].to), (4, 5));
 }
 
 #[test]
@@ -59,10 +61,11 @@ fn a_schema_1_file_without_an_artifact_index_stays_without_one() {
     };
     let (out, notes) = migrate(parts, 1).unwrap();
     assert_eq!(out.artifacts, None);
-    assert_eq!(notes.len(), 3);
+    assert_eq!(notes.len(), 4);
     assert_eq!((notes[0].from, notes[0].to), (1, 2));
     assert_eq!((notes[1].from, notes[1].to), (2, 3));
     assert_eq!((notes[2].from, notes[2].to), (3, 4));
+    assert_eq!((notes[3].from, notes[3].to), (4, 5));
 }
 
 #[test]
@@ -84,7 +87,7 @@ fn an_index_that_is_not_an_object_is_left_for_the_typed_read_to_refuse() {
     };
     let (out, notes) = migrate(parts, 1).unwrap();
     assert_eq!(out.artifacts, Some(json!(7)));
-    assert_eq!(notes.len(), 3);
+    assert_eq!(notes.len(), 4);
 }
 
 #[test]
@@ -103,7 +106,7 @@ fn a_current_study_keeps_its_own_number() {
     let study = Study::from_json_with_note(V1).unwrap().0;
     assert_eq!(study.schema_version, Study::SCHEMA_VERSION);
     assert_eq!(Study::SCHEMA_VERSION, 1);
-    assert_eq!(CURRENT_SCHEMA, 4);
+    assert_eq!(CURRENT_SCHEMA, 5);
 }
 
 #[test]
@@ -263,9 +266,9 @@ fn real_table_is_contiguous_and_reaches_current() {
 }
 
 #[test]
-fn the_current_schema_is_4_and_the_step_table_has_no_gap() {
-    assert_eq!(CURRENT_SCHEMA, 4);
-    assert_eq!(STEPS.last().unwrap().from + 1, 4);
+fn the_current_schema_is_5_and_the_step_table_has_no_gap() {
+    assert_eq!(CURRENT_SCHEMA, 5);
+    assert_eq!(STEPS.last().unwrap().from + 1, 5);
     for (i, step) in STEPS.iter().enumerate() {
         assert_eq!(step.from as usize, i);
     }
@@ -274,29 +277,30 @@ fn the_current_schema_is_4_and_the_step_table_has_no_gap() {
         study: json_of(V1),
         artifacts: Some(json!({"blobs": [], "links": [], "runs": []})),
     };
-    let (out, notes) = migrate(parts.clone(), 4).unwrap();
+    let (out, notes) = migrate(parts.clone(), 5).unwrap();
     assert_eq!(out, parts);
     assert!(notes.is_empty());
 }
 
 #[test]
-fn a_schema_2_file_gets_two_notes_and_nothing_else_changes() {
+fn a_schema_2_file_gets_three_notes_and_nothing_else_changes() {
     let parts = Parts {
         study: json_of(V1),
         artifacts: Some(json!({"blobs": [], "links": [], "runs": []})),
     };
     let (out, notes) = migrate(parts.clone(), 2).unwrap();
     assert_eq!(out, parts);
-    assert_eq!(notes.len(), 2);
+    assert_eq!(notes.len(), 3);
     assert_eq!((notes[0].from, notes[0].to), (2, 3));
     assert!(notes[0].summary.contains("variants"));
     assert_eq!((notes[1].from, notes[1].to), (3, 4));
+    assert_eq!((notes[2].from, notes[2].to), (4, 5));
 }
 
 #[test]
-fn the_current_schema_is_four_and_the_last_step_leads_to_it() {
-    assert_eq!(CURRENT_SCHEMA, 4);
-    assert_eq!(STEPS.last().unwrap().from + 1, 4);
+fn the_current_schema_is_five_and_the_last_step_leads_to_it() {
+    assert_eq!(CURRENT_SCHEMA, 5);
+    assert_eq!(STEPS.last().unwrap().from + 1, 5);
 }
 
 #[test]
@@ -307,11 +311,29 @@ fn schema_3_to_4_changes_nothing_and_says_so() {
     };
     let (out, notes) = migrate(parts.clone(), 3).unwrap();
     assert_eq!(out, parts);
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 2);
     assert_eq!((notes[0].from, notes[0].to), (3, 4));
     assert!(notes[0].summary.contains("stopped and continued"));
     assert!(notes[0].summary.contains("converged"));
     assert!(notes[0].summary.ends_with("Nothing else changed."));
+}
+
+#[test]
+fn the_note_says_what_the_file_can_now_keep() {
+    let parts = Parts {
+        study: json_of(V1),
+        artifacts: Some(json!({"blobs": [], "links": [], "runs": []})),
+    };
+    let (out, notes) = migrate(parts.clone(), 4).unwrap();
+    assert_eq!(out, parts);
+    assert_eq!(notes.len(), 1);
+    assert_eq!((notes[0].from, notes[0].to), (4, 5));
+    assert_eq!(
+        notes[0].summary,
+        "This file can now keep results of studies with a mesh level, other shapes, turbulence \
+         models, time-dependent and buoyant physics, and the benchmark numbers recorded with \
+         them. This file has none yet. Nothing else changed."
+    );
 }
 
 #[test]
@@ -320,29 +342,29 @@ fn older_files_walk_every_step() {
         study: json_of(V1),
         artifacts: None,
     };
-    for (found, count) in [(1_u32, 3_usize), (2, 2), (3, 1)] {
+    for (found, count) in [(1_u32, 4_usize), (2, 3), (3, 2), (4, 1)] {
         let (_, notes) = migrate(parts.clone(), found).unwrap();
         assert_eq!(notes.len(), count, "schema {found}");
         let last = notes.last().unwrap();
-        assert_eq!((last.from, last.to), (3, 4), "schema {found}");
+        assert_eq!((last.from, last.to), (4, 5), "schema {found}");
     }
     let v0 = Parts {
         study: json_of(V0),
         artifacts: None,
     };
     let (_, notes) = migrate(v0, 0).unwrap();
-    assert_eq!(notes.len(), 4);
+    assert_eq!(notes.len(), 5);
     let last = notes.last().unwrap();
-    assert_eq!((last.from, last.to), (3, 4));
+    assert_eq!((last.from, last.to), (4, 5));
 }
 
 #[test]
-fn a_file_newer_than_four_is_refused() {
+fn a_file_newer_than_five_is_refused() {
     assert_eq!(
-        check_readable(5),
+        check_readable(6),
         Err(MigrateError::NewerSchema {
-            found: 5,
-            supported: 4
+            found: 6,
+            supported: 5
         })
     );
 }

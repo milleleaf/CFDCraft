@@ -9,10 +9,11 @@ use std::path::Path;
 
 use crate::bundle::{Bundle, read_all};
 use crate::result::push_if_present;
-use crate::{CaptureError, FILE_CAP};
+use crate::{CaptureError, CapturePlan, FILE_CAP};
 
-/// The function-object folders under `postProcessing` that hold monitor files.
-const PREFIXES: [&str; 4] = ["probe_", "line_", "surface_", "balance_"];
+/// The function-object folders under `postProcessing` that hold monitor files: probes, lines,
+/// surfaces, balances and force coefficients.
+const PREFIXES: [&str; 5] = ["probe_", "line_", "surface_", "balance_", "force_"];
 /// The most monitor files one result may carry. A line monitor writes one folder per write time,
 /// so the number grows with the lines and the write times; the size of the bundle is bounded
 /// separately, so this only stops a folder that holds an absurd number of files.
@@ -129,21 +130,33 @@ pub fn latest_time_dir(results: &Path) -> Result<String, CaptureError> {
         .ok_or_else(|| CaptureError::Missing("a time folder".to_owned()))
 }
 
-/// What a stopped run needs to continue and be judged: its fields at `time`, the three logs and
-/// the monitor files. `time` must name one of the real time folders of `results`.
+/// What a stopped cavity run needs to continue and be judged: its fields at `time`, the three
+/// logs and the monitor files. `time` must name one of the real time folders of `results`.
 pub fn checkpoint_bundle(results: &Path, time: &str) -> Result<Bundle, CaptureError> {
+    checkpoint_bundle_with(results, time, &CapturePlan::cavity())
+}
+
+/// [`checkpoint_bundle`] for the fields and log `plan` names.
+pub fn checkpoint_bundle_with(
+    results: &Path,
+    time: &str,
+    plan: &CapturePlan,
+) -> Result<Bundle, CaptureError> {
     let folder = time_dirs(results)?
         .into_iter()
         .find(|(name, _)| name == time)
         .map(|(name, _)| name)
         .ok_or_else(|| CaptureError::Missing("the requested time folder".to_owned()))?;
-    let mut names = vec![
-        format!("{folder}/U"),
-        format!("{folder}/p"),
+    let mut names: Vec<String> = plan
+        .fields
+        .iter()
+        .map(|f| format!("{folder}/{f}"))
+        .collect();
+    names.extend([
         "log.blockMesh".to_owned(),
         "log.checkMesh".to_owned(),
-        "log.simpleFoam".to_owned(),
-    ];
+        plan.log.clone(),
+    ]);
     push_if_present(results, format!("{folder}/phi"), &mut names)?;
     names.extend(monitor_names(results)?);
     read_all(results, names, FILE_CAP)

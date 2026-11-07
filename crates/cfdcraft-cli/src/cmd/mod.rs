@@ -1,8 +1,10 @@
+pub mod benchmark;
 pub mod check_case;
 pub mod compile;
 pub mod disk;
 pub mod document;
 pub mod export;
+pub mod gci;
 pub mod keys;
 pub mod queue;
 pub mod repro;

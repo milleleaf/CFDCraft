@@ -1,0 +1,12 @@
+[package]
+name = "cfdcraft-templates"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+cfdcraft-shapes = { path = "../cfdcraft-shapes", version = "=0.1.0" }
+# float_roundtrip: a number written into a study must read back as the same number.
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+thiserror = "=2.0.21"

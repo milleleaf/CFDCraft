@@ -10,13 +10,18 @@ use cfdcraft_text::Line;
 
 use crate::DrainError;
 use crate::finalize;
-use crate::tick::{Drain, run_id_of};
-use crate::watchdog::SOLVER_LOG;
+use crate::tick::{Drain, FETCH_CAP, run_id_of};
 
 /// How many lines of the end of a log an unknown error shows.
 const TAIL_LINES: usize = 20;
-/// The logs of a case in the order they are written; the newest one with text names the failure.
-const LOGS_NEWEST_FIRST: [&str; 3] = [SOLVER_LOG, "log.checkMesh", "log.blockMesh"];
+/// The logs of a case, newest first: the one with text that comes first names the failure.
+fn logs_newest_first(solver_log: &str) -> [String; 3] {
+    [
+        solver_log.to_owned(),
+        "log.checkMesh".to_owned(),
+        "log.blockMesh".to_owned(),
+    ]
+}
 /// The code of a run that the time limit of the compute host ended.
 pub const TIME_LIMIT: &str = "CFD-RUN-009";
 /// The exit statuses of a run ended by `timeout`: 124 when the solver stopped at the limit, 137
@@ -117,9 +122,27 @@ fn container_end<H: Host>(
 /// that left no recognised message is an out-of-memory failure.
 pub fn classify<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Classified, DrainError> {
     let mirror = ctx.mirror(job)?;
-    let solver = mirror.read_to_string(SOLVER_LOG)?;
+    let solver_log = ctx.solver_log(job)?;
+    let mut solver = mirror.read_to_string(&solver_log)?;
     let mut scanner = Scanner::new();
     scanner.feed(&solver);
+    // A full live view stops growing while the solver goes on, so the mirror of a long run (a fine
+    // mesh, a transient with a line of force coefficients every step) can stop before the end of
+    // the log. The host still holds the rest: read on from where the mirror stops, so that the run
+    // is not judged by a log that was cut.
+    if !scanner.state().ended {
+        let run_id = run_id_of(job)?.to_owned();
+        let mut at = mirror.len(&solver_log);
+        while let Ok(piece) = ctx.host.tail(&run_id, &solver_log, at, FETCH_CAP) {
+            if piece.is_empty() {
+                break;
+            }
+            at += piece.len() as u64;
+            let text = String::from_utf8_lossy(&piece);
+            scanner.feed(&text);
+            solver.push_str(&text);
+        }
+    }
     let state = scanner.state();
     if let Some(found) = divergence(state, &Limits::default(), false) {
         return Ok(Classified::Failed {
@@ -131,11 +154,11 @@ pub fn classify<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Classified, Dr
         return Ok(Classified::Clean);
     }
     let mut log = solver;
-    for rel in LOGS_NEWEST_FIRST {
+    for rel in logs_newest_first(&solver_log) {
         if !log.trim().is_empty() {
             break;
         }
-        log = mirror.read_to_string(rel)?;
+        log = mirror.read_to_string(&rel)?;
     }
     let tail = tail_lines(&log, TAIL_LINES);
     let mut id = explain(tail);
@@ -175,5 +198,14 @@ pub fn finish_failed<H: Host>(
     if ctx.host.inspect(&run_id)? == ContainerState::Running {
         ctx.host.stop_container(&run_id, GRACE_SECONDS)?;
     }
-    finalize::fail_explained(ctx, job, code, std::slice::from_ref(&sentence))
+    let lines = std::slice::from_ref(&sentence);
+    // An error nothing recognises keeps its folder on the host: a person may need all of its output.
+    if code == UNKNOWN_ERROR_CODE {
+        finalize::fail(ctx, job, code, lines, true)
+    } else {
+        finalize::fail_explained(ctx, job, code, lines)
+    }
 }
+
+/// The code of an error the table does not know (`ErrorId::Unknown`).
+const UNKNOWN_ERROR_CODE: &str = "CFD-SOLVER-099";

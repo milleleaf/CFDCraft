@@ -1,0 +1,42 @@
+[source]
+paper = "Schafer and Turek (1996), Benchmark Computations of Laminar Flow Around a Cylinder, in Flow Simulation with High-Performance Computers II, Notes on Numerical Fluid Mechanics 52, Vieweg, pp. 547-566"
+doi = "10.1007/978-3-322-89849-4_39"
+table = "Table 4"
+page = 13
+statement = "The numbers are the authors' estimated intervals for the exact solution of the equations."
+terms = "no terms stated; the eight bounds are quoted as facts"
+
+[definition]
+reynolds = "Re = Ubar D / nu"
+drag = "cD = 2 F / (rho Ubar^2 D)"
+lift = "cL = 2 F / (rho Ubar^2 D)"
+strouhal = "St = D f / Ubar"
+pressure_difference = "DeltaP = P(0.15, 0.2) - P(0.25, 0.2), read half a period after the lift maximum"
+front_point = [0.15, 0.2]
+rear_point = [0.25, 0.2]
+
+[reference.cd_max]
+low = 3.2200
+high = 3.2400
+
+[reference.cl_max]
+low = 0.9900
+high = 1.0100
+
+[reference.st]
+low = 0.2950
+high = 0.3050
+
+[reference.delta_p]
+low = 2.4600
+high = 2.5000
+
+[tolerance]
+cd_max = 0.02
+cl_max = 0.03
+st = 0.03
+delta_p = 0.03
+window_cycles = 5
+min_cycles = 10
+units = "fraction_of_midpoint"
+justification = "The published intervals are 0.6 %, 2 %, 3 % and 1.6 % wide. A second-order finite-volume run on a coarse mesh is not expected to land inside them, so a value passes when it lies inside its interval widened on both sides by the allowance, a fraction of the interval's midpoint. The allowances are initial settings that the owner approves after real runs. The window of the last 5 whole shedding periods follows the paper, which reads the quantities over one period of the lift, and at least 10 periods must exist before a run is judged."

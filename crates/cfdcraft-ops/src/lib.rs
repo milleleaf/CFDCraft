@@ -2,10 +2,13 @@
 //! adapters over this crate, so every path that writes a case runs the same gates in the same
 //! order and reports through the same [`Report`].
 
+pub mod benchmark_ops;
+pub mod benchmarks;
 pub mod cases;
 pub mod convergence;
 pub mod disk_ops;
 pub mod documents;
+pub mod gci_ops;
 pub mod ghia;
 pub mod host_runner;
 pub mod inspect;
@@ -24,6 +27,10 @@ pub mod sweep_ops;
 pub mod update;
 pub mod workspace;
 
+pub use benchmark_ops::{
+    BenchmarkOptions, benchmark_check, benchmark_create, benchmark_list, created_line,
+};
+pub use benchmarks::{BundleFiles, DirFiles, build, ids, quantities_for, select};
 pub use cases::{check_case, compile_study, export_study};
 pub use cfdcraft_doc::default_link_id;
 pub use cfdcraft_keys::Stage;
@@ -31,6 +38,7 @@ pub use documents::{
     DocOutcome, check_document_links, link_file, open_document, pack_document, read_study,
     save_document, unpack_document,
 };
+pub use gci_ops::{GciData, GciLevelRow, GciRequest, gci_warning_lines};
 pub use ghia::{GateMetric, GateReport, GateRow};
 pub use host_runner::HostRunner;
 pub use inspect::{
@@ -47,9 +55,10 @@ pub use reasons::{change_line, reason_parts, reason_text, stale_line, stale_sent
 pub use registry::{ResultOutcome, RunRegistry, StartOutcome, Status};
 pub use report::{Artifact, EvidenceReport, ExitClass, HolderInfo, InfraReport, Report, RunInfo};
 pub use repro::{
-    ComparisonData, DiffData, JobView, PlanData, PointCheck, PreflightData, ProvenanceData,
-    PruneData, QueueData, RawView, Repro, ResultData, RunData, RunSummary, RunsData, ScenarioData,
-    ScenarioSummary, ScenariosData, StageStatus, StatusData, SweepData, UpdateData, UpdatedItem,
+    BenchmarkEntry, BenchmarksData, ComparisonData, DiffData, JobView, PlanData, PointCheck,
+    PreflightData, ProvenanceData, PruneData, QueueData, RawView, Repro, ResultData, RunData,
+    RunSummary, RunsData, ScenarioData, ScenarioSummary, ScenariosData, StageStatus, StatusData,
+    SweepData, UpdateData, UpdatedItem,
 };
 pub use run::{Begun, Finished, RunMode, RunRequest, begin, execute, run_study};
 pub use update::{plan_update_report, update_documents};

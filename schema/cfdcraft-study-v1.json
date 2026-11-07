@@ -13,6 +13,28 @@
         "kind": {
           "$ref": "#/$defs/BoundaryKind"
         },
+        "profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InletProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The shape of the inflow across an inlet on a left or right face. The velocity is the mean\nspeed; the peak of a parabola is 1.5 times it. Left out for a flat profile."
+        },
+        "thermal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThermalCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The temperature condition of a wall."
+        },
         "velocity": {
           "anyOf": [
             {
@@ -66,6 +88,41 @@
         }
       ]
     },
+    "Buoyancy": {
+      "additionalProperties": false,
+      "description": "Boussinesq buoyancy: the density varies linearly with temperature in the gravity term only.",
+      "properties": {
+        "beta": {
+          "description": "Thermal expansion coefficient in 1/K.",
+          "format": "double",
+          "type": "number"
+        },
+        "gravity": {
+          "description": "Gravity in m/s2, acting along -y.",
+          "format": "double",
+          "type": "number"
+        },
+        "prandtl": {
+          "format": "double",
+          "type": "number"
+        },
+        "reference_temperature": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "turbulent_prandtl": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "gravity",
+        "beta",
+        "reference_temperature",
+        "prandtl",
+        "turbulent_prandtl"
+      ],
+      "type": "object"
+    },
     "Convergence": {
       "additionalProperties": false,
       "properties": {
@@ -100,6 +157,17 @@
           "default": false,
           "description": "True when the box has open (inlet or outlet) faces. A closed domain has only walls.\nClosed unless stated.",
           "type": "boolean"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Shape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A shape other than the plain box. Left out for a box."
         }
       },
       "required": [
@@ -110,14 +178,23 @@
       "type": "object"
     },
     "Face": {
-      "description": "A face of the box domain: left (x min), right (x max), bottom (y min) or top (y max).\nThe front and back faces are always empty (two-dimensional case).",
-      "enum": [
-        "XMin",
-        "XMax",
-        "YMin",
-        "YMax"
-      ],
-      "type": "string"
+      "description": "A face of the domain: left (x min), right (x max), bottom (y min) or top (y max), and the\nsurface of the cylinder in a cylinder channel. The front and back faces are always empty\n(two-dimensional case).",
+      "oneOf": [
+        {
+          "enum": [
+            "XMin",
+            "XMax",
+            "YMin",
+            "YMax"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Obstacle",
+          "description": "The surface of the cylinder of a cylinder channel; no other domain has it.",
+          "type": "string"
+        }
+      ]
     },
     "Fluid": {
       "additionalProperties": false,
@@ -130,6 +207,78 @@
         "kinematic_viscosity"
       ],
       "type": "object"
+    },
+    "ForceMonitor": {
+      "additionalProperties": false,
+      "description": "Drag and lift coefficients of one wall boundary. The coefficients are the force over\n1/2 times the reference velocity squared times the reference length (per unit depth).",
+      "properties": {
+        "boundary": {
+          "type": "string"
+        },
+        "reference_length": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "reference_velocity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "boundary",
+        "reference_velocity",
+        "reference_length"
+      ],
+      "type": "object"
+    },
+    "Grading": {
+      "additionalProperties": false,
+      "description": "Symmetric wall grading. Each ratio is the growth of one cell over the next from a wall toward\nthe middle of the domain, from 1 (even cells) up to 1.5. An axis left out is not graded, and\na graded axis needs an even cell count.",
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "y": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InitMode": {
+      "description": "How the fields start.",
+      "oneOf": [
+        {
+          "const": "uniform",
+          "description": "The same values everywhere.",
+          "type": "string"
+        },
+        {
+          "const": "potential",
+          "description": "A potential-flow solution of the velocity field.",
+          "type": "string"
+        }
+      ]
+    },
+    "InletProfile": {
+      "description": "How the inflow speed varies across an inlet.",
+      "oneOf": [
+        {
+          "const": "uniform",
+          "description": "The same speed everywhere on the inlet.",
+          "type": "string"
+        },
+        {
+          "const": "parabolic",
+          "description": "Zero at the walls and 1.5 times the mean speed in the middle of the inlet.",
+          "type": "string"
+        }
+      ]
     },
     "LineMonitor": {
       "additionalProperties": false,
@@ -183,6 +332,23 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "grading": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grading"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Wall grading: cells shrink toward the walls on the axes given. Box domains only."
+        },
+        "level": {
+          "description": "Refinement level, 0 to 4. The cell counts above are the level 0 counts; level L\nmultiplies the counts along x and y by 2^L and leaves z alone. Left out for level 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -208,6 +374,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "forces": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ForceMonitor"
+          },
+          "description": "Force coefficients on a wall, at most 4.",
+          "type": "object"
         },
         "lines": {
           "additionalProperties": {
@@ -247,10 +420,44 @@
       ],
       "type": "object"
     },
+    "Physics": {
+      "additionalProperties": false,
+      "description": "The physics of the run. A study that states none of it is steady, laminar, without buoyancy\nand started from a uniform field.",
+      "properties": {
+        "buoyancy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Buoyancy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present means the Boussinesq buoyancy model is on."
+        },
+        "init": {
+          "$ref": "#/$defs/InitMode"
+        },
+        "time": {
+          "$ref": "#/$defs/TimeMode"
+        },
+        "turbulence": {
+          "$ref": "#/$defs/Turbulence"
+        }
+      },
+      "type": "object"
+    },
     "Probe": {
       "additionalProperties": false,
       "description": "A point in the plane of the case (the case is flat, so a point has x and y only).",
       "properties": {
+        "boundary": {
+          "description": "The boundary the point lies on, for a reading at a wall. Left out for a point in the\nflow.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "field": {
           "$ref": "#/$defs/MonitorField"
         },
@@ -362,6 +569,64 @@
       },
       "type": "object"
     },
+    "Shape": {
+      "description": "The outline of the domain when it is not a plain box. The domain lengths still give the\nbounding box, `[0, length_x]` by `[0, length_y]`; a shape needs an open domain.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A channel that widens by a step. The step is at x = `upstream_length`; upstream of it the\nchannel spans y from `step_height` to `length_y`, downstream it spans the full height.",
+          "properties": {
+            "kind": {
+              "const": "backward_step",
+              "type": "string"
+            },
+            "startup_length": {
+              "$ref": "#/$defs/Quantity",
+              "description": "Length of a slip section at the inlet, from 0 (none) up to `upstream_length`."
+            },
+            "step_height": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "upstream_length": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "step_height",
+            "upstream_length",
+            "startup_length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A channel with a round cylinder across the flow. The surface of the cylinder is the face\n`Obstacle`. The cylinder and a clearance of one diameter around it must lie inside the domain.",
+          "properties": {
+            "centre_x": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "centre_y": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "diameter": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "kind": {
+              "const": "cylinder_channel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "diameter",
+            "centre_x",
+            "centre_y"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SolverControl": {
       "additionalProperties": false,
       "properties": {
@@ -391,10 +656,18 @@
       "type": "object"
     },
     "SolverKind": {
-      "enum": [
-        "SimpleLaminar"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "SimpleLaminar",
+          "description": "Steady, laminar, no buoyancy. Any physics that differs is refused.",
+          "type": "string"
+        },
+        {
+          "const": "FromPhysics",
+          "description": "The solver follows the study's physics.",
+          "type": "string"
+        }
+      ]
     },
     "SurfaceMonitor": {
       "additionalProperties": false,
@@ -430,8 +703,134 @@
           "const": "pressure_integral",
           "description": "The area-integrated pressure on the boundary.",
           "type": "string"
+        },
+        {
+          "const": "heat_flux",
+          "description": "The area integral of the temperature gradient along the boundary's axis, in K m. The\nboundary needs a thermal condition.",
+          "type": "string"
         }
       ]
+    },
+    "ThermalCondition": {
+      "description": "The temperature condition of a wall.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The wall is held at this temperature.",
+          "properties": {
+            "kind": {
+              "const": "fixed_temperature",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Quantity"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No heat passes through the wall.",
+          "properties": {
+            "kind": {
+              "const": "adiabatic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TimeMode": {
+      "description": "Whether the run marches in time.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Iterate to a steady state.",
+          "properties": {
+            "mode": {
+              "const": "steady",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "March in time. `delta_t` is the step at mesh level 0; each level halves it.",
+          "properties": {
+            "delta_t": {
+              "$ref": "#/$defs/Quantity"
+            },
+            "mode": {
+              "const": "transient",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "delta_t"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Turbulence": {
+      "additionalProperties": false,
+      "description": "The turbulence model and the inflow values it needs.",
+      "properties": {
+        "intensity": {
+          "description": "Turbulence intensity of the inflow, above 0 and at most 1.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/TurbulenceModel"
+        },
+        "reference_velocity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The speed the inflow values are built from. Left out to use the speed of the inlet or\nmoving wall."
+        },
+        "viscosity_ratio": {
+          "description": "Ratio of the turbulent to the molecular viscosity of the inflow, above 0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TurbulenceModel": {
+      "description": "The flow model: none (laminar) or one of three Reynolds-averaged models.",
+      "enum": [
+        "laminar",
+        "k_omega_sst",
+        "realizable_ke",
+        "rng_k_epsilon"
+      ],
+      "type": "string"
     },
     "Unit": {
       "enum": [
@@ -471,6 +870,17 @@
     },
     "monitors": {
       "$ref": "#/$defs/Monitors"
+    },
+    "physics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Physics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Steady or transient, the turbulence model, buoyancy and how the flow starts. Left out\nfor the plain steady laminar study."
     },
     "raw_overrides": {
       "additionalProperties": {

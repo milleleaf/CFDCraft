@@ -1,0 +1,24 @@
+[source]
+paper = "Driver and Seegmiller (1985), AIAA J. 23(2), 163-171"
+doi = "10.2514/3.8890"
+page_url = "https://tmbwg.github.io/turbmodels/backstep_val.html"
+data_url = "https://tmbwg.github.io/turbmodels/Backstep_validation/profiles.exp.dat"
+curators = "Ethan Vogel and Clark Pederson, NASA Turbulence Modeling Resource, page last updated 18 November 2021"
+terms = "no terms stated on the page; only the numbers needed are kept"
+
+[reattachment]
+x_over_h = 6.26
+uncertainty = 0.10
+method = "laser oil-flow interferometry"
+
+[geometry]
+step_height_m = 0.0127
+re_h = 36000.0
+expansion_ratio = 1.125
+
+[tolerance]
+x_over_h = 0.5
+profile_u_max_abs = 0.10
+floor_offset_over_h = 0.01
+units = "step_heights"
+justification = "Initial settings. The owner approves any revision after real runs. The reattachment limit of 0.5 step heights is five times the experimental uncertainty of 0.10, because a coarse steady RANS mesh is not expected to reproduce the experiment better than that. The profile limit of 0.10 reference velocities is a maximum absolute deviation over every point of the published profiles at the four stations. The floor line that reattachment is read from lies 0.01 step heights above the downstream floor, so a corner eddy is not mistaken for it."

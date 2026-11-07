@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "domain": {
+    "length_x": {
+      "value": 0.1,
+      "unit": "m"
+    },
+    "length_y": {
+      "value": 0.1,
+      "unit": "m"
+    },
+    "length_z": {
+      "value": 0.01,
+      "unit": "m"
+    },
+    "open": false
+  },
+  "fluid": {
+    "kinematic_viscosity": {
+      "value": 1.5e-05,
+      "unit": "m2/s"
+    }
+  },
+  "boundary_conditions": {
+    "hot": {
+      "faces": [
+        "XMin"
+      ],
+      "kind": "NoSlipWall",
+      "thermal": {
+        "kind": "fixed_temperature",
+        "value": {
+          "value": 300.5,
+          "unit": "K"
+        }
+      }
+    },
+    "cold": {
+      "faces": [
+        "XMax"
+      ],
+      "kind": "NoSlipWall",
+      "thermal": {
+        "kind": "fixed_temperature",
+        "value": {
+          "value": 299.5,
+          "unit": "K"
+        }
+      }
+    },
+    "adiabatic": {
+      "faces": [
+        "YMin",
+        "YMax"
+      ],
+      "kind": "NoSlipWall",
+      "thermal": {
+        "kind": "adiabatic"
+      }
+    }
+  },
+  "mesh": {
+    "cells_x": 40,
+    "cells_y": 40,
+    "cells_z": 1
+  },
+  "solver": {
+    "solver": "FromPhysics",
+    "end_time": {
+      "value": 2000,
+      "unit": "s"
+    },
+    "write_interval": {
+      "value": 500,
+      "unit": "s"
+    },
+    "convergence": {
+      "p": 1e-06,
+      "U": 1e-06
+    }
+  },
+  "monitors": {
+    "centreline_u_sample_count": 64,
+    "surfaces": {
+      "hot_flux": {
+        "boundary": "hot",
+        "quantity": "heat_flux"
+      }
+    },
+    "forces": {
+      "hot_wall": {
+        "boundary": "hot",
+        "reference_velocity": {
+          "value": 0.1,
+          "unit": "m/s"
+        },
+        "reference_length": {
+          "value": 0.1,
+          "unit": "m"
+        }
+      }
+    }
+  },
+  "physics": {
+    "buoyancy": {
+      "gravity": 9.81,
+      "beta": 0.003,
+      "reference_temperature": {
+        "value": 300.0,
+        "unit": "K"
+      },
+      "prandtl": 0.71,
+      "turbulent_prandtl": 0.85
+    },
+    "turbulence": {
+      "model": "k_omega_sst",
+      "intensity": 0.05,
+      "wall_law": "standard"
+    }
+  }
+}

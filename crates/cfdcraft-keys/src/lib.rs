@@ -20,13 +20,14 @@ mod diff;
 pub mod recipe;
 
 pub use diff::{
-    Axis, Change, Residual, ToolPart, diff_mesh, diff_result, line_text, probe_text, raw_text,
-    surface_text,
+    Axis, Change, PhysicsPart, Residual, ToolPart, buoyancy_text, diff_mesh, diff_result,
+    force_text, line_text, probe_text, raw_text, shape_text, surface_text, thermal_text,
 };
 pub use recipe::{
-    BoundaryRecipe, CellsRecipe, FluidRecipe, GeometryRecipe, LineRecipe, MeshRecipe,
-    MonitorsRecipe, PatchRecipe, ProbeRecipe, ResultRecipe, SolverRecipe, StageKeys, StageRecipes,
-    SurfaceRecipe,
+    BoundaryRecipe, BuoyancyRecipe, CellsRecipe, FluidRecipe, ForceRecipe, GeometryRecipe,
+    GradingRecipe, LineRecipe, MeshRecipe, MonitorsRecipe, PatchRecipe, PhysicsRecipe, ProbeRecipe,
+    ResultRecipe, ShapeRecipe, SolverRecipe, StageKeys, StageRecipes, SurfaceRecipe, ThermalRecipe,
+    TimeRecipe, TurbulenceRecipe,
 };
 
 /// Everything about the tools that can change an output without the study changing.

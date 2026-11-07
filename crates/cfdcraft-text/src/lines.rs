@@ -172,6 +172,37 @@ const VERDICT_CONVERGED: &str =
 const VERDICT_NOT_CONVERGED: &str = "Not converged: {reasons}.";
 const VERDICT_NOT_JUDGED: &str = "Convergence cannot be judged: {reason}.";
 const REASON_MONITOR: &str = "monitor {id} {from} → {to}";
+const GCI_SUMMARY: &str = "Mesh independence of {quantity}: observed order {order}, GCI of the fine mesh {gci_percent} % ({class}).";
+const GCI_ORDER_NONE: &str = "No grid convergence index for {quantity}: the three values are {class}, so no positive order of convergence exists.";
+const GCI_WARN_OSCILLATORY: &str = "{quantity} converges in an oscillating way, so its index is less reliable than a monotone one.";
+const GCI_WARN_ORDER: &str = "The observed order {order} of {quantity} is outside 0.5 to 2.5; check that the meshes are in the asymptotic range.";
+const GCI_WARN_ASYMPTOTIC: &str = "The asymptotic ratio {ratio} of {quantity} is outside 0.9 to 1.1; the meshes may not be in the asymptotic range.";
+const GCI_WARN_TRANSIENT: &str = "{quantity} comes from a time-dependent run; the index does not include the error of sampling a finite number of cycles.";
+const GCI_WARN_WALL_FUNCTION: &str = "This study uses wall functions, so the near-wall cell size changes with the mesh and the order of {quantity} is less reliable.";
+const GCI_WARN_NOISE: &str = "The noise in {quantity} is large against its change between meshes; the study is noise limited.";
+const GCI_WARN_NOT_REFINED: &str =
+    "The meshes for {quantity} are not refined by the same ratio each time.";
+const GCI_CREATED: &str = "Created the mesh independence sweep {sweep} with {points} meshes.";
+const GCI_WAITING: &str =
+    "The mesh independence sweep {sweep} is not finished: {missing} have no recorded result.";
+const BENCHMARK_PASSED: &str =
+    "{benchmark}: every metric is within its tolerance ({metrics} checked).";
+const BENCHMARK_FAILED: &str = "{benchmark}: outside tolerance on {failed}.";
+const BENCHMARK_NOT_MATCHING: &str = "This study is not the {benchmark} benchmark: {differences}.";
+const BENCHMARK_LISTED: &str = "{id}: {title} ({reference}).";
+const BENCHMARK_CREATED: &str = "Wrote the {benchmark} study at the {mesh} mesh to {path}.";
+const BENCHMARK_RESULTS_INCOMPLETE: &str =
+    "The results lack {file}, which the {benchmark} comparison needs.";
+const BENCHMARK_OVERRIDE_USED: &str =
+    "A tolerance override was used for {benchmark}; the table shows the tolerance in force.";
+const BENCHMARK_NOT_CONVERGED: &str = "Warning: the run behind this {benchmark} verdict is NOT CONVERGED ({reasons}). The verdict compares the numbers as they stand; it does not say they have settled.";
+const BENCHMARK_CONVERGENCE_UNKNOWN: &str = "Warning: whether the run behind this {benchmark} verdict had settled is UNKNOWN ({reasons}). The verdict compares the numbers as they stand; it does not say they have settled.";
+const REASON_MESH_LEVEL: &str = "mesh level {from} → {to}";
+const REASON_GRADING: &str = "grading in {axis} {from} → {to}";
+const REASON_SHAPE: &str = "domain shape {from} → {to}";
+const REASON_INLET_PROFILE: &str = "{boundary} inlet profile {from} → {to}";
+const REASON_PHYSICS: &str = "{what} {from} → {to}";
+const REASON_THERMAL: &str = "{boundary} thermal condition {from} → {to}";
 
 /// Every English source text: the plain templates and both forms of each plural pair.
 pub const SOURCES: &[&str] = &[
@@ -320,6 +351,32 @@ pub const SOURCES: &[&str] = &[
     VERDICT_NOT_CONVERGED,
     VERDICT_NOT_JUDGED,
     REASON_MONITOR,
+    GCI_SUMMARY,
+    GCI_ORDER_NONE,
+    GCI_WARN_OSCILLATORY,
+    GCI_WARN_ORDER,
+    GCI_WARN_ASYMPTOTIC,
+    GCI_WARN_TRANSIENT,
+    GCI_WARN_WALL_FUNCTION,
+    GCI_WARN_NOISE,
+    GCI_WARN_NOT_REFINED,
+    GCI_CREATED,
+    GCI_WAITING,
+    BENCHMARK_PASSED,
+    BENCHMARK_FAILED,
+    BENCHMARK_NOT_MATCHING,
+    BENCHMARK_LISTED,
+    BENCHMARK_CREATED,
+    BENCHMARK_RESULTS_INCOMPLETE,
+    BENCHMARK_OVERRIDE_USED,
+    BENCHMARK_NOT_CONVERGED,
+    BENCHMARK_CONVERGENCE_UNKNOWN,
+    REASON_MESH_LEVEL,
+    REASON_GRADING,
+    REASON_SHAPE,
+    REASON_INLET_PROFILE,
+    REASON_PHYSICS,
+    REASON_THERMAL,
 ];
 
 /// One thing the document layer tells a person. Data only: the sentence is made by
@@ -829,6 +886,114 @@ pub enum Line {
         from: String,
         to: String,
     },
+    GciSummary {
+        quantity: String,
+        order: String,
+        gci_percent: String,
+        class: String,
+    },
+    GciOrderNone {
+        quantity: String,
+        class: String,
+    },
+    GciWarnOscillatory {
+        quantity: String,
+    },
+    GciWarnOrder {
+        quantity: String,
+        order: String,
+    },
+    GciWarnAsymptotic {
+        quantity: String,
+        ratio: String,
+    },
+    GciWarnTransient {
+        quantity: String,
+    },
+    GciWarnWallFunction {
+        quantity: String,
+    },
+    GciWarnNoise {
+        quantity: String,
+    },
+    GciWarnNotRefined {
+        quantity: String,
+    },
+    GciCreated {
+        sweep: String,
+        points: String,
+    },
+    GciWaiting {
+        sweep: String,
+        missing: String,
+    },
+    BenchmarkPassed {
+        benchmark: String,
+        metrics: String,
+    },
+    BenchmarkFailed {
+        benchmark: String,
+        failed: String,
+    },
+    BenchmarkNotMatching {
+        benchmark: String,
+        differences: String,
+    },
+    BenchmarkListed {
+        id: String,
+        title: String,
+        reference: String,
+    },
+    BenchmarkCreated {
+        benchmark: String,
+        mesh: String,
+        path: String,
+    },
+    BenchmarkResultsIncomplete {
+        benchmark: String,
+        file: String,
+    },
+    BenchmarkOverrideUsed {
+        benchmark: String,
+    },
+    /// The run a benchmark verdict was made on is not converged by its own assessment.
+    BenchmarkNotConverged {
+        benchmark: String,
+        reasons: String,
+    },
+    /// The run a benchmark verdict was made on has no usable convergence assessment.
+    BenchmarkConvergenceUnknown {
+        benchmark: String,
+        reasons: String,
+    },
+    ReasonMeshLevel {
+        from: String,
+        to: String,
+    },
+    ReasonGrading {
+        axis: String,
+        from: String,
+        to: String,
+    },
+    ReasonShape {
+        from: String,
+        to: String,
+    },
+    ReasonInletProfile {
+        boundary: String,
+        from: String,
+        to: String,
+    },
+    ReasonPhysics {
+        what: String,
+        from: String,
+        to: String,
+    },
+    ReasonThermal {
+        boundary: String,
+        from: String,
+        to: String,
+    },
 }
 
 impl Line {
@@ -978,6 +1143,32 @@ impl Line {
             Line::VerdictNotConverged { .. } => VERDICT_NOT_CONVERGED,
             Line::VerdictNotJudged { .. } => VERDICT_NOT_JUDGED,
             Line::ReasonMonitor { .. } => REASON_MONITOR,
+            Line::GciSummary { .. } => GCI_SUMMARY,
+            Line::GciOrderNone { .. } => GCI_ORDER_NONE,
+            Line::GciWarnOscillatory { .. } => GCI_WARN_OSCILLATORY,
+            Line::GciWarnOrder { .. } => GCI_WARN_ORDER,
+            Line::GciWarnAsymptotic { .. } => GCI_WARN_ASYMPTOTIC,
+            Line::GciWarnTransient { .. } => GCI_WARN_TRANSIENT,
+            Line::GciWarnWallFunction { .. } => GCI_WARN_WALL_FUNCTION,
+            Line::GciWarnNoise { .. } => GCI_WARN_NOISE,
+            Line::GciWarnNotRefined { .. } => GCI_WARN_NOT_REFINED,
+            Line::GciCreated { .. } => GCI_CREATED,
+            Line::GciWaiting { .. } => GCI_WAITING,
+            Line::BenchmarkPassed { .. } => BENCHMARK_PASSED,
+            Line::BenchmarkFailed { .. } => BENCHMARK_FAILED,
+            Line::BenchmarkNotMatching { .. } => BENCHMARK_NOT_MATCHING,
+            Line::BenchmarkListed { .. } => BENCHMARK_LISTED,
+            Line::BenchmarkCreated { .. } => BENCHMARK_CREATED,
+            Line::BenchmarkResultsIncomplete { .. } => BENCHMARK_RESULTS_INCOMPLETE,
+            Line::BenchmarkOverrideUsed { .. } => BENCHMARK_OVERRIDE_USED,
+            Line::BenchmarkNotConverged { .. } => BENCHMARK_NOT_CONVERGED,
+            Line::BenchmarkConvergenceUnknown { .. } => BENCHMARK_CONVERGENCE_UNKNOWN,
+            Line::ReasonMeshLevel { .. } => REASON_MESH_LEVEL,
+            Line::ReasonGrading { .. } => REASON_GRADING,
+            Line::ReasonShape { .. } => REASON_SHAPE,
+            Line::ReasonInletProfile { .. } => REASON_INLET_PROFILE,
+            Line::ReasonPhysics { .. } => REASON_PHYSICS,
+            Line::ReasonThermal { .. } => REASON_THERMAL,
         }
     }
 
@@ -1247,6 +1438,85 @@ impl Line {
             Line::VerdictNotJudged { reason } => vec![("reason", s(reason))],
             Line::ReasonMonitor { id, from, to } => {
                 vec![("id", s(id)), ("from", s(from)), ("to", s(to))]
+            }
+            Line::GciSummary {
+                quantity,
+                order,
+                gci_percent,
+                class,
+            } => vec![
+                ("quantity", s(quantity)),
+                ("order", s(order)),
+                ("gci_percent", s(gci_percent)),
+                ("class", s(class)),
+            ],
+            Line::GciOrderNone { quantity, class } => {
+                vec![("quantity", s(quantity)), ("class", s(class))]
+            }
+            Line::GciWarnOscillatory { quantity } => vec![("quantity", s(quantity))],
+            Line::GciWarnOrder { quantity, order } => {
+                vec![("quantity", s(quantity)), ("order", s(order))]
+            }
+            Line::GciWarnAsymptotic { quantity, ratio } => {
+                vec![("quantity", s(quantity)), ("ratio", s(ratio))]
+            }
+            Line::GciWarnTransient { quantity } => vec![("quantity", s(quantity))],
+            Line::GciWarnWallFunction { quantity } => vec![("quantity", s(quantity))],
+            Line::GciWarnNoise { quantity } => vec![("quantity", s(quantity))],
+            Line::GciWarnNotRefined { quantity } => vec![("quantity", s(quantity))],
+            Line::GciCreated { sweep, points } => vec![("sweep", s(sweep)), ("points", s(points))],
+            Line::GciWaiting { sweep, missing } => {
+                vec![("sweep", s(sweep)), ("missing", s(missing))]
+            }
+            Line::BenchmarkPassed { benchmark, metrics } => {
+                vec![("benchmark", s(benchmark)), ("metrics", s(metrics))]
+            }
+            Line::BenchmarkFailed { benchmark, failed } => {
+                vec![("benchmark", s(benchmark)), ("failed", s(failed))]
+            }
+            Line::BenchmarkNotMatching {
+                benchmark,
+                differences,
+            } => vec![("benchmark", s(benchmark)), ("differences", s(differences))],
+            Line::BenchmarkListed {
+                id,
+                title,
+                reference,
+            } => vec![
+                ("id", s(id)),
+                ("title", s(title)),
+                ("reference", s(reference)),
+            ],
+            Line::BenchmarkCreated {
+                benchmark,
+                mesh,
+                path,
+            } => vec![
+                ("benchmark", s(benchmark)),
+                ("mesh", s(mesh)),
+                ("path", s(path)),
+            ],
+            Line::BenchmarkResultsIncomplete { benchmark, file } => {
+                vec![("benchmark", s(benchmark)), ("file", s(file))]
+            }
+            Line::BenchmarkOverrideUsed { benchmark } => vec![("benchmark", s(benchmark))],
+            Line::BenchmarkNotConverged { benchmark, reasons }
+            | Line::BenchmarkConvergenceUnknown { benchmark, reasons } => {
+                vec![("benchmark", s(benchmark)), ("reasons", s(reasons))]
+            }
+            Line::ReasonMeshLevel { from, to } => vec![("from", s(from)), ("to", s(to))],
+            Line::ReasonGrading { axis, from, to } => {
+                vec![("axis", s(axis)), ("from", s(from)), ("to", s(to))]
+            }
+            Line::ReasonShape { from, to } => vec![("from", s(from)), ("to", s(to))],
+            Line::ReasonInletProfile { boundary, from, to } => {
+                vec![("boundary", s(boundary)), ("from", s(from)), ("to", s(to))]
+            }
+            Line::ReasonPhysics { what, from, to } => {
+                vec![("what", s(what)), ("from", s(from)), ("to", s(to))]
+            }
+            Line::ReasonThermal { boundary, from, to } => {
+                vec![("boundary", s(boundary)), ("from", s(from)), ("to", s(to))]
             }
         }
     }
@@ -1693,6 +1963,112 @@ impl Line {
                 id: t("probe_1"),
                 from: t("none"),
                 to: t("x 0.05 m, y 0.05 m, velocity"),
+            },
+            Line::GciSummary {
+                quantity: t("bench.step.reattachment"),
+                order: t("1.53"),
+                gci_percent: t("2.17"),
+                class: t("monotone"),
+            },
+            Line::GciOrderNone {
+                quantity: t("bench.step.reattachment"),
+                class: t("divergent"),
+            },
+            Line::GciWarnOscillatory {
+                quantity: t("bench.step.reattachment"),
+            },
+            Line::GciWarnOrder {
+                quantity: t("bench.step.reattachment"),
+                order: t("3.1"),
+            },
+            Line::GciWarnAsymptotic {
+                quantity: t("bench.step.reattachment"),
+                ratio: t("1.3"),
+            },
+            Line::GciWarnTransient {
+                quantity: t("bench.cylinder.st"),
+            },
+            Line::GciWarnWallFunction {
+                quantity: t("bench.step.reattachment"),
+            },
+            Line::GciWarnNoise {
+                quantity: t("bench.cylinder.cd_max"),
+            },
+            Line::GciWarnNotRefined {
+                quantity: t("bench.step.reattachment"),
+            },
+            Line::GciCreated {
+                sweep: t("levels"),
+                points: t("3"),
+            },
+            Line::GciWaiting {
+                sweep: t("levels"),
+                missing: t("level-1, level-2"),
+            },
+            Line::BenchmarkPassed {
+                benchmark: t("step"),
+                metrics: t("2"),
+            },
+            Line::BenchmarkFailed {
+                benchmark: t("step"),
+                failed: t("reattachment"),
+            },
+            Line::BenchmarkNotMatching {
+                benchmark: t("step"),
+                differences: t("the step height differs"),
+            },
+            Line::BenchmarkListed {
+                id: t("step"),
+                title: t("Backward-facing step"),
+                reference: t("Driver and Seegmiller 1985"),
+            },
+            Line::BenchmarkCreated {
+                benchmark: t("step"),
+                mesh: t("medium"),
+                path: t("step.json"),
+            },
+            Line::BenchmarkResultsIncomplete {
+                benchmark: t("step"),
+                file: t("log.simpleFoam"),
+            },
+            Line::BenchmarkOverrideUsed {
+                benchmark: t("step"),
+            },
+            Line::BenchmarkNotConverged {
+                benchmark: t("step"),
+                reasons: t("not_settled:floor"),
+            },
+            Line::BenchmarkConvergenceUnknown {
+                benchmark: t("step"),
+                reasons: t("unknown: the run recorded no assessment"),
+            },
+            Line::ReasonMeshLevel {
+                from: t("0"),
+                to: t("1"),
+            },
+            Line::ReasonGrading {
+                axis: t("x"),
+                from: t("1"),
+                to: t("1.2"),
+            },
+            Line::ReasonShape {
+                from: t("box"),
+                to: t("backward step"),
+            },
+            Line::ReasonInletProfile {
+                boundary: t("feed"),
+                from: t("uniform"),
+                to: t("parabolic"),
+            },
+            Line::ReasonPhysics {
+                what: t("turbulence"),
+                from: t("laminar"),
+                to: t("k-omega SST"),
+            },
+            Line::ReasonThermal {
+                boundary: t("hot"),
+                from: t("none"),
+                to: t("fixed 307.8 K"),
             },
         ]
     }

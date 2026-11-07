@@ -1,12 +1,15 @@
-//! An MCP server over stdio that offers thirty-five typed operations and nothing else: create and
+//! An MCP server over stdio that offers forty typed operations and nothing else: create and
 //! validate a study, compile and export it, save, open, pack and unpack a document, start, poll
 //! and collect a run, start a job on a document (solve it or one of its variants, rerun a recorded
 //! result, or update its mesh or its result), and read what a document records: whether it is up
 //! to date and why not, its runs, the checks and key numbers of a run, what a run was made from,
 //! how two runs compare and what an update would do. Variants of a document are listed, shown,
 //! diffed, created, changed and labelled; sweeps of a document are planned, stored and checked
-//! before anything is solved; disk use is read per variant, and stored results are pruned only by
-//! the one tool that does it, which shows a plan unless it is told to apply it. A solve is put in
+//! before anything is solved; benchmark studies are listed and made as text, a recorded run is checked
+//! against the published reference of its benchmark, and a mesh independence sweep is stored in a
+//! document and its grid convergence index read from the recorded results; disk use is read per
+//! variant, and stored results are pruned only by the one tool that does it, which shows a plan
+//! unless it is told to apply it. A solve is put in
 //! the document's queue and a background runner, which outlives the server, advances it; the queue
 //! is listed, added to, reordered and cancelled, a running job is asked to stop, and its monitors
 //! and log are read from the copies the runner keeps on this machine. The reading operations write
@@ -24,9 +27,9 @@ use cfdcraft_drain::{
 };
 use cfdcraft_model::Diagnostic;
 use cfdcraft_ops::{
-    AddRequest, DocJobKind, ExitClass, HolderInfo, JobView, Report, Repro, ResultOutcome, RunMode,
-    RunRegistry, ServerSettings, Stage, StartOutcome, Status, Workspace, cases::cli_problem,
-    queue_file::QueueFile, scenario_ops::LabelUpdate,
+    AddRequest, BenchmarkOptions, DocJobKind, ExitClass, HolderInfo, JobView, Report, Repro,
+    ResultOutcome, RunMode, RunRegistry, ServerSettings, Stage, StartOutcome, Status, Workspace,
+    cases::cli_problem, queue_file::QueueFile, scenario_ops::LabelUpdate,
 };
 use cfdcraft_text::{Line, Text};
 use rmcp::{
@@ -244,6 +247,83 @@ struct SweepOfArgs {
     name: String,
     /// The id of a sweep stored in the document, from `sweep_create`.
     sweep: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NoArgs {}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct BenchmarkCreateArgs {
+    /// The benchmark template to make a study of, from `benchmark_list`: `lid-cavity`,
+    /// `backward-step`, `backward-step-laminar`, `cylinder` or `heated-cavity`.
+    benchmark: String,
+    /// The mesh preset: `coarse`, `medium` (the default) or `fine`.
+    #[serde(default)]
+    mesh: Option<String>,
+    /// The turbulence model: `laminar`, `k-omega-sst`, `realizable-ke` or `rng-k-epsilon`. Left
+    /// out, the template's own model is used.
+    #[serde(default)]
+    turbulence: Option<String>,
+    /// `steady` or `transient`. Left out, the template's own choice is used.
+    #[serde(default)]
+    time: Option<String>,
+    /// The time step at the coarse mesh, in seconds, above zero. For a transient study only.
+    #[serde(default)]
+    delta_t: Option<f64>,
+    /// How the fields start: `uniform` or `potential`.
+    #[serde(default)]
+    init: Option<String>,
+    /// The Rayleigh number, above zero. The heated cavity only.
+    #[serde(default)]
+    rayleigh: Option<f64>,
+    /// The Reynolds number, above zero. The laminar step only.
+    #[serde(default)]
+    reynolds: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct BenchmarkCheckArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// A run id from `list_runs`. Without it the newest run that recorded a result and is not a
+    /// rerun is used.
+    #[serde(default)]
+    run: Option<String>,
+    /// The benchmark the study must be, from `benchmark_list`. Without it the study selects its own.
+    #[serde(default)]
+    benchmark: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GciCreateArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of the sweep to store: a plain name, 1 to 40 lower-case letters, digits or hyphens.
+    /// Its points are called `<sweep>-001`, `<sweep>-002`, and so on.
+    sweep: String,
+    /// The id of the variant the points descend from, or `base` (the default) for the study itself.
+    #[serde(default)]
+    scenario: Option<String>,
+    /// The mesh levels, three to five, each above the one before and at most 4. Left out, 0, 1
+    /// and 2.
+    #[serde(default)]
+    levels: Option<Vec<u32>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GciReportArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of a mesh independence sweep stored in the document, from `gci_create`.
+    sweep: String,
+    /// The name of the key number to analyse, as `get_run_result` lists it, such as
+    /// `bench.cylinder.st`.
+    quantity: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -503,6 +583,16 @@ struct LogArgs {
 }
 
 // ---- tool results ----
+
+/// A benchmark study made as text, with the report of the checks it passed.
+#[derive(Serialize, JsonSchema)]
+struct BenchmarkStudy {
+    /// The study, as the text of a study file. Absent when the request was refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    study: Option<String>,
+    /// The findings; a refusal is exit class 2.
+    report: Report,
+}
 
 #[derive(Serialize, JsonSchema)]
 struct StartRunOutput {
@@ -1351,6 +1441,91 @@ impl CfdServer {
     }
 
     #[tool(
+        name = "benchmark_list",
+        description = "List the benchmark templates a study can be made from, each with its reference, its defaults and the quantities a run of it is compared on. Writes nothing and starts nothing."
+    )]
+    async fn benchmark_list(
+        &self,
+        Parameters(_): Parameters<NoArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.benchmark_list()).await
+    }
+
+    #[tool(
+        name = "benchmark_create",
+        description = "Make the study of a benchmark template with a mesh preset and physics options and return it as text; the study is checked first. Stores nothing, writes nothing and starts nothing: save it with create_study."
+    )]
+    async fn benchmark_create(
+        &self,
+        Parameters(a): Parameters<BenchmarkCreateArgs>,
+    ) -> Result<Json<BenchmarkStudy>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            let options = BenchmarkOptions {
+                mesh: a.mesh,
+                turbulence: a.turbulence,
+                time: a.time,
+                delta_t: a.delta_t,
+                init: a.init,
+                rayleigh: a.rayleigh,
+                reynolds: a.reynolds,
+            };
+            let (report, study) = s.workspace.benchmark_create(&a.benchmark, &options);
+            BenchmarkStudy { study, report }
+        })
+        .await
+    }
+
+    #[tool(
+        name = "benchmark_check",
+        description = "Check the stored result of a recorded run of a stored document against the published reference of its benchmark, metric by metric with the tolerance used. A metric outside its tolerance is exit class 1. The gate also says whether the run had converged (gate.convergence.converged and its reason; unknown when the run recorded no assessment): a flag beside the verdict, which it never changes. Writes nothing and starts nothing."
+    )]
+    async fn benchmark_check(
+        &self,
+        Parameters(a): Parameters<BenchmarkCheckArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            s.workspace
+                .benchmark_check(&a.name, a.run.as_deref(), a.benchmark.as_deref())
+        })
+        .await
+    }
+
+    #[tool(
+        name = "gci_create",
+        description = "Store a mesh independence sweep in the named document: one variant for each of three to five mesh levels. Changes only the document named and starts nothing; solve the points with queue_add."
+    )]
+    async fn gci_create(
+        &self,
+        Parameters(a): Parameters<GciCreateArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            s.workspace.gci_create(
+                &a.name,
+                &a.sweep,
+                a.scenario.as_deref(),
+                a.levels.as_deref(),
+            )
+        })
+        .await
+    }
+
+    #[tool(
+        name = "gci_report",
+        description = "Report the observed order of convergence and the grid convergence index of a key number over the points of a stored mesh independence sweep, from the results already recorded. Reads recorded key numbers, writes nothing and starts nothing."
+    )]
+    async fn gci_report(
+        &self,
+        Parameters(a): Parameters<GciReportArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.gci_report(&a.name, &a.sweep, &a.quantity)).await
+    }
+
+    #[tool(
         name = "disk_use",
         description = "Say how much stored result each variant of a stored document holds, in bytes: its mesh, its result, what it shares with another variant and what was pruned. Writes nothing and starts nothing."
     )]
@@ -1540,7 +1715,7 @@ impl CfdServer {
 #[tool_handler(
     router = self.tool_router,
     name = "cfdcraft",
-    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result). A solve is queued and answered with a job id that goes on when the server stops; a rerun or an update runs at once, one at a time. Poll a job with run_status, watch it with run_monitors and run_log, reorder or cancel the queue, ask a running job to stop with run_stop, and read how it ended with get_result. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
+    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result). A solve is queued and answered with a job id that goes on when the server stops; a rerun or an update runs at once, one at a time. Poll a job with run_status, watch it with run_monitors and run_log, reorder or cancel the queue, ask a running job to stop with run_stop, and read how it ended with get_result. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, benchmark studies are listed and made as text, a recorded run is checked against the published reference of its benchmark, a mesh independence sweep is stored and its grid convergence index read from recorded results, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
 )]
 impl ServerHandler for CfdServer {}
 

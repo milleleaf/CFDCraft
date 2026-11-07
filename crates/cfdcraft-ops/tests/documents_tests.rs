@@ -154,10 +154,10 @@ fn an_older_file_opens_with_its_migration_note() {
     passed(&opened.report);
     assert_eq!(opened.report.study_hash.as_deref(), Some(CAVITY_HASH));
     let note = opened.report.migration.as_ref().unwrap();
-    assert_eq!((note.from, note.to), (0, 4));
+    assert_eq!((note.from, note.to), (0, 5));
     // The report folds the whole chain into one note: the summaries of the steps, one space apart.
     let steps = open(&path).unwrap().notes;
-    assert_eq!(steps.len(), 4);
+    assert_eq!(steps.len(), 5);
     let joined = steps
         .iter()
         .map(|n| n.summary.as_str())
@@ -167,7 +167,7 @@ fn an_older_file_opens_with_its_migration_note() {
         note.summary,
         say(&Line::Migrated {
             from: 0,
-            to: 4,
+            to: 5,
             summary: joined
         })
     );
@@ -197,7 +197,7 @@ fn a_newer_file_is_refused_from_the_manifest_alone() {
         found.message,
         say(&Line::NewerSchema {
             found: 9,
-            supported: 4
+            supported: 5
         })
     );
     assert_eq!(opened.line, None);
@@ -424,7 +424,7 @@ fn linking_an_older_file_says_it_was_saved() {
     let linked = link_file(&path, &step, "room");
     passed(&linked.report);
     let note = linked.report.migration.as_ref().unwrap();
-    assert_eq!((note.from, note.to), (0, 4));
+    assert_eq!((note.from, note.to), (0, 5));
     assert_eq!(
         note.summary,
         say(&Line::MigratedAndSaved {

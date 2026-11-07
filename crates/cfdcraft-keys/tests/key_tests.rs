@@ -115,10 +115,12 @@ fn the_mesh_recipe_never_holds_a_boundary_label() {
     assert!(mesh.patches.contains(&PatchRecipe {
         kind: BoundaryKind::MovingWall,
         faces: vec![Face::YMax],
+        thermal: None,
     }));
     assert!(mesh.patches.contains(&PatchRecipe {
         kind: BoundaryKind::NoSlipWall,
         faces: vec![Face::XMin, Face::XMax, Face::YMin],
+        thermal: None,
     }));
 }
 
@@ -135,8 +137,12 @@ fn a_tiny_recipe_has_the_pinned_text() {
         patches: vec![PatchRecipe {
             kind: BoundaryKind::NoSlipWall,
             faces: vec![Face::XMin],
+            thermal: None,
         }],
         cells: CellsRecipe { x: 2, y: 3, z: 1 },
+        level: 0,
+        grading: None,
+        shape: None,
         raw: Vec::new(),
     };
     assert_eq!(

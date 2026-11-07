@@ -58,7 +58,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run the Re=100 cavity and compare both centrelines with Ghia.
+    /// Run a benchmark study on the compute host and compare it with the published reference its study selects.
     Validate {
         study: PathBuf,
         #[arg(long)]
@@ -283,6 +283,17 @@ enum Commands {
         #[command(subcommand)]
         action: SweepAction,
     },
+    /// Make a mesh independence sweep of a study file and report the grid convergence index.
+    Gci {
+        #[command(subcommand)]
+        action: GciAction,
+    },
+    /// List the benchmark templates, write a complete study from one, and check a recorded run
+    /// against its published reference.
+    Benchmark {
+        #[command(subcommand)]
+        action: BenchmarkAction,
+    },
     /// Say how many bytes of stored results each variant of a study file holds, as JSON data.
     Disk {
         doc: PathBuf,
@@ -406,6 +417,95 @@ enum ScenarioAction {
         /// The new notes.
         #[arg(long)]
         notes: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
+enum GciAction {
+    /// Store a sweep over the mesh level, one variant for each level.
+    Create {
+        doc: PathBuf,
+        /// The id of the sweep to make.
+        #[arg(long)]
+        sweep: String,
+        /// The variant the sweep starts from; base is the study itself.
+        #[arg(long, default_value = "base")]
+        scenario: String,
+        /// The mesh levels, three to five, each above the one before.
+        #[arg(long, default_value = "0,1,2")]
+        levels: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report the observed order and the grid convergence index of one key number over the runs of a sweep.
+    Report {
+        doc: PathBuf,
+        /// The sweep made by `gci create`.
+        #[arg(long)]
+        sweep: String,
+        /// The key number to read from each run, such as bench.ghia.u_centre.
+        #[arg(long)]
+        quantity: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
+enum BenchmarkAction {
+    /// Print the benchmark templates, one line each.
+    List {
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a complete study for a benchmark template to a new file.
+    Create {
+        /// The template, as `benchmark list` names it.
+        id: String,
+        /// The study file to write; it must not exist yet.
+        #[arg(long)]
+        out: PathBuf,
+        /// The mesh preset: coarse, medium (the default) or fine.
+        #[arg(long)]
+        mesh: Option<String>,
+        /// The turbulence model; a word that is not one is refused with the list of words.
+        #[arg(long)]
+        turbulence: Option<String>,
+        /// Steady or transient.
+        #[arg(long)]
+        time: Option<String>,
+        /// The time step at the coarse mesh in seconds; a transient run only.
+        #[arg(long)]
+        delta_t: Option<f64>,
+        /// How the fields start: uniform or potential.
+        #[arg(long)]
+        init: Option<String>,
+        /// The Rayleigh number; the heated cavity only.
+        #[arg(long)]
+        rayleigh: Option<f64>,
+        /// The Reynolds number; the laminar step only.
+        #[arg(long)]
+        reynolds: Option<f64>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check the stored result of a recorded run against its published reference; a failed check exits 1. A run that is not converged is flagged and the verdict stays.
+    Check {
+        doc: PathBuf,
+        /// The run to check; by default the newest run that recorded a result and is not a rerun.
+        #[arg(long)]
+        run: Option<String>,
+        /// The benchmark the study must be; by default the study selects its own.
+        #[arg(long)]
+        benchmark: Option<String>,
+        /// A tolerance file, at most three times the shipped values and with a justification.
+        #[arg(long)]
+        tolerance_override: Option<PathBuf>,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -778,6 +878,62 @@ fn run() {
             SweepAction::Preflight { doc, sweep, json } => {
                 cmd::sweep::preflight(&doc, &sweep, json)
             }
+        },
+        Commands::Gci { action } => match action {
+            GciAction::Create {
+                doc,
+                sweep,
+                scenario,
+                levels,
+                json,
+            } => cmd::gci::create(&doc, &sweep, &scenario, &levels, json),
+            GciAction::Report {
+                doc,
+                sweep,
+                quantity,
+                json,
+            } => cmd::gci::report(&doc, &sweep, &quantity, json),
+        },
+        Commands::Benchmark { action } => match action {
+            BenchmarkAction::List { json } => cmd::benchmark::list(json),
+            BenchmarkAction::Create {
+                id,
+                out,
+                mesh,
+                turbulence,
+                time,
+                delta_t,
+                init,
+                rayleigh,
+                reynolds,
+                json,
+            } => cmd::benchmark::create(
+                &id,
+                &out,
+                &cfdcraft_ops::BenchmarkOptions {
+                    mesh,
+                    turbulence,
+                    time,
+                    delta_t,
+                    init,
+                    rayleigh,
+                    reynolds,
+                },
+                json,
+            ),
+            BenchmarkAction::Check {
+                doc,
+                run,
+                benchmark,
+                tolerance_override,
+                json,
+            } => cmd::benchmark::check(
+                &doc,
+                run.as_deref(),
+                benchmark.as_deref(),
+                tolerance_override.as_deref(),
+                json,
+            ),
         },
         Commands::Disk { doc, json } => cmd::disk::disk(&doc, json),
         Commands::Prune {

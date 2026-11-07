@@ -76,7 +76,7 @@ fn an_older_file_opens_migrated_and_says_what_changed() {
     );
     assert_eq!(opened.document.artifacts, ArtifactIndex::default());
     assert_eq!(opened.schema_version, 0);
-    assert_eq!(opened.notes.len(), 4);
+    assert_eq!(opened.notes.len(), 5);
     let first = &opened.notes[0];
     assert_eq!((first.from, first.to), (0, 1));
     assert!(first.summary.contains("lid") && first.summary.contains("walls"));
@@ -89,10 +89,13 @@ fn an_older_file_opens_migrated_and_says_what_changed() {
     let fourth = &opened.notes[3];
     assert_eq!((fourth.from, fourth.to), (3, 4));
     assert!(fourth.summary.contains("stopped and continued"));
+    let fifth = &opened.notes[4];
+    assert_eq!((fifth.from, fifth.to), (4, 5));
+    assert!(fifth.summary.contains("mesh level"));
 }
 
 #[test]
-fn a_schema_3_file_opens_with_one_plain_note_and_nothing_else_changes() {
+fn a_schema_3_file_opens_with_two_plain_notes_and_nothing_else_changes() {
     let bytes = archive(vec![
         ("manifest.json", manifest(json!(3)), DEFLATE),
         ("study.json", CAVITY.as_bytes().to_vec(), DEFLATE),
@@ -100,10 +103,38 @@ fn a_schema_3_file_opens_with_one_plain_note_and_nothing_else_changes() {
     let opened = from_bytes(&bytes).unwrap();
 
     assert_eq!(opened.schema_version, 3);
-    assert_eq!(opened.notes.len(), 1);
+    assert_eq!(opened.notes.len(), 2);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (3, 4));
+    assert_eq!((opened.notes[1].from, opened.notes[1].to), (4, 5));
     assert_eq!(opened.document.study, Study::from_json(CAVITY).unwrap());
     assert_eq!(opened.document.artifacts, ArtifactIndex::default());
+}
+
+#[test]
+fn a_schema_4_document_opens_with_one_note() {
+    let bytes = archive(vec![
+        ("manifest.json", manifest(json!(4)), DEFLATE),
+        ("study.json", CAVITY.as_bytes().to_vec(), DEFLATE),
+    ]);
+    let opened = from_bytes(&bytes).unwrap();
+
+    assert_eq!(opened.schema_version, 4);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (4, 5));
+    assert_eq!(opened.document.study, Study::from_json(CAVITY).unwrap());
+    assert_eq!(opened.document.artifacts, ArtifactIndex::default());
+}
+
+#[test]
+fn a_schema_6_document_is_refused() {
+    let bytes = archive(vec![
+        ("manifest.json", manifest(json!(6)), DEFLATE),
+        ("study.json", CAVITY.as_bytes().to_vec(), DEFLATE),
+    ]);
+    match from_bytes(&bytes).unwrap_err() {
+        DocError::NewerSchema { found, supported } => assert_eq!((found, supported), (6, 5)),
+        other => panic!("{other}"),
+    }
 }
 
 #[test]

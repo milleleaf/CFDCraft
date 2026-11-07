@@ -210,7 +210,7 @@ fn an_authored_outlet_pressure_names_the_unknown_field() {
 
 #[test]
 fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
-    assert_eq!(CODES.len(), 71);
+    assert_eq!(CODES.len(), 93);
     let mut seen = std::collections::BTreeSet::new();
     for (code, meaning) in CODES {
         let parts: Vec<_> = code.split('-').collect();
@@ -251,6 +251,19 @@ fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
         "CFD-MODEL-001",
         "CFD-MODEL-002",
         "CFD-MESH-001",
+        "CFD-MESH-002",
+        "CFD-SHAPE-001",
+        "CFD-SHAPE-002",
+        "CFD-SHAPE-003",
+        "CFD-SHAPE-004",
+        "CFD-PHYS-001",
+        "CFD-PHYS-002",
+        "CFD-PHYS-003",
+        "CFD-PHYS-004",
+        "CFD-PHYS-005",
+        "CFD-PHYS-006",
+        "CFD-PHYS-007",
+        "CFD-BC-007",
         "CFD-WARN-001",
         "CFD-WARN-002",
         "CFD-RAW-001",
@@ -265,6 +278,9 @@ fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
         "CFD-MON-004",
         "CFD-MON-005",
         "CFD-MON-006",
+        "CFD-MON-007",
+        "CFD-MON-008",
+        "CFD-MON-009",
     ];
     for literal in emitters.split("\"CFD-").skip(1) {
         let code = format!("CFD-{}", &literal[..literal.find('"').unwrap()]);
@@ -336,6 +352,8 @@ fn a_closed_domain_with_an_outlet_names_the_offending_boundary() {
             faces: vec![Face::XMax],
             kind: BoundaryKind::PressureOutlet,
             velocity: None,
+            profile: None,
+            thermal: None,
         },
     );
     let found = diagnose(&cavity, &writer_limits());

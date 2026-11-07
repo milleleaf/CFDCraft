@@ -11,6 +11,59 @@ impl Verdict {
     }
 }
 
+/// What a run of a given solver is judged on: the solver's name for the reasons, the field whose
+/// residual gates a steady run, whether a temperature residual exists, whether residual limits
+/// apply at all, and the log of the potential-flow step when there was one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidencePlan {
+    pub solver: String,
+    pub pressure: String,
+    pub temperature: bool,
+    pub residual_limits: bool,
+    pub potential_log: Option<String>,
+}
+
+impl EvidencePlan {
+    /// The steady laminar cavity solver: exactly what the judge has always assumed.
+    pub fn cavity() -> Self {
+        Self {
+            solver: "simpleFoam".into(),
+            pressure: "p".into(),
+            temperature: false,
+            residual_limits: true,
+            potential_log: None,
+        }
+    }
+
+    /// The fields whose last initial residual must be under a limit, with that limit.
+    fn checks(&self, p_threshold: f64, u_threshold: f64) -> Vec<(String, f64)> {
+        let mut checks = vec![
+            (self.pressure.clone(), p_threshold),
+            ("Ux".to_string(), u_threshold),
+            ("Uy".to_string(), u_threshold),
+        ];
+        if self.temperature {
+            checks.push(("T".to_string(), u_threshold));
+        }
+        checks
+    }
+
+    /// The checks of the plan's judge: none when no residual limit applies or none was asked for.
+    fn limits(&self, limits: Option<(f64, f64)>) -> Option<Vec<(String, f64)>> {
+        limits
+            .filter(|_| self.residual_limits)
+            .map(|(p, u)| self.checks(p, u))
+    }
+
+    /// The log of the potential-flow step must end and hold nothing fatal.
+    fn check_potential(&self, reasons: &mut Vec<String>) {
+        if let Some(text) = &self.potential_log {
+            ends(text, "potentialFoam", reasons);
+            fatal(text, "potentialFoam", reasons);
+        }
+    }
+}
+
 pub struct RunEvidence<'a> {
     pub block_mesh_log: &'a str,
     pub check_mesh_log: &'a str,
@@ -97,7 +150,11 @@ fn parse_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 fn final_time(log: &str) -> Option<f64> {
     log.lines()
         .filter_map(|l| l.trim().strip_prefix("Time = "))
-        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter_map(|s| {
+            // A transient run prints the time with its unit letter.
+            let s = s.trim();
+            s.strip_suffix('s').unwrap_or(s).trim().parse::<f64>().ok()
+        })
         .next_back()
 }
 
@@ -134,8 +191,9 @@ fn mesh(log: &str, cells: Option<u64>, volume: Option<f64>, reasons: &mut Vec<St
     }
 }
 
-/// `limits` is `Some((p, U))` for the convergence judge; `None` only checks that residuals are well formed.
-fn residuals(log: &str, limits: Option<(f64, f64)>, reasons: &mut Vec<String>) {
+/// `limits` is the list of fields and limits for the convergence judge; `None` only checks that
+/// residuals are well formed.
+fn residuals(log: &str, limits: Option<&[(String, f64)]>, reasons: &mut Vec<String>) {
     let mut last = BTreeMap::new();
     let mut seen_time = false;
     for line in log.lines() {
@@ -159,19 +217,20 @@ fn residuals(log: &str, limits: Option<(f64, f64)>, reasons: &mut Vec<String>) {
     if !seen_time {
         reasons.push("solver: no iteration blocks".into());
     }
-    let Some((p_threshold, u_threshold)) = limits else {
+    let Some(limits) = limits else {
         // Smoke: no limits, but a run that solved nothing in its final iteration never iterated.
         if seen_time && last.is_empty() {
             reasons.push("solver: no solved field in the final iteration".into());
         }
         return;
     };
-    for (field, threshold) in [("p", p_threshold), ("Ux", u_threshold), ("Uy", u_threshold)] {
+    for (field, threshold) in limits {
+        let threshold = *threshold;
         if !threshold.is_finite() || threshold <= 0.0 {
             reasons.push(format!("solver: invalid {field} convergence threshold"));
             continue;
         }
-        match last.get(field).copied().flatten() {
+        match last.get(field.as_str()).copied().flatten() {
             Some(value) if value.is_finite() && value >= 0.0 && value <= threshold => {}
             Some(value) => reasons.push(format!(
                 "solver: final iteration {field} initial residual {value} exceeds {threshold}"
@@ -189,16 +248,18 @@ fn judge_evidence(
     cell_count: u64,
     domain_volume: f64,
     limits: Option<(f64, f64)>,
+    plan: &EvidencePlan,
 ) -> Verdict {
     let mut reasons = Vec::new();
     for (name, log) in [
         ("blockMesh", e.block_mesh_log),
         ("checkMesh", e.check_mesh_log),
-        ("simpleFoam", e.solver_log),
+        (plan.solver.as_str(), e.solver_log),
     ] {
         ends(log, name, &mut reasons);
         fatal(log, name, &mut reasons);
     }
+    plan.check_potential(&mut reasons);
     if !final_time(e.solver_log).is_some_and(|t| close(t, end_time)) {
         reasons.push(format!("solver: final time differs from {end_time}"));
     }
@@ -219,18 +280,29 @@ fn judge_evidence(
         Some(domain_volume),
         &mut reasons,
     );
-    residuals(e.solver_log, limits, &mut reasons);
+    residuals(e.solver_log, plan.limits(limits).as_deref(), &mut reasons);
     verdict(reasons)
 }
 
 /// Judge each step and actual output-directory evidence; the process exit code is deliberately absent.
 pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdict {
+    judge_run_with(e, expected, &EvidencePlan::cavity())
+}
+
+/// `judge_run` for the solver of a plan. A plan without residual limits (a transient run) is
+/// judged on its end markers, its end time and its fields, and its residuals must be well formed.
+pub fn judge_run_with(
+    e: &RunEvidence<'_>,
+    expected: &EvidenceExpectations,
+    plan: &EvidencePlan,
+) -> Verdict {
     judge_evidence(
         e,
         expected.end_time,
         expected.cell_count,
         expected.domain_volume,
         Some((expected.p_threshold, expected.u_threshold)),
+        plan,
     )
 }
 
@@ -238,12 +310,22 @@ pub fn judge_run(e: &RunEvidence<'_>, expected: &EvidenceExpectations) -> Verdic
 /// correctness, so callers must always label its result as a smoke result and never as a validated one.
 /// Every rule of `judge_run` applies except the residual limits.
 pub fn judge_smoke(e: &RunEvidence<'_>, expected: &SmokeExpectations) -> Verdict {
+    judge_smoke_with(e, expected, &EvidencePlan::cavity())
+}
+
+/// `judge_smoke` for the solver of a plan.
+pub fn judge_smoke_with(
+    e: &RunEvidence<'_>,
+    expected: &SmokeExpectations,
+    plan: &EvidencePlan,
+) -> Verdict {
     judge_evidence(
         e,
         expected.end_time,
         expected.cell_count,
         expected.domain_volume,
         None,
+        plan,
     )
 }
 
@@ -260,15 +342,25 @@ pub struct PartialExpectations {
 /// and lies in `(0, end_time]`). It proves nothing about convergence, so its result must never be
 /// stored or shown as a finished run.
 pub fn judge_partial(e: &RunEvidence<'_>, expected: &PartialExpectations) -> Verdict {
+    judge_partial_with(e, expected, &EvidencePlan::cavity())
+}
+
+/// `judge_partial` for the solver of a plan.
+pub fn judge_partial_with(
+    e: &RunEvidence<'_>,
+    expected: &PartialExpectations,
+    plan: &EvidencePlan,
+) -> Verdict {
     let mut reasons = Vec::new();
     for (name, log) in [
         ("blockMesh", e.block_mesh_log),
         ("checkMesh", e.check_mesh_log),
-        ("simpleFoam", e.solver_log),
+        (plan.solver.as_str(), e.solver_log),
     ] {
         ends(log, name, &mut reasons);
         fatal(log, name, &mut reasons);
     }
+    plan.check_potential(&mut reasons);
     let newest = e
         .time_directories
         .iter()
@@ -312,6 +404,7 @@ pub fn judge(log_text: &str, expected_end_time: f64, expected_cell_count: Option
         reasons.push("solver: final time mismatch".into());
     }
     mesh(log_text, expected_cell_count, None, &mut reasons);
-    residuals(log_text, Some((1e-6, 1e-6)), &mut reasons);
+    let checks = EvidencePlan::cavity().checks(1e-6, 1e-6);
+    residuals(log_text, Some(&checks), &mut reasons);
     verdict(reasons)
 }

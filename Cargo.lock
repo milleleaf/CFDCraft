@@ -179,6 +179,7 @@ dependencies = [
  "cfdcraft-settle",
  "schemars",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -188,14 +189,52 @@ version = "0.1.0"
 dependencies = [
  "cfdcraft-dictedit",
  "cfdcraft-model",
+ "cfdcraft-shapes",
  "ryu",
  "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-bench-cylinder"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-monitors",
+ "cfdcraft-settle",
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "cfdcraft-bench-dvd"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-monitors",
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]
 name = "cfdcraft-bench-ghia"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "cfdcraft-bench-step"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-monitors",
+ "serde",
  "thiserror",
  "toml",
 ]
@@ -215,6 +254,7 @@ name = "cfdcraft-cli"
 version = "0.1.0"
 dependencies = [
  "cfdcraft-backend-esi",
+ "cfdcraft-bench-cylinder",
  "cfdcraft-capture",
  "cfdcraft-compare",
  "cfdcraft-doc",
@@ -322,6 +362,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-gate"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-bench-ghia",
+ "cfdcraft-model",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cfdcraft-gci"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-keys"
 version = "0.1.0"
 dependencies = [
@@ -374,6 +434,7 @@ name = "cfdcraft-model"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "cfdcraft-shapes",
  "schemars",
  "serde",
  "serde_jcs",
@@ -396,12 +457,17 @@ version = "0.1.0"
 dependencies = [
  "cfdcraft-assess",
  "cfdcraft-backend-esi",
+ "cfdcraft-bench-cylinder",
+ "cfdcraft-bench-dvd",
  "cfdcraft-bench-ghia",
+ "cfdcraft-bench-step",
  "cfdcraft-capture",
  "cfdcraft-compare",
  "cfdcraft-diskuse",
  "cfdcraft-doc",
  "cfdcraft-executor",
+ "cfdcraft-gate",
+ "cfdcraft-gci",
  "cfdcraft-keys",
  "cfdcraft-model",
  "cfdcraft-monitors",
@@ -410,8 +476,10 @@ dependencies = [
  "cfdcraft-runs",
  "cfdcraft-scenarios",
  "cfdcraft-settle",
+ "cfdcraft-shapes",
  "cfdcraft-store",
  "cfdcraft-sweep",
+ "cfdcraft-templates",
  "cfdcraft-text",
  "craft-atomic",
  "schemars",
@@ -506,6 +574,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-shapes"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-store"
 version = "0.1.0"
 dependencies = [
@@ -523,6 +598,16 @@ version = "0.1.0"
 dependencies = [
  "schemars",
  "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-templates"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-model",
+ "cfdcraft-shapes",
  "serde_json",
  "thiserror",
 ]

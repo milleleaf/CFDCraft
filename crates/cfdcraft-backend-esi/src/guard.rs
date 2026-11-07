@@ -20,12 +20,15 @@ const DEPTH_MAX: usize = 16;
 pub const REFUSALS_MAX: usize = 1000;
 /// Library names a case may load, bare. Extending this list is a reviewed change to this constant.
 /// `sampling` holds the probes and sets; `fieldFunctionObjects` holds the flux and average
-/// function objects that watch the patches.
-const ALLOWED_LIBS: [&str; 4] = [
+/// function objects that watch the patches; `forces` holds the force and force coefficient
+/// function objects (the library file is `libforces`, source `src/functionObjects/forces`).
+const ALLOWED_LIBS: [&str; 6] = [
     "sampling",
     "libsampling.so",
     "fieldFunctionObjects",
     "libfieldFunctionObjects.so",
+    "forces",
+    "libforces.so",
 ];
 
 /// Which kind of construct a refusal is about. `code()` is stable.

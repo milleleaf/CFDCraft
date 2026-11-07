@@ -14,7 +14,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// The schema version this build writes and fully understands.
-pub const CURRENT_SCHEMA: u32 = 4;
+pub const CURRENT_SCHEMA: u32 = 5;
 
 /// The members of a document that a migration step may change.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +65,10 @@ pub const STEPS: &[Step] = &[
     Step {
         from: 3,
         apply: v3_to_v4,
+    },
+    Step {
+        from: 4,
+        apply: v4_to_v5,
     },
 ];
 
@@ -140,6 +144,24 @@ fn v3_to_v4(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
                       whether each result had converged. This file has none yet. Nothing else \
                       changed."
                     .to_owned(),
+        },
+    ))
+}
+
+/// Schema 5 lets the recipes in the artifact index carry a mesh level, a wall grading, a domain
+/// shape, thermal conditions on the walls, the physics of the run, force monitors and the
+/// monitors' boundaries. Each is optional and an absent one reads as a plain box, steady and
+/// laminar, so nothing in the file changes; the step only moves the number and says so.
+fn v4_to_v5(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
+    Ok((
+        parts,
+        MigrationNote {
+            from: 4,
+            to: 5,
+            summary: "This file can now keep results of studies with a mesh level, other shapes, \
+                      turbulence models, time-dependent and buoyant physics, and the benchmark \
+                      numbers recorded with them. This file has none yet. Nothing else changed."
+                .to_owned(),
         },
     ))
 }

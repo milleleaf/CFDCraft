@@ -71,8 +71,18 @@ fn the_dictionary_editor_is_listed_and_is_one_file() {
 }
 
 #[test]
-fn the_writer_sources_list_has_nine_files_including_monitors_rs() {
-    assert_eq!(WRITER_SOURCES.len(), 9);
+fn the_writer_sources_list_has_twelve_files_including_the_solver_plan_and_the_fields() {
+    assert_eq!(WRITER_SOURCES.len(), 12);
+    assert!(WRITER_SOURCES.iter().any(|(name, _)| *name == "fields.rs"));
+    assert!(!NOT_THE_WRITER.contains(&"fields.rs"));
+    assert!(
+        WRITER_SOURCES
+            .iter()
+            .any(|(name, _)| *name == "solver_plan.rs")
+    );
+    assert!(!NOT_THE_WRITER.contains(&"solver_plan.rs"));
+    assert!(WRITER_SOURCES.iter().any(|(name, _)| *name == "patches.rs"));
+    assert!(!NOT_THE_WRITER.contains(&"patches.rs"));
     assert!(
         WRITER_SOURCES
             .iter()

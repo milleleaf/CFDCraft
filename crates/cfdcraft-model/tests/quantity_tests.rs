@@ -191,10 +191,14 @@ fn negative_lid_velocity_is_valid_and_zero_is_not() {
 fn cell_counts_keep_u64_boundary_values_without_loss() {
     let mut input = study();
     input.mesh.cells_x = 1;
-    input.mesh.cells_y = u64::MAX;
+    // The most cells a run can hold (2^26) resolve exactly.
+    input.mesh.cells_y = 1 << 26;
     let resolved = resolve(&input).unwrap();
     assert_eq!(resolved.mesh.cells_x, 1);
-    assert_eq!(resolved.mesh.cells_y, u64::MAX);
+    assert_eq!(resolved.mesh.cells_y, 1 << 26);
+    // u64::MAX is not wrapped or truncated into a small count: the mesh limit (CFD-MESH-002) refuses it.
+    input.mesh.cells_y = u64::MAX;
+    assert_eq!(first_error(&input).0, "CFD-MESH-002");
 }
 
 #[test]

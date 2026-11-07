@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::tick::SPEC;
 
-/// The log shown to a person.
-const SOLVER_LOG: &str = "log.simpleFoam";
+/// The solver log of a job whose specification names none.
+const DEFAULT_SOLVER_LOG: &str = "log.simpleFoam";
 /// How far back from an offset to look for the start of its line.
 const LINE_WINDOW: u64 = 4096;
 /// The most bytes one view of the log reads.
@@ -133,6 +133,34 @@ pub struct LogView {
     pub text: String,
     /// Where the next piece begins.
     pub next_offset: u64,
+}
+
+/// The name of the solver log of the job whose live folder is `live`, from the specification
+/// written when the job started. A specification that is missing, unreadable, from before the log
+/// had a name, or that names something other than a plain file name gives the default.
+pub fn solver_log_of(live: &Path) -> String {
+    let named = fs::read_to_string(live.join(SPEC))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .pointer("/spec/log_file")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        });
+    match named {
+        Some(name) if is_plain_file_name(&name) => name,
+        _ => DEFAULT_SOLVER_LOG.to_owned(),
+    }
+}
+
+/// Whether `name` is one file name: not empty, no separator, not a dot name, no control character.
+fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
 }
 
 fn clean(job: &str) -> String {
@@ -265,7 +293,7 @@ pub fn log(doc: &Path, job: &str, offset: u64, lines: usize) -> Result<LogView, 
         text: String::new(),
         next_offset: offset,
     };
-    let Ok(mut file) = fs::File::open(live.join(SOLVER_LOG)) else {
+    let Ok(mut file) = fs::File::open(live.join(solver_log_of(&live))) else {
         return Ok(empty);
     };
     let len = file.metadata().map_err(io)?.len();

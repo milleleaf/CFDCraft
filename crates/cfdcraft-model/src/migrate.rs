@@ -81,6 +81,8 @@ pub fn migrate_v0_to_v1(old: StudyV0) -> (Study, MigrationNote) {
                 faces: vec![Face::YMax],
                 kind: BoundaryKind::MovingWall,
                 velocity: Some(old.boundary_conditions.lid_velocity),
+                profile: None,
+                thermal: None,
             },
         ),
         (
@@ -89,6 +91,8 @@ pub fn migrate_v0_to_v1(old: StudyV0) -> (Study, MigrationNote) {
                 faces: vec![Face::XMin, Face::XMax, Face::YMin],
                 kind: BoundaryKind::NoSlipWall,
                 velocity: None,
+                profile: None,
+                thermal: None,
             },
         ),
     ]);
@@ -99,6 +103,7 @@ pub fn migrate_v0_to_v1(old: StudyV0) -> (Study, MigrationNote) {
             length_y: old.domain.length_y,
             length_z: old.domain.length_z,
             open: false,
+            shape: None,
         },
         fluid: old.fluid,
         boundary_conditions,
@@ -106,6 +111,7 @@ pub fn migrate_v0_to_v1(old: StudyV0) -> (Study, MigrationNote) {
         solver: old.solver,
         monitors: old.monitors,
         raw_overrides: BTreeMap::new(),
+        physics: None,
     };
     let note = MigrationNote {
         from: 0,

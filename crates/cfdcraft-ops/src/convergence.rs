@@ -15,17 +15,17 @@ use std::fs;
 use std::path::Path;
 
 use cfdcraft_assess::{
-    Assessment, Files, LineSpec, PatchSpec, ProbeSpec, Spec, SurfaceQuantityKind, SurfaceSpec,
-    assess,
+    Assessment, Files, ForceSpec, HeatSpec, LineSpec, PatchSpec, ProbeSpec, Spec,
+    SurfaceQuantityKind, SurfaceSpec, assess,
 };
-use cfdcraft_backend_esi::monitors::balance_patches;
+use cfdcraft_backend_esi::{SolverPlan, monitors::balance_patches};
 use cfdcraft_capture::{entry_names, read_entry};
-use cfdcraft_model::{MonitorField, ResolvedStudy, Study, SurfaceQuantity};
+use cfdcraft_model::{
+    Face, MonitorField, PlannedSurface, ResolvedStudy, ResolvedThermal, Study, SurfaceQuantity,
+};
 use cfdcraft_monitors::FieldKind;
 use cfdcraft_settle::Settings;
 
-/// The log the solver writes, relative to the results folder.
-const SOLVER_LOG: &str = "log.simpleFoam";
 /// The most bytes one monitor file may hold.
 const MONITOR_FILE_CAP: u64 = 8 * 1024 * 1024;
 /// The most bytes the solver log may hold.
@@ -33,7 +33,14 @@ const LOG_CAP: u64 = 64 * 1024 * 1024;
 /// The most files read for one function object.
 const FILES_PER_OBJECT: usize = 200;
 /// The files a monitor function object writes into its time folders.
-const MONITOR_FILES: [&str; 5] = ["U", "p", "line_U.xy", "line_p.xy", "surfaceFieldValue.dat"];
+const MONITOR_FILES: [&str; 6] = [
+    "U",
+    "p",
+    "line_U.xy",
+    "line_p.xy",
+    "surfaceFieldValue.dat",
+    "coefficient.dat",
+];
 
 fn field_kind(field: MonitorField) -> FieldKind {
     match field {
@@ -47,16 +54,80 @@ fn surface_kind(quantity: SurfaceQuantity) -> SurfaceQuantityKind {
         SurfaceQuantity::Flux => SurfaceQuantityKind::Flux,
         SurfaceQuantity::PressureAverage => SurfaceQuantityKind::PressureAverage,
         SurfaceQuantity::PressureIntegral => SurfaceQuantityKind::PressureIntegral,
+        SurfaceQuantity::HeatFlux => SurfaceQuantityKind::HeatFlux,
     }
 }
 
-/// What a run of this study monitors: the probes, lines and surfaces of its monitor plan (the
-/// default probes when the study lists none), one flux per patch for the mass balance, and the
-/// residual limits the study asks for. A monitor with no label of its own is shown by its
+/// The part of a vector column a heat-flux surface reads: the axis its wall faces along (x for a
+/// side wall, y for a floor or a ceiling). `None` for a wall that faces neither, or for another
+/// quantity.
+fn heat_component(resolved: &ResolvedStudy, surface: &PlannedSurface) -> Option<usize> {
+    if surface.quantity != SurfaceQuantity::HeatFlux {
+        return None;
+    }
+    let boundary = resolved.boundary_conditions.get(&surface.boundary)?;
+    match boundary.faces.first()? {
+        Face::XMin | Face::XMax => Some(0),
+        Face::YMin | Face::YMax => Some(1),
+        Face::Obstacle => None,
+    }
+}
+
+/// The two heat-flux surfaces whose flows must balance: the study has exactly two, both on walls
+/// held at fixed and different temperatures. The hotter wall's object is `hot`.
+fn heat_pair(resolved: &ResolvedStudy, surfaces: &[PlannedSurface]) -> Option<HeatSpec> {
+    let heat: Vec<&PlannedSurface> = surfaces
+        .iter()
+        .filter(|s| s.quantity == SurfaceQuantity::HeatFlux)
+        .collect();
+    let [a, b] = heat.as_slice() else {
+        return None;
+    };
+    let (a, b) = (*a, *b);
+    let temperature = |s: &PlannedSurface| {
+        let boundary = resolved.boundary_conditions.get(&s.boundary)?;
+        match boundary.thermal? {
+            ResolvedThermal::FixedTemperature { value } => Some(value),
+            ResolvedThermal::Adiabatic => None,
+        }
+    };
+    let (ta, tb) = (temperature(a)?, temperature(b)?);
+    if ta > tb {
+        Some(HeatSpec {
+            hot: a.fo.clone(),
+            cold: b.fo.clone(),
+        })
+    } else if tb > ta {
+        Some(HeatSpec {
+            hot: b.fo.clone(),
+            cold: a.fo.clone(),
+        })
+    } else {
+        None
+    }
+}
+
+/// What a run of this study monitors: the probes, lines, surfaces and forces of its monitor plan
+/// (the default probes when the study lists none), one flux per patch for the mass balance, the
+/// pair of wall heat flows for the energy balance, and the solver's log, pressure field and
+/// residual limits. A steady run is held to the study's limits; a transient run has none and is
+/// judged on periodic settledness. A monitor with no label of its own is shown by its
 /// function-object name.
 pub fn spec_for(resolved: &ResolvedStudy) -> Spec {
     let plan = resolved.monitor_plan();
+    let solver = SolverPlan::for_study(resolved);
     let shown = |label: Option<String>, fo: &str| label.unwrap_or_else(|| fo.to_owned());
+    let heat = heat_pair(resolved, &plan.surfaces);
+    let surfaces = plan
+        .surfaces
+        .iter()
+        .map(|s| SurfaceSpec {
+            label: shown(s.label.clone(), &s.fo),
+            fo: s.fo.clone(),
+            quantity: surface_kind(s.quantity),
+            component: heat_component(resolved, s),
+        })
+        .collect();
     Spec {
         probes: plan
             .probes
@@ -76,13 +147,13 @@ pub fn spec_for(resolved: &ResolvedStudy) -> Spec {
                 field: field_kind(l.field),
             })
             .collect(),
-        surfaces: plan
-            .surfaces
+        surfaces,
+        forces: plan
+            .forces
             .into_iter()
-            .map(|s| SurfaceSpec {
-                label: shown(s.label, &s.fo),
-                fo: s.fo,
-                quantity: surface_kind(s.quantity),
+            .map(|f| ForceSpec {
+                label: shown(f.label, &f.fo),
+                fo: f.fo,
             })
             .collect(),
         patches: balance_patches(resolved)
@@ -93,9 +164,15 @@ pub fn spec_for(resolved: &ResolvedStudy) -> Spec {
                 inlet: b.inlet,
             })
             .collect(),
-        solves_energy: false,
-        residual_limits: Some((resolved.solver.convergence.p, resolved.solver.convergence.u)),
-        transient: false,
+        heat,
+        solves_energy: solver.buoyant,
+        temperature: solver.buoyant,
+        residual_limits: (!solver.residual_checks.is_empty())
+            .then_some((resolved.solver.convergence.p, resolved.solver.convergence.u)),
+        transient: solver.transient,
+        periodic: solver.transient,
+        pressure_field: solver.pressure_field,
+        log_file: solver.log_file,
     }
 }
 
@@ -146,6 +223,7 @@ fn objects(spec: &Spec) -> Vec<&str> {
         .map(|p| p.fo.as_str())
         .chain(spec.lines.iter().map(|l| l.fo.as_str()))
         .chain(spec.surfaces.iter().map(|s| s.fo.as_str()))
+        .chain(spec.forces.iter().map(|f| f.fo.as_str()))
         .chain(spec.patches.iter().map(|p| p.fo.as_str()))
         .collect()
 }
@@ -185,10 +263,22 @@ fn gather(log: String, found: Vec<Found>) -> Files {
     Files { log, monitor_files }
 }
 
+/// Whether `name` is one plain file name: no separator, no dot parts, no control character.
+fn plain_name(name: &str) -> bool {
+    !matches!(name, "" | "." | "..")
+        && !name
+            .chars()
+            .any(|c| c == '/' || c == '\\' || c.is_control())
+}
+
 /// The log and the monitor files of the results folder `dir`, for the function objects `spec` names.
-/// Nothing is followed through a link, and a file over the size cap is left out.
+/// The log is the one `spec.log_file` names. Nothing is followed through a link, and a file over
+/// the size cap is left out.
 pub fn files_from_dir(dir: &Path, spec: &Spec) -> Files {
-    let log = read_plain(&dir.join(SOLVER_LOG), LOG_CAP).unwrap_or_default();
+    let log = plain_name(&spec.log_file)
+        .then(|| read_plain(&dir.join(&spec.log_file), LOG_CAP))
+        .flatten()
+        .unwrap_or_default();
     let mut found = Vec::new();
     let post = dir.join("postProcessing");
     if !is_real_dir(&post) {
@@ -227,7 +317,7 @@ pub fn files_from_bundle(bytes: &[u8], spec: &Spec) -> Files {
             .ok()
             .map(|data| String::from_utf8_lossy(&data).into_owned())
     };
-    let log = text_of(SOLVER_LOG).unwrap_or_default();
+    let log = text_of(&spec.log_file).unwrap_or_default();
     let wanted = objects(spec);
     let mut found = Vec::new();
     for name in entry_names(bytes).unwrap_or_default() {

@@ -22,6 +22,7 @@ pub struct FakeBox {
     fail: u32,
     obeys_stop: bool,
     lock_only: bool,
+    solver_log: String,
     calls: Vec<String>,
 }
 
@@ -73,7 +74,16 @@ impl FakeBox {
             fail: 0,
             obeys_stop: false,
             lock_only: false,
+            solver_log: "log.simpleFoam".to_string(),
             calls: Vec::new(),
+        }
+    }
+
+    /// A box whose pretend solver writes its log under another name.
+    pub fn with_solver_log(name: &str) -> Self {
+        Self {
+            solver_log: name.to_string(),
+            ..Self::new()
         }
     }
 
@@ -166,14 +176,15 @@ impl FakeBox {
         if self.containers.get(run_id) != Some(&ContainerState::Running) {
             return;
         }
-        let time = self.file(run_id, "log.simpleFoam").and_then(|log| {
+        let solver_log = self.solver_log.clone();
+        let time = self.file(run_id, &solver_log).and_then(|log| {
             String::from_utf8_lossy(log).lines().rev().find_map(|l| {
                 l.trim()
                     .strip_prefix("Time = ")
                     .map(|t| t.trim().to_string())
             })
         });
-        self.append(run_id, "log.simpleFoam", "End\n");
+        self.append(run_id, &solver_log, "End\n");
         if let Some(t) = time.filter(|t| write_now && valid_rel(t)) {
             self.append(run_id, &format!("{t}/U"), "fake\n");
             self.append(run_id, &format!("{t}/p"), "fake\n");

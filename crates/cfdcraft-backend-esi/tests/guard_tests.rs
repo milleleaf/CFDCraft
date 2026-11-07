@@ -313,13 +313,20 @@ fn only_the_listed_libraries_may_be_loaded() {
 }
 
 #[test]
-fn the_allowed_libraries_are_exactly_four_names() {
+fn the_allowlist_is_pinned() {
     libs_rows(&[
         ("libs (sampling);", None),
         ("libs (\"libsampling.so\");", None),
         ("libs (fieldFunctionObjects);", None),
         ("libs (\"libfieldFunctionObjects.so\");", None),
-        ("libs (sampling fieldFunctionObjects);", None),
+        ("libs (forces);", None),
+        ("libs (\"libforces.so\");", None),
+        ("libs (sampling fieldFunctionObjects forces);", None),
+        ("libs (libforces);", Some("libforces")),
+        ("libs (\"forces.so\");", Some("forces.so")),
+        ("libs (Forces);", Some("Forces")),
+        ("libs (forcess);", Some("forcess")),
+        ("libs (\"libforces\");", Some("libforces")),
         (
             "libs (libfieldFunctionObjects);",
             Some("libfieldFunctionObjects"),
@@ -357,6 +364,58 @@ fn any_other_library_is_still_refused() {
         let r = one("system/controlDict", &text);
         assert_eq!(codes(&r), vec![(3, entry, "CFD-GUARD-004")], "{libs}");
     }
+}
+
+#[test]
+fn forces_library_is_allowed() {
+    libs_rows(&[
+        ("libs (forces);", None),
+        ("libs (\"libforces.so\");", None),
+        ("libs (sampling forces);", None),
+        ("libs (forces fieldFunctionObjects);", None),
+    ]);
+}
+
+#[test]
+fn other_libraries_are_still_refused() {
+    libs_rows(&[
+        ("libs (foo);", Some("foo")),
+        ("libs (forces foo);", Some("foo")),
+        ("libs (\"libfoo.so\");", Some("libfoo.so")),
+        ("libs (\"/abs/libforces.so\");", Some("/abs/libforces.so")),
+        ("libs (\"../libforces.so\");", Some("../libforces.so")),
+        ("libs (forces $x);", Some("$x")),
+        ("libs other;", Some("other")),
+    ]);
+}
+
+#[test]
+fn directives_and_coded_types_are_still_refused() {
+    for (text, entry, code) in [
+        ("#includeFunc forceCoeffs", "#includeFunc", "CFD-GUARD-001"),
+        ("type codedFixedValue;", "codedFixedValue", "CFD-GUARD-002"),
+        ("codeStream x;", "codeStream", "CFD-GUARD-002"),
+    ] {
+        let r = one("system/controlDict", &format!("a 1;\nb 2;\n{text}\n"));
+        assert!(!r.is_empty(), "{text}");
+        assert_eq!(
+            (r[0].line, r[0].entry.as_str(), r[0].rule.code()),
+            (3, entry, code),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_force_coefficient_object_written_in_full_passes() {
+    let text = "functions\n{\n    force_1\n    {\n        type forceCoeffs;\n        libs (forces);\n        patches (obstacle);\n        rho rhoInf;\n        rhoInf 1;\n        magUInf 1;\n        lRef 0.1;\n        Aref 0.01;\n        origin (0 0 0);\n        e1 (1 0 0);\n        e3 (0 1 0);\n        writeControl timeStep;\n        writeInterval 1;\n    }\n}\n";
+    let tree = CaseTree {
+        files: vec![CaseFile {
+            rel_path: PathBuf::from("system/controlDict"),
+            bytes: text.as_bytes().to_vec(),
+        }],
+    };
+    assert_eq!(scan_tree(&tree), vec![]);
 }
 
 #[test]

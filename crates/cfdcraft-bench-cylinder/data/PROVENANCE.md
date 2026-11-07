@@ -1,0 +1,5 @@
+# Provenance of the data
+
+- `st_2d2.toml` holds eight numbers read from Table 4 (page 13) of the paper named in `../NOTICE.md`, the definitions of the paper's coefficients, and the allowances this project sets around the intervals. The numbers were read from a university course copy of the paper and the citation points at the published chapter. Status: real, quoted as facts.
+- The allowances (2 %, 3 %, 3 % and 3 % of an interval's midpoint) and the window of 5 whole shedding periods are initial settings of this project. They are not from the paper, apart from the paper's own rule that the quantities are read over one period of the lift. They are revised only after real runs.
+- The tests build every result tree in memory from formulas (`src/fixture.rs`): a drag that oscillates at twice the lift frequency, a sinusoidal lift at 3 Hz sampled every millisecond, and two pressure probe series chosen so that the pressure difference half a period after the lift maximum is 2.48. Status: synthetic. No solver ran and no file was copied from a real case.

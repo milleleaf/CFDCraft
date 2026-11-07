@@ -5,11 +5,13 @@
 //! waiting are the figures that decide.
 
 mod balance;
+mod periodic;
 mod series;
 mod settings;
 mod verdict;
 
 pub use balance::{Balance, BalanceStatus, PatchFlux, energy_balance, mass_balance};
+pub use periodic::{PeriodicOptions, PeriodicState, PeriodicStatus, assess_periodic, strouhal};
 pub use series::{QuantityState, SampleKind, Samples, Status, assess_series};
 pub use settings::{Settings, SettleError};
 pub use verdict::{NOT_FINISHED, SOLVER_FAILED, Verdict, VerdictState, verdict};

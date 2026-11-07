@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::{
     Quantity, Study,
     diagnostics::{Capabilities, Diagnostic, diagnose, has_errors, render_text},
+    raw::RawOverride,
     study::{BoundaryKind, Convergence, Face},
     units::to_si,
 };
@@ -20,6 +21,10 @@ pub struct ResolvedStudy {
     pub mesh: ResolvedMesh,
     pub solver: ResolvedSolver,
     pub monitors: ResolvedMonitors,
+    /// The study's raw overrides, unchanged. Absent when there are none, so a study without
+    /// them keeps the same canonical text and hash.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw_overrides: BTreeMap<String, RawOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -168,5 +173,6 @@ pub fn resolve(study: &Study) -> Result<ResolvedStudy, ResolveError> {
         monitors: ResolvedMonitors {
             centreline_u_sample_count: study.monitors.centreline_u_sample_count,
         },
+        raw_overrides: study.raw_overrides.clone(),
     })
 }

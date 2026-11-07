@@ -154,6 +154,35 @@ jobs:
           cargo install cargo-deny --version 0.20.2 --locked
           cargo deny check licenses bans sources advisories
 
+  # The command line tool as a release build, for trying it against a real
+  # compute host. Only on ci/** branches; kept one day.
+  binary:
+    if: startsWith(github.ref, 'refs/heads/ci/')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: binary
+      - name: build
+        run: cargo build --release --locked -p cfdcraft-cli
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cfdcraft-${{ matrix.os }}
+          path: target/release/cfdcraft
+          retention-days: 1
+          if-no-files-found: error
+
   # A red full suite on main reverts the commit. It never reverts a revert and
   # never acts when main has moved on. The commit message appears only in this
   # condition, never in a script.

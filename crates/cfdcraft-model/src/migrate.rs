@@ -105,6 +105,7 @@ pub fn migrate_v0_to_v1(old: StudyV0) -> (Study, MigrationNote) {
         mesh: old.mesh,
         solver: old.solver,
         monitors: old.monitors,
+        raw_overrides: BTreeMap::new(),
     };
     let note = MigrationNote {
         from: 0,

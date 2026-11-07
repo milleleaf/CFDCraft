@@ -174,6 +174,7 @@ dependencies = [
 name = "cfdcraft-backend-esi"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-dictedit",
  "cfdcraft-model",
  "ryu",
  "thiserror",
@@ -208,7 +209,9 @@ dependencies = [
  "cfdcraft-model",
  "cfdcraft-ops",
  "cfdcraft-runs",
+ "cfdcraft-scenarios",
  "cfdcraft-store",
+ "cfdcraft-sweep",
  "cfdcraft-text",
  "clap",
  "craft-atomic",
@@ -227,6 +230,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-dictedit"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-diskuse"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-keys",
+ "cfdcraft-store",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cfdcraft-doc"
 version = "0.1.0"
 dependencies = [
@@ -234,7 +255,9 @@ dependencies = [
  "cfdcraft-migrate",
  "cfdcraft-model",
  "cfdcraft-runs",
+ "cfdcraft-scenarios",
  "cfdcraft-store",
+ "cfdcraft-sweep",
  "craft-atomic",
  "craft-docpath",
  "schemars",
@@ -273,6 +296,9 @@ dependencies = [
  "cfdcraft-executor",
  "cfdcraft-model",
  "cfdcraft-ops",
+ "cfdcraft-scenarios",
+ "cfdcraft-sweep",
+ "cfdcraft-text",
  "rmcp",
  "schemars",
  "serde",
@@ -309,13 +335,16 @@ dependencies = [
  "cfdcraft-bench-ghia",
  "cfdcraft-capture",
  "cfdcraft-compare",
+ "cfdcraft-diskuse",
  "cfdcraft-doc",
  "cfdcraft-executor",
  "cfdcraft-keys",
  "cfdcraft-model",
  "cfdcraft-pack",
  "cfdcraft-runs",
+ "cfdcraft-scenarios",
  "cfdcraft-store",
+ "cfdcraft-sweep",
  "cfdcraft-text",
  "craft-atomic",
  "schemars",
@@ -353,6 +382,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-scenarios"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-keys",
+ "cfdcraft-model",
+ "cfdcraft-runs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-schema"
 version = "0.1.0"
 dependencies = [
@@ -371,6 +413,16 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "craft-atomic",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-sweep"
+version = "0.1.0"
+dependencies = [
  "schemars",
  "serde",
  "serde_json",

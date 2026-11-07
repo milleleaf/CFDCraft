@@ -14,7 +14,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// The schema version this build writes and fully understands.
-pub const CURRENT_SCHEMA: u32 = 2;
+pub const CURRENT_SCHEMA: u32 = 3;
 
 /// The members of a document that a migration step may change.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +58,10 @@ pub const STEPS: &[Step] = &[
         from: 1,
         apply: v1_to_v2,
     },
+    Step {
+        from: 2,
+        apply: v2_to_v3,
+    },
 ];
 
 fn v0_to_v1(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
@@ -96,6 +100,22 @@ fn v1_to_v2(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
             to: 2,
             summary: "This file now keeps a history of runs: what ran, from which settings, \
                       and what it made. This file has none yet. Nothing else changed."
+                .to_owned(),
+        },
+    ))
+}
+
+/// Schema 3 lets the artifact index hold variants of the study, parameter sweeps and a record of
+/// pruned results. Each is optional and an absent one reads as empty, so nothing in the file
+/// changes; the step only moves the number and says so.
+fn v2_to_v3(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
+    Ok((
+        parts,
+        MigrationNote {
+            from: 2,
+            to: 3,
+            summary: "This file can now hold variants of the study, parameter sweeps and a record \
+                      of pruned results. This file has none yet. Nothing else changed."
                 .to_owned(),
         },
     ))

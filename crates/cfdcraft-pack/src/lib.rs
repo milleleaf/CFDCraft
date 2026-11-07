@@ -8,6 +8,13 @@
 //! entries are stored without compression, in index order, so the same inputs always give the same
 //! bytes. An ordinary open reads the document and ignores the result entries.
 //!
+//! # Pruned results
+//!
+//! A result the index lists as pruned was removed from the store on purpose. A pack leaves it out
+//! and unpacking does not look for it; the index still lists it as pruned, so the unpacked study
+//! reads the same as the packed one. Only a result that is listed, not pruned and not in the store
+//! is an error.
+//!
 //! # Run records
 //!
 //! The run records of the artifact index travel with the pack, each with the label of the host it
@@ -36,7 +43,7 @@
 mod pack;
 mod unpack;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 
@@ -109,13 +116,15 @@ pub(crate) fn blob_entry(hash: &ContentHash) -> String {
     format!("blobs/{hash}")
 }
 
-/// Each distinct result of the index once, in index order, with its recorded size. A hash listed
-/// twice with two sizes cannot both be right and is refused, and so is an index with more than
-/// [`MAX_RESULTS`] distinct results. One pass over the index, whatever it repeats.
+/// Each distinct result of the index that is still stored once, in index order, with its recorded
+/// size; a result the index lists as pruned is left out. A hash listed twice with two sizes cannot
+/// both be right and is refused, and so is an index with more than [`MAX_RESULTS`] distinct
+/// results. One pass over the index, whatever it repeats.
 pub(crate) fn distinct_blobs(index: &ArtifactIndex) -> Result<Vec<(ContentHash, u64)>, PackError> {
+    let pruned: HashSet<ContentHash> = index.pruned.iter().copied().collect();
     let mut first_size: HashMap<ContentHash, u64> = HashMap::new();
     let mut out: Vec<(ContentHash, u64)> = Vec::new();
-    for blob in &index.blobs {
+    for blob in index.blobs.iter().filter(|b| !pruned.contains(&b.hash)) {
         match first_size.get(&blob.hash) {
             Some(&size) if size != blob.size => return Err(PackError::SizeMismatch(blob.hash)),
             Some(_) => {}
@@ -165,8 +174,7 @@ mod tests {
     fn index(blobs: Vec<BlobRef>) -> ArtifactIndex {
         ArtifactIndex {
             blobs,
-            links: Vec::new(),
-            runs: Vec::new(),
+            ..ArtifactIndex::default()
         }
     }
 

@@ -21,12 +21,13 @@ use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use cfdcraft_runs::is_plain_name;
 use cfdcraft_store::ContentHash;
 use thiserror::Error;
 
 use crate::model::{ArtifactIndex, Document, Link};
 
-/// Longest link id, in characters.
+/// Longest link id, in characters; the length of a plain name.
 const ID_MAX: usize = 40;
 
 /// Why a link could not be made, followed or checked. Every message names the linked file.
@@ -124,18 +125,6 @@ pub fn default_link_id(target: &Path) -> String {
         .collect()
 }
 
-fn valid_id(id: &str) -> bool {
-    let bytes = id.as_bytes();
-    let Some((first, rest)) = bytes.split_first() else {
-        return false;
-    };
-    bytes.len() <= ID_MAX
-        && (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && rest
-            .iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-}
-
 /// The components of `path` with `.` removed and `..` folded in; `None` when a `..` would climb
 /// above the root.
 fn fold(path: &Path) -> Option<Vec<Component<'_>>> {
@@ -219,7 +208,7 @@ pub(crate) fn check_ids(index: &ArtifactIndex) -> Result<(), String> {
     let shown = |id: &str| format!("{:?}", id.chars().take(ID_MAX).collect::<String>());
     let mut seen = std::collections::HashSet::new();
     for link in &index.links {
-        if !valid_id(&link.id) {
+        if !is_plain_name(&link.id) {
             return Err(format!(
                 "the link id {} is not a valid link id",
                 shown(&link.id)
@@ -240,7 +229,7 @@ impl Link {
     ///
     /// Neither path has to be absolute. The file is read once, to record its hash.
     pub fn to_file(doc_path: &Path, target: &Path, id: &str) -> Result<Self, LinkError> {
-        if !valid_id(id) {
+        if !is_plain_name(id) {
             return Err(LinkError::BadId(id.to_owned()));
         }
         let shown = target.to_string_lossy().into_owned();
@@ -282,7 +271,7 @@ impl Document {
     /// Add `link`. A link whose id is not valid or is already used is refused and the document
     /// stays as it was.
     pub fn add_link(&mut self, link: Link) -> Result<(), LinkError> {
-        if !valid_id(&link.id) {
+        if !is_plain_name(&link.id) {
             return Err(LinkError::BadId(link.id));
         }
         if self.artifacts.links.iter().any(|l| l.id == link.id) {

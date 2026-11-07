@@ -3,7 +3,9 @@
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::{MigrationNote, Study};
 use cfdcraft_runs::RunRecord;
+use cfdcraft_scenarios::Scenario;
 use cfdcraft_store::ContentHash;
+use cfdcraft_sweep::Sweep;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +128,18 @@ pub struct ArtifactIndex {
     /// The runs recorded for this study, oldest first; the list only grows.
     #[serde(default)]
     pub runs: Vec<RunRecord>,
+    /// Variants of the study, each storing only its overrides; a variant is listed after its
+    /// parent. Absent when the study has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenarios: Vec<Scenario>,
+    /// Parameter sweeps, and through each point's origin the variants they generated. Absent when
+    /// the study has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sweeps: Vec<Sweep>,
+    /// Hashes of stored results that were removed on purpose, sorted, each listed in `blobs`. The
+    /// run records that named them stay. Absent when nothing was removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pruned: Vec<ContentHash>,
 }
 
 /// A study file held in memory.

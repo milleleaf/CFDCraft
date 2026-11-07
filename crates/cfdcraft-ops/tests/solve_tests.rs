@@ -5,8 +5,9 @@
 use std::fs;
 use std::io::{Cursor, Write};
 
+use cfdcraft_backend_esi::Dialect;
 use cfdcraft_doc::{open, store_dir};
-use cfdcraft_ops::{save_document, solve_document, stage_keys};
+use cfdcraft_ops::{save_document, solve_document, stage_keys, tool_identity};
 use cfdcraft_store::Store;
 use cfdcraft_text::Line;
 use serde_json::Value;
@@ -204,7 +205,10 @@ fn the_provenance_names_everything_the_roadmap_lists() {
     assert_eq!(provenance.settings, document.study);
     assert!(provenance.tool.image_digest.starts_with("sha256:"));
     assert_eq!(provenance.tool.dialect, "esi-v2512");
-    assert_eq!(provenance.tool.writer_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        provenance.tool.writer_version,
+        tool_identity(Dialect::EsiV2512).writer_version
+    );
     assert_eq!(provenance.host.as_deref(), Some("fixture-host"));
     assert_eq!(
         provenance.result_key,

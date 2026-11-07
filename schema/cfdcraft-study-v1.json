@@ -188,6 +188,43 @@
       ],
       "type": "object"
     },
+    "RawBackend": {
+      "description": "The backend a raw override is written for. The dictionary syntax differs between backends, so\nan override only runs on the backend it names.",
+      "enum": [
+        "esi",
+        "foundation"
+      ],
+      "type": "string"
+    },
+    "RawOverride": {
+      "additionalProperties": false,
+      "description": "One dictionary entry to set in the written case.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/RawBackend",
+          "description": "The backend this override is written for."
+        },
+        "entry": {
+          "description": "The entry inside the file: block names then the entry, joined by `/`, for example\n`relaxationFactors/equations/U`.",
+          "type": "string"
+        },
+        "file": {
+          "description": "The case file, for example `system/fvSolution`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The text that goes after the entry name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "backend",
+        "file",
+        "entry",
+        "value"
+      ],
+      "type": "object"
+    },
     "SolverControl": {
       "additionalProperties": false,
       "properties": {
@@ -260,6 +297,13 @@
     },
     "monitors": {
       "$ref": "#/$defs/Monitors"
+    },
+    "raw_overrides": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RawOverride"
+      },
+      "description": "Raw dictionary overrides keyed by a label (same naming rule as boundaries). For expert\nuse: each one sets a solver dictionary entry the study does not model. They show in\ndiffs and are part of the result's identity.",
+      "type": "object"
     },
     "schema_version": {
       "const": 1,

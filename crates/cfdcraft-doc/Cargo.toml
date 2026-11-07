@@ -9,7 +9,9 @@ blake3 = "=1.8.7"
 cfdcraft-migrate = { path = "../cfdcraft-migrate", version = "=0.1.0" }
 cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
 cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
+cfdcraft-scenarios = { path = "../cfdcraft-scenarios", version = "=0.1.0" }
 cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+cfdcraft-sweep = { path = "../cfdcraft-sweep", version = "=0.1.0" }
 craft-atomic = { workspace = true }
 craft-docpath = { workspace = true }
 schemars = "=1.2.3"

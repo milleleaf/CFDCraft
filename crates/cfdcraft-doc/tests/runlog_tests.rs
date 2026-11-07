@@ -41,6 +41,7 @@ fn record_for(id: &str, study: &Study) -> RunRecord {
     RunRecord {
         id: id.to_owned(),
         rerun_of: None,
+        scenario: None,
         mesh: Some(Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),
@@ -216,4 +217,32 @@ fn an_index_without_a_runs_entry_reads_as_having_none() {
     doc.add_run(record_for("run-1", &cavity())).unwrap();
     let text = serde_json::to_string(&doc.artifacts).unwrap();
     assert!(text.contains("\"runs\":[{"), "{text}");
+}
+
+#[test]
+fn room_for_another_run_is_judged_from_the_size_of_the_index() {
+    let mut doc = document();
+    assert_eq!(doc.check_room_for_run(), Ok(()));
+    doc.add_run(record_for("run-1", &cavity())).unwrap();
+    assert_eq!(doc.check_room_for_run(), Ok(()));
+
+    // 31 records that each carry a megabyte of host label: the index is within its 32 MiB limit,
+    // but not by the size of one more record like them.
+    let label = "x".repeat(1 << 20);
+    doc.artifacts.runs[0].provenance.host = Some(label.clone());
+    for n in 2..=31 {
+        let mut copy = doc.artifacts.runs[0].clone();
+        copy.id = format!("run-{n}");
+        doc.artifacts.runs.push(copy);
+    }
+    match doc.check_room_for_run() {
+        Err(error @ RunLogError::HistoryFull { runs: 31, .. }) => {
+            let text = error.to_string();
+            assert!(text.contains("31") && text.contains("no room"), "{text}");
+        }
+        other => panic!("expected a full history, found {other:?}"),
+    }
+
+    doc.artifacts.runs.truncate(8);
+    assert_eq!(doc.check_room_for_run(), Ok(()));
 }

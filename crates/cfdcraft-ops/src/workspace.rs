@@ -7,16 +7,19 @@
 use crate::{
     cases::{cli_problem, compile_study, export_study},
     host_runner::finish_job,
-    jobs::{JobAction, operation_of, plan_job},
+    jobs::{JobAction, JobOptions, operation_of, plan_scenario_job_with},
     prepare::prepare,
     registry::{ResultOutcome, RunRegistry, StartOutcome, Status},
     report::{ExitClass, Report},
     run::{RunMode, RunRequest},
+    scenario_ops::LabelUpdate,
 };
 use cfdcraft_backend_esi::Dialect;
 use cfdcraft_compare::Tolerance;
 use cfdcraft_keys::Stage;
 use cfdcraft_model::{Diagnostic, Study};
+use cfdcraft_scenarios::Override;
+use cfdcraft_sweep::Sweep;
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -73,14 +76,11 @@ impl Workspace {
         Ok(Self { root })
     }
 
-    /// The one place a name is judged: a lower-case letter or digit, then up to 39 more lower-case
-    /// letters, digits or hyphens.
+    /// Whether `name` is a plain name: a lower-case letter or digit, then up to 39 more lower-case
+    /// letters, digits or hyphens. The rule is [`cfdcraft_runs::is_plain_name`], which run ids,
+    /// link ids and the verbs that name a run follow too.
     pub fn valid_name(name: &str) -> bool {
-        let b = name.as_bytes();
-        (1..=40).contains(&b.len())
-            && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-            && b.iter()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+        cfdcraft_runs::is_plain_name(name)
     }
 
     pub(crate) fn dir(&self, sub: &str) -> PathBuf {
@@ -268,6 +268,106 @@ impl Workspace {
         })
     }
 
+    /// [`Workspace::document_status`] for the variant `scenario` of the document; `None` and `base`
+    /// mean the study itself. Nothing is written and nothing runs.
+    pub fn scenario_status(&self, name: &str, scenario: Option<&str>) -> Report {
+        self.named("document_status", name, || {
+            crate::inspect::scenario_status(&self.document_file(name), scenario).report
+        })
+    }
+
+    /// The variants of the document, the study itself first, with their kinds and keys. Nothing is
+    /// written.
+    pub fn scenario_list(&self, name: &str) -> Report {
+        self.named("scenario_list", name, || {
+            crate::scenario_ops::scenario_list(&self.document_file(name)).report
+        })
+    }
+
+    /// One variant in full: what it stores and the findings of its study. Nothing is written.
+    pub fn scenario_show(&self, name: &str, scenario: &str) -> Report {
+        self.named("scenario_show", name, || {
+            crate::scenario_ops::scenario_show(&self.document_file(name), scenario).report
+        })
+    }
+
+    /// How the variant `b` differs from the variant `a`. Either may be `base`. Nothing is written.
+    pub fn scenario_diff(&self, name: &str, a: &str, b: &str) -> Report {
+        self.named("scenario_diff", name, || {
+            crate::scenario_ops::scenario_diff(&self.document_file(name), a, b).report
+        })
+    }
+
+    /// Create the variant `scenario` of the document, or replace some of the changes of the one that
+    /// exists. A new variant descends from `parent` (the study itself when `None`). A non-empty
+    /// `title` becomes its name. Only the named document changes.
+    pub fn scenario_set(
+        &self,
+        name: &str,
+        scenario: &str,
+        parent: Option<&str>,
+        overrides: &[Override],
+        title: Option<&str>,
+    ) -> Report {
+        self.named("scenario_set", name, || {
+            crate::scenario_ops::scenario_set(
+                &self.document_file(name),
+                scenario,
+                parent,
+                overrides,
+                title,
+            )
+            .report
+        })
+    }
+
+    /// Set or clear the title, the pin and the notes of a variant or of the study (`base`). An empty
+    /// title or notes clears it. Only the named document changes.
+    pub fn scenario_label(&self, name: &str, scenario: &str, update: &LabelUpdate) -> Report {
+        self.named("scenario_label", name, || {
+            crate::scenario_ops::scenario_label(&self.document_file(name), scenario, update).report
+        })
+    }
+
+    /// The points `sweep` would make for the document, each with its label and the settings it
+    /// changes. Nothing is stored and nothing is started.
+    pub fn sweep_plan(&self, name: &str, sweep: &Sweep) -> Report {
+        self.named("sweep_plan", name, || {
+            crate::sweep_ops::sweep_plan(&self.document_file(name), sweep).report
+        })
+    }
+
+    /// Store `sweep` in the document and one variant for each of its points. Only the named
+    /// document changes, and nothing is started.
+    pub fn sweep_create(&self, name: &str, sweep: &Sweep) -> Report {
+        self.named("sweep_create", name, || {
+            crate::sweep_ops::sweep_create(&self.document_file(name), sweep).report
+        })
+    }
+
+    /// Check every point of the stored sweep `sweep_id` without solving anything. A point that
+    /// fails is exit class 1 with its reasons. Nothing is written or started.
+    pub fn sweep_preflight(&self, name: &str, sweep_id: &str) -> Report {
+        self.named("sweep_preflight", name, || {
+            crate::sweep_ops::sweep_preflight(&self.document_file(name), sweep_id).report
+        })
+    }
+
+    /// What each variant of the document holds in the store, in bytes. Nothing is written.
+    pub fn disk_use(&self, name: &str) -> Report {
+        self.named("disk_use", name, || {
+            crate::disk_ops::disk_use(&self.document_file(name)).report
+        })
+    }
+
+    /// Plan the removal of stored results, in `scope` (the named variants) or in all variants. It
+    /// is a dry run unless `apply` is set. Every run record and its key numbers stay.
+    pub fn prune(&self, name: &str, scope: Option<&[String]>, apply: bool) -> Report {
+        self.named("prune", name, || {
+            crate::disk_ops::prune(&self.document_file(name), scope, apply).report
+        })
+    }
+
     /// The runs recorded in the document, oldest first.
     pub fn list_runs(&self, name: &str) -> Report {
         self.named("list_runs", name, || {
@@ -371,9 +471,16 @@ impl Workspace {
     }
 }
 
+/// Whether a character can belong to a name inside a path, so that a root met right after it is
+/// the tail of some other path and not the start of one.
+fn in_a_path_name(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+')
+}
+
 /// `text` with the folder `root` taken out of every path that starts with it: the root and the
 /// separator after it are removed, a bare root becomes `.`. A longer name that merely begins with
-/// the root's text (`/srv/ws2` against `/srv/ws`) is left as it is.
+/// the root's text (`/srv/ws2` against `/srv/ws`) is left as it is, and so is a path that merely
+/// contains the root's text further along (`/data/srv/ws/x` against `/srv/ws`).
 fn relative_to(root: &str, text: &str) -> String {
     if root.is_empty() {
         return text.to_owned();
@@ -383,6 +490,11 @@ fn relative_to(root: &str, text: &str) -> String {
     while let Some(at) = rest.find(root) {
         out.push_str(&rest[..at]);
         let after = &rest[at + root.len()..];
+        if out.chars().next_back().is_some_and(in_a_path_name) {
+            out.push_str(root);
+            rest = after;
+            continue;
+        }
         let mut chars = after.chars();
         let (first, second) = (chars.next(), chars.next());
         match first {
@@ -450,6 +562,12 @@ pub enum DocJobKind {
     },
     /// Make this one stage, which must be out of date.
     Item(Stage),
+    /// Solve the variant `scenario` (the study itself when `None` or `base`). With `remake_pruned`
+    /// a result that was pruned on purpose counts as out of date and is made again.
+    SolveScenario {
+        scenario: Option<String>,
+        remake_pruned: bool,
+    },
 }
 
 /// A run id as the registry hands them out: letters, digits and hyphens.
@@ -509,8 +627,18 @@ impl Workspace {
         name: &str,
         kind: DocJobKind,
     ) -> StartOutcome {
+        let mut scenario = None;
+        let mut options = JobOptions::default();
         let action = match kind {
             DocJobKind::Solve => JobAction::Solve,
+            DocJobKind::SolveScenario {
+                scenario: wanted,
+                remake_pruned,
+            } => {
+                scenario = wanted;
+                options = JobOptions { remake_pruned };
+                JobAction::Solve
+            }
             DocJobKind::Item(stage) => JobAction::Item(stage),
             DocJobKind::Rerun { run } => JobAction::Rerun {
                 run,
@@ -521,7 +649,13 @@ impl Workspace {
         if !Self::valid_name(name) {
             return StartOutcome::Refused(Box::new(Self::bad_name(operation_of(&action))));
         }
-        let job = match plan_job(&self.document_file(name), action) {
+        let planned = plan_scenario_job_with(
+            &self.document_file(name),
+            scenario.as_deref(),
+            action,
+            &options,
+        );
+        let job = match planned {
             Ok(job) => job,
             Err(outcome) => return StartOutcome::Refused(Box::new(self.within(outcome.report))),
         };
@@ -626,5 +760,20 @@ mod tests {
             relative_to(root, "/srv/ws2/x then /srv/ws/y"),
             "/srv/ws2/x then y"
         );
+    }
+
+    #[test]
+    fn a_root_in_the_middle_of_another_path_is_left_alone() {
+        let root = "/srv/ws";
+        assert_eq!(relative_to(root, "/data/srv/ws/x"), "/data/srv/ws/x");
+        assert_eq!(relative_to(root, "/data-1/srv/ws"), "/data-1/srv/ws");
+        assert_eq!(
+            relative_to(root, "/data/srv/ws/x and /srv/ws/y"),
+            "/data/srv/ws/x and y"
+        );
+        // After a quote, a bracket, an equals sign or a colon it starts a path of its own.
+        assert_eq!(relative_to(root, "\"/srv/ws/a\" (/srv/ws)"), "\"a\" (.)");
+        assert_eq!(relative_to(root, "dir=/srv/ws/a"), "dir=a");
+        assert_eq!(relative_to(root, "at:/srv/ws"), "at:.");
     }
 }

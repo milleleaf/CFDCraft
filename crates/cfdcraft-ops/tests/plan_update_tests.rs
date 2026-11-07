@@ -5,10 +5,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use cfdcraft_doc::{open, store_dir};
 use cfdcraft_ops::{
     ExitClass, PlanData, Report, Repro, plan_update_report, save_document, solve_document,
     update_documents,
 };
+use cfdcraft_store::Store;
 use serde_json::Value;
 
 #[path = "repro_support/mod.rs"]
@@ -222,4 +224,64 @@ fn the_plan_never_writes() {
         let _ = plan_update_report(&paths, select, order);
         assert_eq!(contents(&dir), before);
     }
+}
+
+/// A document solved once whose mesh blob was then deleted from the store.
+fn without_mesh_blob(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch(tag);
+    let path = new_document(&dir, "a", CAVITY);
+    let mut setup = FixtureRunner::new(&dir.join("setup-runs"));
+    passed(&solve_document(&path, &mut setup).report);
+    let first = open(&path).unwrap().document.artifacts.runs[0].clone();
+    let store = Store::open(store_dir(&path)).unwrap();
+    fs::remove_file(store.blob_path(&first.mesh.as_ref().unwrap().blob)).unwrap();
+    (path, dir)
+}
+
+#[test]
+fn a_fresh_stage_whose_blob_is_gone_is_planned_and_repaired_by_an_update() {
+    let (path, dir) = without_mesh_blob("plan-blob-missing");
+    let paths = vec![path.clone()];
+
+    let done = plan_update_report(&paths, None, None);
+    passed(&done.report);
+    assert_eq!(plan_of(&done.report).pending, ["a:mesh"]);
+    assert_eq!(plan_of(&done.report).order, ["a:mesh"]);
+    assert!(done.line.is_none());
+
+    let mut runner = FixtureRunner::new(&dir.join("update-runs"));
+    let item = texts(&["a:mesh"]);
+    let done = update_documents(&paths, Some(item.as_slice()), None, &mut runner);
+    passed(&done.report);
+    assert_eq!(runner.calls, 1);
+    let runs = open(&path).unwrap().document.artifacts.runs;
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].mesh.is_some() && runs[1].result.is_none());
+    let store = Store::open(store_dir(&path)).unwrap();
+    assert!(store.contains(&runs[1].mesh.as_ref().unwrap().blob));
+
+    let again = plan_update_report(&paths, None, None);
+    assert!(plan_of(&again.report).pending.is_empty());
+}
+
+#[test]
+fn a_stale_result_over_a_mesh_whose_blob_is_gone_plans_the_mesh_first() {
+    let (path, dir) = without_mesh_blob("plan-blob-missing-upstream");
+    // A new lid speed changes the result recipe and leaves the mesh key alone.
+    passed(&save_document(&with_lid_speed(0.2), &path, true).report);
+    let paths = vec![path.clone()];
+
+    let done = plan_update_report(&paths, None, None);
+    passed(&done.report);
+    assert_eq!(plan_of(&done.report).pending, ["a:mesh", "a:result"]);
+    let only_result = texts(&["a:result"]);
+    let refused = plan_update_report(&paths, Some(only_result.as_slice()), None);
+    refusal(&refused.report);
+
+    let mut runner = FixtureRunner::new(&dir.join("update-runs"));
+    let done = update_documents(&paths, None, None, &mut runner);
+    passed(&done.report);
+    let runs = open(&path).unwrap().document.artifacts.runs;
+    assert_eq!(runs.len(), 3);
+    assert!(runs[1].mesh.is_some() && runs[2].result.is_some());
 }

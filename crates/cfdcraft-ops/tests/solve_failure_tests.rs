@@ -11,7 +11,10 @@ use std::rc::Rc;
 
 use cfdcraft_doc::{Document, open, save, store_dir};
 use cfdcraft_model::{Diagnostic, Severity, Study};
-use cfdcraft_ops::{ExitClass, Report, link_file, save_document, solve_document};
+use cfdcraft_ops::{
+    ExitClass, Report, Repro, document_status, link_file, plan_update_report, save_document,
+    solve_document,
+};
 use cfdcraft_store::Store;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -134,6 +137,36 @@ fn a_blob_missing_from_the_store_counts_as_out_of_date_and_warns() {
 }
 
 #[test]
+fn a_blob_cut_short_counts_as_out_of_date_like_a_missing_one() {
+    let dir = scratch("blob-cut-short");
+    let path = new_document(&dir, "cavity", CAVITY);
+    let mut runner = FixtureRunner::new(&dir.join("runs"));
+    passed(&solve_document(&path, &mut runner).report);
+    let first = open(&path).unwrap().document.artifacts.runs[0].clone();
+    let result = first.result.as_ref().unwrap();
+    let store = Store::open(store_dir(&path)).unwrap();
+    // The file is there, but it is not the size the record gave it.
+    fs::write(store.blob_path(&result.blob), b"").unwrap();
+    assert!(store.contains(&result.blob));
+
+    match document_status(&path).report.repro {
+        Some(Repro::Status(status)) => {
+            assert_eq!(status.mesh.state, "fresh");
+            assert_eq!(status.result.state, "blob_missing");
+        }
+        other => panic!("expected the status, found {other:?}"),
+    }
+
+    let done = solve_document(&path, &mut runner);
+    passed(&done.report);
+    assert_eq!(runner.calls, 2);
+    assert_eq!(codes(&done.report), ["CFD-REPRO-002"]);
+    assert_eq!(data(&done.report).recorded, ["result"]);
+    let size = fs::metadata(store.blob_path(&result.blob)).unwrap().len();
+    assert_eq!(size, result.size);
+}
+
+#[test]
 fn a_pack_is_not_solved() {
     let dir = scratch("pack");
     let path = dir.join("x.cfdpack");
@@ -194,6 +227,57 @@ fn an_inconsistent_run_log_is_refused_before_anything_runs() {
     let found = sole(&done.report, "CFD-REPRO-003");
     assert!(found.message.contains("run-1"), "{}", found.message);
     assert_eq!(runner.calls, 1);
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_run_history_that_does_not_count_up_from_run_1_is_refused_before_anything_runs() {
+    let dir = scratch("run-id-order");
+    let path = new_document(&dir, "cavity", CAVITY);
+    let mut runner = FixtureRunner::new(&dir.join("runs"));
+    passed(&solve_document(&path, &mut runner).report);
+    // A first record called run-2 would make every later record fail, after its case had run.
+    damage_index(&path, "\"id\": \"run-1\"", "\"id\": \"run-2\"");
+    let before = fs::read(&path).unwrap();
+
+    let done = solve_document(&path, &mut runner);
+    assert_eq!(done.report.class(), ExitClass::StudyInvalid);
+    let found = sole(&done.report, "CFD-REPRO-003");
+    assert!(found.message.contains("run-2"), "{}", found.message);
+    assert_eq!(runner.calls, 1);
+    assert_eq!(fs::read(&path).unwrap(), before);
+    sole(&document_status(&path).report, "CFD-REPRO-003");
+}
+
+#[test]
+fn a_history_with_no_room_for_another_record_is_refused_before_the_case_runs() {
+    let dir = scratch("history-full");
+    let path = new_document(&dir, "cavity", CAVITY);
+    let mut runner = FixtureRunner::new(&dir.join("runs"));
+    passed(&solve_document(&path, &mut runner).report);
+
+    // Thirty-one records with a megabyte of host label each: the index is within its limit of
+    // 32 MiB, but one more record like them would not be. A finer mesh leaves work to do.
+    let mut document = open(&path).unwrap().document;
+    document.artifacts.runs[0].provenance.host = Some("x".repeat(1 << 20));
+    for n in 2..=31 {
+        let mut copy = document.artifacts.runs[0].clone();
+        copy.id = format!("run-{n}");
+        document.artifacts.runs.push(copy);
+    }
+    document.study.mesh.cells_x = 256;
+    save(&document, &path).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let done = solve_document(&path, &mut runner);
+    assert_eq!(done.report.class(), ExitClass::StudyInvalid);
+    let found = sole(&done.report, "CFD-DOC-009");
+    assert!(found.message.contains("no room"), "{}", found.message);
+    assert_eq!(runner.calls, 1);
+
+    let plan = plan_update_report(std::slice::from_ref(&path), None, None);
+    assert_eq!(plan.report.class(), ExitClass::StudyInvalid);
+    sole(&plan.report, "CFD-DOC-009");
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 mod diff;
 pub mod recipe;
 
-pub use diff::{Axis, Change, Residual, ToolPart, diff_mesh, diff_result};
+pub use diff::{Axis, Change, Residual, ToolPart, diff_mesh, diff_result, raw_text};
 pub use recipe::{
     BoundaryRecipe, CellsRecipe, FluidRecipe, GeometryRecipe, MeshRecipe, MonitorsRecipe,
     PatchRecipe, ResultRecipe, SolverRecipe, StageKeys, StageRecipes,

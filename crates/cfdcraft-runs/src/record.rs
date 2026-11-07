@@ -62,6 +62,9 @@ pub struct RunRecord {
     /// The run this one repeats, if it is a rerun.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
+    /// The scenario this run was made for; absent means the study itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario: Option<String>,
     /// The mesh this run recorded; absent when it did not record one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<Output<MeshRecipe>>,
@@ -119,10 +122,11 @@ pub fn find_run<'a>(runs: &'a [RunRecord], id: &str) -> Option<&'a RunRecord> {
     runs.iter().find(|r| r.id == id)
 }
 
-/// The newest record that holds a mesh with this key, and that mesh.
+/// The newest record that holds a mesh with this key, and that mesh; a rerun never owns a key.
 pub fn latest_mesh(runs: &[RunRecord], key: StageKey) -> Option<(&RunRecord, &Output<MeshRecipe>)> {
     runs.iter()
         .rev()
+        .filter(|r| r.rerun_of.is_none())
         .find_map(|r| r.mesh.as_ref().filter(|o| o.key == key).map(|o| (r, o)))
 }
 
@@ -137,9 +141,12 @@ pub fn latest_result(
         .find_map(|r| r.result.as_ref().filter(|o| o.key == key).map(|o| (r, o)))
 }
 
-/// The last mesh output in the log.
+/// The last mesh output in the log, leaving reruns aside.
 pub fn newest_mesh_output(runs: &[RunRecord]) -> Option<&Output<MeshRecipe>> {
-    runs.iter().rev().find_map(|r| r.mesh.as_ref())
+    runs.iter()
+        .rev()
+        .filter(|r| r.rerun_of.is_none())
+        .find_map(|r| r.mesh.as_ref())
 }
 
 /// The last result output in the log, leaving reruns aside.

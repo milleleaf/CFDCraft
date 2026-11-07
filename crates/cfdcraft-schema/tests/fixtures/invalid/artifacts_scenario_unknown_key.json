@@ -1,0 +1,14 @@
+{
+  "links": [],
+  "blobs": [],
+  "scenarios": [
+    {
+      "comment": "x",
+      "overrides": [
+        { "op": "set", "setting": "/mesh/cells_x", "value": 64 }
+      ],
+      "parent": "base",
+      "id": "finer"
+    }
+  ]
+}

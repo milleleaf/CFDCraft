@@ -1,0 +1,16 @@
+[package]
+name = "cfdcraft-scenarios"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+thiserror = "=2.0.21"
+
+[dev-dependencies]
+cfdcraft-keys = { path = "../cfdcraft-keys", version = "=0.1.0" }

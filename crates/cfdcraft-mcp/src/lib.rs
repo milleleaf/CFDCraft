@@ -1,19 +1,24 @@
-//! An MCP server over stdio that offers eighteen typed operations and nothing else: create and
+//! An MCP server over stdio that offers twenty-eight typed operations and nothing else: create and
 //! validate a study, compile and export it, save, open, pack and unpack a document, start, poll
-//! and collect a run, start a job on a document (solve it, rerun a recorded result, or update its
-//! mesh or its result), and read what a document records: whether it is up to date and why not,
-//! its runs, the checks and key numbers of a run, what a run was made from, how two runs compare
-//! and what an update would do. The reading operations write nothing and start nothing. There is
-//! no shell and no free-form dictionary access. Every argument is a name, a mode, a job word, a
-//! run id, a flag or a study; none is a path, a host, a key or a command. Those are settings of
+//! and collect a run, start a job on a document (solve it or one of its variants, rerun a recorded
+//! result, or update its mesh or its result), and read what a document records: whether it is up
+//! to date and why not, its runs, the checks and key numbers of a run, what a run was made from,
+//! how two runs compare and what an update would do. Variants of a document are listed, shown,
+//! diffed, created, changed and labelled; sweeps of a document are planned, stored and checked
+//! before anything is solved; disk use is read per variant, and stored results are pruned only by
+//! the one tool that does it, which shows a plan unless it is told to apply it. The reading
+//! operations write nothing and start nothing. There is no shell and no free-form dictionary
+//! access. Every argument is a name, a mode, a job word, a run id, a flag, a list of changes to
+//! settings, a sweep or a study; none is a path, a host, a key or a command. Those are settings of
 //! the server itself, given once on the command line.
 //!
 //! Standard output carries protocol messages only; anything else goes to standard error.
 
 use cfdcraft_ops::{
     DocJobKind, HolderInfo, Report, ResultOutcome, RunMode, RunRegistry, ServerSettings, Stage,
-    StartOutcome, Status, Workspace, cases::cli_problem,
+    StartOutcome, Status, Workspace, cases::cli_problem, scenario_ops::LabelUpdate,
 };
+use cfdcraft_text::{Line, Text};
 use rmcp::{
     ErrorData, Json, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -137,6 +142,111 @@ struct NameArgs {
     name: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StatusArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of a variant of the document, from `scenario_list`. Without it, or with `base`, the
+    /// status is that of the study itself.
+    #[serde(default)]
+    scenario: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ScenarioArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of a variant of the document, from `scenario_list`, or `base` for the study itself.
+    scenario: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DiffArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of the variant to start from, or `base` for the study itself.
+    a: String,
+    /// The id of the variant to compare with it, or `base` for the study itself.
+    b: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ScenarioSetArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of the variant to create or change: a plain name (1 to 40 lower-case letters, digits
+    /// or hyphens), never `base`, which is the study itself.
+    scenario: String,
+    /// For a new variant: the id of the variant it descends from. Without it the variant descends
+    /// from the study itself (`base`). An existing variant keeps its parent.
+    #[serde(default)]
+    parent: Option<String>,
+    /// The changes to make, at most 200 in all for a variant. A `set` puts a value at a `setting`
+    /// and a `remove` takes the member away. A `setting` is a JSON pointer into the study such as
+    /// `/boundary_conditions/lid/velocity/value`; a raw override of a solver entry is set at
+    /// `/raw_overrides/<label>`. A change to a setting the variant already changes replaces it.
+    overrides: Vec<cfdcraft_scenarios::Override>,
+    /// A display title for the variant. An empty title is ignored here; clear one with `scenario_label`.
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ScenarioLabelArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of the variant to label, or `base` for the study itself.
+    scenario: String,
+    /// The new display title. An empty title clears it; left out, the title is kept.
+    #[serde(default)]
+    title: Option<String>,
+    /// Whether pruning keeps the stored results of the variant. Left out, the pin is kept.
+    #[serde(default)]
+    pinned: Option<bool>,
+    /// The new notes. Empty notes clear them; left out, the notes are kept.
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SweepArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The sweep: an id, the variant it starts from (`base` for the study itself) and the
+    /// parameters it varies. Every combination of the parameters is one point, at most 200 points.
+    sweep: cfdcraft_sweep::Sweep,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SweepOfArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The id of a sweep stored in the document, from `sweep_create`.
+    sweep: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PruneArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The ids of the variants to prune, from `scenario_list`; `base` is the study itself. Without
+    /// it every variant is considered. A result a variant outside the list also needs is kept.
+    #[serde(default)]
+    scenarios: Option<Vec<String>>,
+    /// Without it the call only shows the plan and removes nothing. With it the stored results in
+    /// the plan are removed, and that cannot be undone.
+    #[serde(default)]
+    apply: bool,
+}
+
 #[derive(Deserialize, JsonSchema, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 enum Mode {
@@ -205,24 +315,41 @@ struct StartDocumentJobArgs {
     /// takes no run.
     #[serde(default)]
     run: Option<String>,
+    /// For `solve` only: the id of the variant to solve, from `scenario_list`. Without it the study
+    /// itself is solved.
+    #[serde(default)]
+    scenario: Option<String>,
+    /// For `solve` only: make a result again that was pruned on purpose. Left off, a pruned result
+    /// is not out of date and nothing is run for it.
+    #[serde(default)]
+    remake_pruned: bool,
 }
 
 impl StartDocumentJobArgs {
     /// What the words ask for, or the report that says the combination is not one.
     fn kind(&self) -> Result<DocJobKind, Box<Report>> {
-        let refused = || {
-            let found = cli_problem(
-                "A rerun needs the run to repeat; the other jobs take no run.".to_owned(),
-            );
+        let refused = |message: &str| {
+            let found = cli_problem(message.to_owned());
             Box::new(Report::from_diagnostics(
                 self.job.operation(),
                 vec![found],
                 None,
             ))
         };
+        let run_text = "A rerun needs the run to repeat; the other jobs take no run.";
+        let solve_text = "A variant and remake_pruned belong to the solve job only.";
+        if (self.scenario.is_some() || self.remake_pruned) && !matches!(self.job, JobWord::Solve) {
+            return Err(refused(solve_text));
+        }
         match (self.job, &self.run) {
             (JobWord::Rerun, Some(run)) => Ok(DocJobKind::Rerun { run: run.clone() }),
-            (JobWord::Rerun, None) | (_, Some(_)) => Err(refused()),
+            (JobWord::Rerun, None) | (_, Some(_)) => Err(refused(run_text)),
+            (JobWord::Solve, None) if self.scenario.is_some() || self.remake_pruned => {
+                Ok(DocJobKind::SolveScenario {
+                    scenario: self.scenario.clone(),
+                    remake_pruned: self.remake_pruned,
+                })
+            }
             (JobWord::Solve, None) => Ok(DocJobKind::Solve),
             (JobWord::UpdateMesh, None) => Ok(DocJobKind::Item(Stage::Mesh)),
             (JobWord::UpdateResult, None) => Ok(DocJobKind::Item(Stage::Result)),
@@ -288,7 +415,7 @@ struct PlanUpdateArgs {
 struct StartRunOutput {
     /// `started`, `busy`, `refused` or `nothing_to_run`. A start never waits for the job and never
     /// queues. `nothing_to_run` is a start of a document job that found nothing out of date: the
-    /// report says so, and nothing started.
+    /// report holds the data, `message` says so in words, and nothing started.
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
@@ -303,6 +430,9 @@ struct StartRunOutput {
     /// When refused: the reasons, in the same structure every operation returns.
     #[serde(skip_serializing_if = "Option::is_none")]
     report: Option<Report>,
+    /// The sentence for a person: present when the status is `nothing_to_run`, absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -338,6 +468,7 @@ fn start_output(outcome: StartOutcome) -> StartRunOutput {
         retry_after_seconds: None,
         stale: false,
         report: None,
+        message: None,
     };
     match outcome {
         StartOutcome::Started { run_id } => {
@@ -355,12 +486,12 @@ fn start_output(outcome: StartOutcome) -> StartRunOutput {
             out.stale = stale;
         }
         StartOutcome::Refused(report) => {
-            let word = if report.exit_class == 0 {
-                "nothing_to_run"
+            if report.exit_class == 0 {
+                out.status = "nothing_to_run".into();
+                out.message = Some(Text::english().render(&Line::NothingToRun));
             } else {
-                "refused"
-            };
-            out.status = word.into();
+                out.status = "refused".into();
+            }
             out.report = Some(*report);
         }
     }
@@ -511,7 +642,7 @@ impl CfdServer {
 
     #[tool(
         name = "start_document_job",
-        description = "Start a job on a stored document and return at once with a run id: solve it, rerun one of its recorded results, or update its mesh or its result. Poll run_status and get_result. If the host is busy the answer is busy with a retry time; starts are never queued. When nothing is out of date the answer is nothing_to_run and nothing starts."
+        description = "Start a job on a stored document and return at once with a run id: solve it (or one of its variants), rerun one of its recorded results, or update its mesh or its result. Poll run_status and get_result. If the host is busy the answer is busy with a retry time; starts are never queued. When nothing is out of date the answer is nothing_to_run and nothing starts."
     )]
     async fn start_document_job(
         &self,
@@ -593,14 +724,148 @@ impl CfdServer {
 
     #[tool(
         name = "document_status",
-        description = "Say whether a stored document is up to date, and for each stage why not, in plain words. Writes nothing and starts nothing."
+        description = "Say whether a stored document, or one of its variants, is up to date, and for each stage why not, in plain words. Writes nothing and starts nothing."
     )]
     async fn document_status(
+        &self,
+        Parameters(a): Parameters<StatusArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.scenario_status(&a.name, a.scenario.as_deref())).await
+    }
+
+    #[tool(
+        name = "scenario_list",
+        description = "List the variants of a stored document, the study itself (`base`) first, with each one's kind, its changes counted and its keys. Writes nothing and starts nothing."
+    )]
+    async fn scenario_list(
         &self,
         Parameters(a): Parameters<NameArgs>,
     ) -> Result<Json<Report>, ErrorData> {
         let s = self.state.clone();
-        blocking(move || s.workspace.document_status(&a.name)).await
+        blocking(move || s.workspace.scenario_list(&a.name)).await
+    }
+
+    #[tool(
+        name = "scenario_show",
+        description = "Show one variant of a stored document in full: the changes it stores, the raw entries of its study and the findings of its study. Writes nothing and starts nothing."
+    )]
+    async fn scenario_show(
+        &self,
+        Parameters(a): Parameters<ScenarioArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.scenario_show(&a.name, &a.scenario)).await
+    }
+
+    #[tool(
+        name = "scenario_diff",
+        description = "Say how one variant of a stored document differs from another, in the words a status uses. Either may be `base`. Writes nothing and starts nothing."
+    )]
+    async fn scenario_diff(
+        &self,
+        Parameters(a): Parameters<DiffArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.scenario_diff(&a.name, &a.a, &a.b)).await
+    }
+
+    #[tool(
+        name = "scenario_set",
+        description = "Create a variant of a stored document, or change the one that exists, with a list of changes to settings. Changes only the document named and starts nothing. Returns the variant, or the reason a change does not apply."
+    )]
+    async fn scenario_set(
+        &self,
+        Parameters(a): Parameters<ScenarioSetArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            s.workspace.scenario_set(
+                &a.name,
+                &a.scenario,
+                a.parent.as_deref(),
+                &a.overrides,
+                a.title.as_deref(),
+            )
+        })
+        .await
+    }
+
+    #[tool(
+        name = "scenario_label",
+        description = "Set or clear the title, the pin and the notes of a variant of a stored document, or of the study itself (`base`). Changes only the document named and starts nothing."
+    )]
+    async fn scenario_label(
+        &self,
+        Parameters(a): Parameters<ScenarioLabelArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || {
+            let update = LabelUpdate {
+                name: a.title,
+                pinned: a.pinned,
+                notes: a.notes,
+            };
+            s.workspace.scenario_label(&a.name, &a.scenario, &update)
+        })
+        .await
+    }
+
+    #[tool(
+        name = "sweep_plan",
+        description = "Expand a sweep into its points: each point with its label and the settings it changes. Stores nothing and starts nothing."
+    )]
+    async fn sweep_plan(
+        &self,
+        Parameters(a): Parameters<SweepArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.sweep_plan(&a.name, &a.sweep)).await
+    }
+
+    #[tool(
+        name = "sweep_create",
+        description = "Store a sweep and one variant for each of its points in the named document. Changes only the document named and starts nothing."
+    )]
+    async fn sweep_create(
+        &self,
+        Parameters(a): Parameters<SweepArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.sweep_create(&a.name, &a.sweep)).await
+    }
+
+    #[tool(
+        name = "sweep_preflight",
+        description = "Check every point of a stored sweep without solving anything: its changes apply, its study passes the checks and its case is built and scanned. A failing point is exit class 1 with its reason. Writes nothing and starts nothing."
+    )]
+    async fn sweep_preflight(
+        &self,
+        Parameters(a): Parameters<SweepOfArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.sweep_preflight(&a.name, &a.sweep)).await
+    }
+
+    #[tool(
+        name = "disk_use",
+        description = "Say how much stored result each variant of a stored document holds, in bytes: its mesh, its result, what it shares with another variant and what was pruned. Writes nothing and starts nothing."
+    )]
+    async fn disk_use(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.disk_use(&a.name)).await
+    }
+
+    #[tool(
+        name = "prune",
+        description = "Show which stored results of a document can be removed, and how many bytes that frees. By default this only shows the plan and removes nothing. With apply true it removes the stored results that no pinned variant needs, in the named variants or in all, and it cannot be undone. Every run record and its key numbers are kept."
+    )]
+    async fn prune(&self, Parameters(a): Parameters<PruneArgs>) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.prune(&a.name, a.scenarios.as_deref(), a.apply)).await
     }
 
     #[tool(
@@ -675,7 +940,7 @@ impl CfdServer {
 #[tool_handler(
     router = self.tool_router,
     name = "cfdcraft",
-    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result) and poll it like a run, one job at a time. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Judge a run by evidence.verdict in its report."
+    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result) and poll it like a run, one job at a time. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
 )]
 impl ServerHandler for CfdServer {}
 
@@ -702,7 +967,7 @@ async fn stop_signal() {
     }
 }
 
-/// Serve the eighteen operations on standard input and output until the client closes the pipe or the
+/// Serve the operations on standard input and output until the client closes the pipe or the
 /// process is asked to stop. Then the server's own job, if any, is cancelled through the
 /// executor's stop-and-remove path, and the lock is released only when removal is confirmed.
 /// Returns the exit status: 0, or `INPUT_FAILURE_EXIT` after one line on standard error when

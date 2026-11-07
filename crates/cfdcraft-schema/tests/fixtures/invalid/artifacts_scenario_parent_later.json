@@ -1,0 +1,20 @@
+{
+  "links": [],
+  "blobs": [],
+  "scenarios": [
+    {
+      "overrides": [
+        { "op": "set", "setting": "/mesh/cells_y", "value": 64 }
+      ],
+      "parent": "coarser",
+      "id": "finer"
+    },
+    {
+      "overrides": [
+        { "op": "set", "setting": "/mesh/cells_x", "value": 32 }
+      ],
+      "parent": "base",
+      "id": "coarser"
+    }
+  ]
+}

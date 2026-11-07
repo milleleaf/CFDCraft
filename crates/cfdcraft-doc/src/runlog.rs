@@ -7,7 +7,7 @@ use cfdcraft_runs::{RunRecord, RunsError, Stage, next_run_id, redact_hosts, veri
 use cfdcraft_store::ContentHash;
 use thiserror::Error;
 
-use crate::model::{ArtifactIndex, BlobKind, BlobRef, Document};
+use crate::model::{ARTIFACTS_LIMIT, ArtifactIndex, BlobKind, BlobRef, Document};
 
 /// Why a run could not be added to a document. The document is left as it was.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -23,17 +23,59 @@ pub enum RunLogError {
         /// The id the record carries.
         found: String,
     },
+    /// The list of runs has no room for another record: the index would pass its size limit.
+    #[error(
+        "the run history already holds {runs} records, and the file has no room for another: its list of results and runs would pass the {limit} byte limit"
+    )]
+    HistoryFull {
+        /// How many records the history holds.
+        runs: usize,
+        /// The size limit of the index in bytes.
+        limit: u64,
+    },
     /// The record names a stored result that the file already lists with another size or kind.
     #[error("the stored data {0} is already listed in the file with another size or kind")]
     BlobConflict(ContentHash),
+    /// The record was made for a variant the file does not list.
+    #[error("the run was made for the variant {scenario}, which the file does not list")]
+    UnknownScenario {
+        /// The variant the record names.
+        scenario: String,
+    },
 }
 
+/// Room kept for the blob entries a new record brings with it, on top of the record itself.
+const BLOB_ENTRIES_ROOM: usize = 4 * 1024;
+
 impl Document {
+    /// Whether one more record fits in the file, judged before a case is run: the index as it is
+    /// now, plus a record as big as the biggest one it holds, must stay within the size limit
+    /// the file is written and read under. A history is stopped by that limit long before it
+    /// reaches the most records it may hold.
+    pub fn check_room_for_run(&self) -> Result<(), RunLogError> {
+        let size = |bytes: serde_json::Result<Vec<u8>>| bytes.map_or(0, |bytes| bytes.len());
+        let runs = &self.artifacts.runs;
+        let biggest = runs
+            .iter()
+            .map(|run| size(serde_json::to_vec_pretty(run)))
+            .max()
+            .unwrap_or(0);
+        let now = size(serde_json::to_vec_pretty(&self.artifacts));
+        if (now + biggest + BLOB_ENTRIES_ROOM) as u64 > ARTIFACTS_LIMIT {
+            return Err(RunLogError::HistoryFull {
+                runs: runs.len(),
+                limit: ARTIFACTS_LIMIT,
+            });
+        }
+        Ok(())
+    }
+
     /// Append `record` to the run history and list the stored results it names.
     ///
-    /// The record must be the next run, must be consistent with the runs before it, and must
-    /// agree with what the index already says about each result it names. Nothing is changed
-    /// unless all of that holds.
+    /// The record must be the next run, must be consistent with the runs before it, must name a
+    /// listed variant when it names one, and must agree with what the index already says about
+    /// each result it names. Nothing is changed unless all of that holds. A result the record
+    /// stores again is taken off the list of pruned results.
     pub fn add_run(&mut self, record: RunRecord) -> Result<(), RunLogError> {
         let expected = next_run_id(&self.artifacts.runs);
         if record.id != expected {
@@ -43,9 +85,17 @@ impl Document {
             });
         }
         let uses = record.blob_uses();
+        let named: Vec<ContentHash> = uses.iter().map(|used| used.hash).collect();
         let mut runs = self.artifacts.runs.clone();
         runs.push(record);
         verify_runs(&runs)?;
+        if let Some(scenario) = runs.last().and_then(|r| r.scenario.as_deref())
+            && !self.artifacts.scenarios.iter().any(|s| s.id == scenario)
+        {
+            return Err(RunLogError::UnknownScenario {
+                scenario: scenario.to_owned(),
+            });
+        }
 
         let mut added: Vec<BlobRef> = Vec::new();
         for used in uses {
@@ -71,6 +121,8 @@ impl Document {
         }
         self.artifacts.runs = runs;
         self.artifacts.blobs.extend(added);
+        // A result made again is no longer gone; the rest of the list keeps its order.
+        self.artifacts.pruned.retain(|hash| !named.contains(hash));
         Ok(())
     }
 }

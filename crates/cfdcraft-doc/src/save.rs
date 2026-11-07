@@ -5,7 +5,7 @@
 //! left behind.
 
 use std::fs::{self, File};
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -44,6 +44,45 @@ pub fn save_new(doc: &Document, path: &Path) -> Result<(), DocError> {
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// A fingerprint of the bytes a study file had when it was read, to be handed back to
+/// [`save_if_unchanged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp(blake3::Hash);
+
+fn stamp_of(file: &mut File) -> io::Result<Stamp> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(&mut *file)?;
+    Ok(Stamp(hasher.finalize()))
+}
+
+/// [`open`], and the stamp of the exact bytes that were read.
+pub fn open_stamped(path: &Path) -> Result<(Opened, Stamp), DocError> {
+    let mut file = File::open(path)?;
+    let stamp = stamp_of(&mut file)?;
+    // A save replaces the file under its name and never writes into the one that is open, so the
+    // bytes read now are the bytes that were stamped.
+    file.seek(SeekFrom::Start(0))?;
+    Ok((read_document(BufReader::new(file))?, stamp))
+}
+
+/// [`save`], but only if the file at `path` still has the bytes `stamp` was taken from; another
+/// save in between is refused with [`DocError::Changed`] and the file stays as it is.
+///
+/// This closes the lost update of a read, a long piece of work and a save: the check is made after
+/// the new file is built, so what is left between it and the replacement is a few steps and not
+/// the work. It is not a lock, and two callers that pass the check in the same instant can still
+/// both write.
+pub fn save_if_unchanged(doc: &Document, path: &Path, stamp: Stamp) -> Result<(), DocError> {
+    let bytes = to_bytes(doc)?;
+    let now = stamp_of(&mut File::open(path)?)?;
+    if now != stamp {
+        return Err(DocError::Changed(path.to_owned()));
+    }
+    craft_atomic::atomic_write(path, &bytes)?;
+    sweep_after_save(path);
+    Ok(())
 }
 
 /// [`save`] through an injected file system.

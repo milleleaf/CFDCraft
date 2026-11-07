@@ -22,6 +22,15 @@
 //! results it names ([`Document::add_run`]), and a file whose history disagrees with its index is
 //! refused on read and on write ([`check_runs`]).
 //!
+//! A caller that reads a file, does long work and writes it back reads it with [`open_stamped`] and
+//! writes it with [`save_if_unchanged`], so a save made by someone else in between is refused and not
+//! overwritten.
+//!
+//! The index can also hold variants of the study, parameter sweeps and the hashes of results that
+//! were removed on purpose. All three are optional and left out of a file that has none. One check
+//! ties them to each other, to the run history and to the list of stored results, on read and on
+//! write ([`check_scenario_records`]).
+//!
 //! Linked files are stored as paths relative to the folder of the study file, so they keep
 //! working when the project folder is moved; see [`resolve`], [`verify`] and [`check_links`].
 //!
@@ -35,6 +44,7 @@ mod links;
 mod model;
 mod runlog;
 mod save;
+mod scenelog;
 
 pub use container::{DocError, from_bytes, read_document, to_bytes, write_members};
 pub use links::{
@@ -47,4 +57,8 @@ pub use model::{
     STUDY_MEMBER, THUMBNAIL_LIMIT, THUMBNAIL_MEMBER, Writer,
 };
 pub use runlog::{RunLogError, check_runs};
-pub use save::{open, save, save_new, save_with, store_dir, sweep_stale_staging};
+pub use save::{
+    Stamp, open, open_stamped, save, save_if_unchanged, save_new, save_with, store_dir,
+    sweep_stale_staging,
+};
+pub use scenelog::{MAX_SWEEPS, check_scenario_records};

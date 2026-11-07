@@ -4,7 +4,7 @@
 use cfdcraft_keys::{
     Axis, Change, Residual, StageRecipes, ToolIdentity, ToolPart, diff_mesh, diff_result,
 };
-use cfdcraft_model::{BoundaryKind, ResolvedStudy, Study, resolve};
+use cfdcraft_model::{BoundaryKind, RawBackend, RawOverride, ResolvedStudy, Study, resolve};
 
 fn cavity() -> ResolvedStudy {
     let study = Study::from_json(include_str!(
@@ -54,6 +54,15 @@ fn velocity(boundary: &str, from: Option<f64>, to: Option<f64>) -> Change {
         boundary: text(boundary),
         from,
         to,
+    }
+}
+
+fn raw(file: &str, entry: &str, value: &str) -> RawOverride {
+    RawOverride {
+        backend: RawBackend::Esi,
+        file: text(file),
+        entry: text(entry),
+        value: text(value),
     }
 }
 
@@ -284,6 +293,41 @@ fn rows(o: &ResolvedStudy) -> Vec<Row> {
                 from: samples,
                 to: samples + 1,
             }],
+        ),
+        row(
+            "a raw override outside the mesh",
+            |r| {
+                r.raw_overrides.insert(
+                    text("relax-u"),
+                    raw("system/fvSolution", "relaxationFactors/equations/U", "0.5"),
+                );
+            },
+            vec![],
+            vec![Change::RawOverride {
+                id: text("relax-u"),
+                from: None,
+                to: Some(text(
+                    "esi system/fvSolution relaxationFactors/equations/U = 0.5",
+                )),
+            }],
+        ),
+        row(
+            "a raw override in a mesh dictionary",
+            |r| {
+                r.raw_overrides.insert(
+                    text("scale"),
+                    raw("system/blockMeshDict", "convertToMeters", "0.1"),
+                );
+            },
+            vec![Change::RawMesh],
+            vec![
+                Change::MeshChanged,
+                Change::RawOverride {
+                    id: text("scale"),
+                    from: None,
+                    to: Some(text("esi system/blockMeshDict convertToMeters = 0.1")),
+                },
+            ],
         ),
     ]
 }

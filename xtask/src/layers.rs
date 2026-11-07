@@ -7,7 +7,8 @@ use toml::Value;
 /// the wasm-clean rule bans tokio/ssh/egui in the core). The document crates are held to the
 /// same discipline: they stay off compute, UI and transport code so the per-crate CI gate
 /// stays fast and a browser viewer can reuse them. The keys, compare, runs and capture crates
-/// stay pure or off compute for the same reason. A crate that is not listed is unconstrained.
+/// stay pure or off compute for the same reason, and so do the scenario, sweep, disk-use and
+/// dictionary-editing crates. A crate that is not listed is unconstrained.
 const RULES: &[(&str, &[&str])] = &[
     (
         "cfdcraft-model",
@@ -44,6 +45,8 @@ const RULES: &[(&str, &[&str])] = &[
             "cfdcraft-migrate",
             "cfdcraft-store",
             "cfdcraft-runs",
+            "cfdcraft-scenarios",
+            "cfdcraft-sweep",
             "craft-atomic",
             "craft-docpath",
             "zip",
@@ -113,6 +116,34 @@ const RULES: &[(&str, &[&str])] = &[
         "cfdcraft-capture",
         &["cfdcraft-compare", "cfdcraft-store", "zip", "thiserror"],
     ),
+    (
+        "cfdcraft-scenarios",
+        &[
+            "cfdcraft-model",
+            "cfdcraft-runs",
+            "cfdcraft-keys",
+            "serde",
+            "serde_json",
+            "schemars",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-sweep",
+        &["serde", "serde_json", "schemars", "thiserror"],
+    ),
+    (
+        "cfdcraft-diskuse",
+        &[
+            "cfdcraft-keys",
+            "cfdcraft-store",
+            "serde",
+            "serde_json",
+            "schemars",
+            "thiserror",
+        ],
+    ),
+    ("cfdcraft-dictedit", &["thiserror"]),
 ];
 
 /// Assert the dependency graph respects the layering: every crate listed in `RULES`
@@ -249,6 +280,10 @@ mod tests {
             ("cfdcraft-compare", "blake3"),
             ("cfdcraft-runs", "zip"),
             ("cfdcraft-capture", "cfdcraft-keys"),
+            ("cfdcraft-scenarios", "blake3"),
+            ("cfdcraft-sweep", "cfdcraft-model"),
+            ("cfdcraft-diskuse", "zip"),
+            ("cfdcraft-dictedit", "serde"),
         ] {
             let root = named_workspace(name, &deps_of(&[foreign]));
             let error = check_layers(&root).unwrap_err();
@@ -298,6 +333,10 @@ mod tests {
                 "cfdcraft-compare",
                 "cfdcraft-runs",
                 "cfdcraft-capture",
+                "cfdcraft-scenarios",
+                "cfdcraft-sweep",
+                "cfdcraft-diskuse",
+                "cfdcraft-dictedit",
             ]
         );
     }

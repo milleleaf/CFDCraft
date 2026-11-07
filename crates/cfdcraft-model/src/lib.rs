@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod hash;
 pub mod migrate;
 pub mod quantity;
+pub mod raw;
 pub mod resolve;
 pub mod roundtrip;
 pub mod study;
@@ -15,6 +16,7 @@ pub use diagnostics::{
 pub use hash::canonical_hash;
 pub use migrate::MigrationNote;
 pub use quantity::{Quantity, Unit};
+pub use raw::{MAX_RAW_OVERRIDES, RawBackend, RawOverride};
 pub use resolve::{
     ResolveError, ResolvedBoundary, ResolvedStudy, resolve, speed_from_vector, velocity_vector,
 };

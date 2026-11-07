@@ -65,7 +65,15 @@ fn the_tool_identity_comes_from_the_dialect() {
     assert_eq!(tool.image_digest, IMAGE.split_once('@').unwrap().1);
     assert_eq!(tool.dialect, "esi-v2512");
     assert_eq!(tool.sidecar_lock, None);
-    assert_eq!(tool.writer_version, env!("CARGO_PKG_VERSION"));
+    // The version of the build, then the fingerprint of the case writer's sources.
+    let (version, fingerprint) = tool.writer_version.split_once('+').unwrap();
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(fingerprint.len(), 12);
+    assert!(
+        fingerprint
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    );
 }
 
 #[test]

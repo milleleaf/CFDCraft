@@ -106,6 +106,9 @@ pub struct FixtureRunner {
     pub last_study: Option<String>,
     /// With `fail_with` set: fail only on this call (counted from 1) instead of on every call.
     pub fail_on: Option<usize>,
+    /// The cell count of the folder the call at this place (counted from 1) writes instead of the
+    /// one the study gives, so the mesh it leaves differs from that of other calls.
+    pub cells_on_call: Option<(usize, u64)>,
 }
 
 impl FixtureRunner {
@@ -120,6 +123,7 @@ impl FixtureRunner {
             shifts: Vec::new(),
             last_study: None,
             fail_on: None,
+            cells_on_call: None,
         }
     }
 }
@@ -152,9 +156,13 @@ impl CaseRunner for FixtureRunner {
             [] => speed - 0.1,
             shifts => shifts[(self.calls - 1).min(shifts.len() - 1)],
         };
+        let cells = match self.cells_on_call {
+            Some((call, cells)) if call == self.calls => cells,
+            _ => cell("cells_x") * cell("cells_y") * cell("cells_z"),
+        };
         let spec = FixtureSpec {
             end_time: 5000,
-            cells: cell("cells_x") * cell("cells_y") * cell("cells_z"),
+            cells,
             samples: 64,
             // The cavity at its first speed gives the plain ramp.
             shift,
@@ -278,6 +286,7 @@ pub fn add_mesh_only_run(path: &Path) {
     let record = RunRecord {
         id: next_run_id(&document.artifacts.runs),
         rerun_of: None,
+        scenario: None,
         mesh: Some(Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),

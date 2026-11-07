@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cfdcraft_model::RawOverride;
+
 use crate::ToolIdentity;
 use crate::recipe::{BoundaryRecipe, MeshRecipe, ResultRecipe};
 
@@ -113,6 +115,27 @@ pub enum Change {
     },
     /// The mesh the result stands on is a different one.
     MeshChanged,
+    /// A raw override, named by its label, that was added, changed or removed. A side is
+    /// `<backend> <file> <entry> = <value>` (see [`raw_text`]), or `None` when the override is
+    /// absent there; the ops text says `none` for it.
+    RawOverride {
+        id: String,
+        from: Option<String>,
+        to: Option<String>,
+    },
+    /// A raw override in a mesh dictionary differs, so the mesh differs.
+    RawMesh,
+}
+
+/// A raw override as one line of text: `<backend> <file> <entry> = <value>`.
+pub fn raw_text(raw: &RawOverride) -> String {
+    format!(
+        "{} {} {} = {}",
+        raw.backend.as_str(),
+        raw.file,
+        raw.entry,
+        raw.value
+    )
 }
 
 fn tool_changes(old: &ToolIdentity, new: &ToolIdentity, out: &mut Vec<Change>) {
@@ -143,7 +166,7 @@ fn tool_changes(old: &ToolIdentity, new: &ToolIdentity, out: &mut Vec<Change>) {
 }
 
 /// The changes between two mesh recipes, in a fixed order: tool parts, lengths, openness, cell
-/// counts, patch layout. Empty exactly when the recipes are equal.
+/// counts, patch layout, raw mesh overrides. Empty exactly when the recipes are equal.
 pub fn diff_mesh(old: &MeshRecipe, new: &MeshRecipe) -> Vec<Change> {
     let mut out = Vec::new();
     tool_changes(&old.tool, &new.tool, &mut out);
@@ -175,6 +198,9 @@ pub fn diff_mesh(old: &MeshRecipe, new: &MeshRecipe) -> Vec<Change> {
     }
     if old.patches != new.patches {
         out.push(Change::Layout);
+    }
+    if old.raw != new.raw {
+        out.push(Change::RawMesh);
     }
     out
 }
@@ -215,8 +241,8 @@ fn boundary_changes(
 }
 
 /// The changes between two result recipes, in a fixed order: tool parts, the mesh, viscosity,
-/// boundaries by label, end time, write interval, the two convergence limits, sample count.
-/// Empty exactly when the recipes are equal.
+/// boundaries by label, end time, write interval, the two convergence limits, sample count,
+/// raw overrides by label. Empty exactly when the recipes are equal.
 pub fn diff_result(old: &ResultRecipe, new: &ResultRecipe) -> Vec<Change> {
     let mut out = Vec::new();
     tool_changes(&old.tool, &new.tool, &mut out);
@@ -269,6 +295,17 @@ pub fn diff_result(old: &ResultRecipe, new: &ResultRecipe) -> Vec<Change> {
     );
     if om != nm {
         out.push(Change::CentrelineSamples { from: om, to: nm });
+    }
+    let ids: BTreeSet<&String> = old.raw.keys().chain(new.raw.keys()).collect();
+    for id in ids {
+        let (from, to) = (old.raw.get(id), new.raw.get(id));
+        if from != to {
+            out.push(Change::RawOverride {
+                id: id.clone(),
+                from: from.map(raw_text),
+                to: to.map(raw_text),
+            });
+        }
     }
     out
 }

@@ -17,26 +17,29 @@ use std::path::{Path, PathBuf};
 use cfdcraft_backend_esi::Dialect;
 use cfdcraft_capture::{key_numbers, mesh_bundle, result_bundle, store_bundle};
 use cfdcraft_compare::{Comparison, KeyNumbers, Tolerance, compare};
-use cfdcraft_doc::{ARTIFACTS_MEMBER, DocError, Document, Opened, open, save, store_dir};
+use cfdcraft_doc::{
+    DocError, Document, Opened, Stamp, open, open_stamped, save_if_unchanged, store_dir,
+};
 use cfdcraft_keys::{Stage, StageKeys, StageRecipes, ToolIdentity, diff_mesh};
-use cfdcraft_model::{Diagnostic, MigrationNote, Severity};
+use cfdcraft_model::{Diagnostic, Severity, Study};
 use cfdcraft_runs::{
-    Check, Item, Output, Provenance, RunRecord, StageState, Status, find_run, latest_mesh,
-    latest_result, next_run_id, pending, status, verify_runs,
+    Check, Item, Output, Provenance, RunRecord, StageState, Status, find_run, is_plain_name,
+    latest_mesh, latest_result, next_run_id, status_for, verify_runs,
 };
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
 
 use crate::documents::{
-    DocOutcome, Finding, finding, is_pack_name, not_written, pack_kept, problem, read_failure,
-    refused, say, shown,
+    DocOutcome, Finding, finding, is_pack_name, migration_with, not_written, pack_kept, problem,
+    read_failure, refused, shown,
 };
-use crate::inspect::{is_plain_name, judgement};
+use crate::inspect::judgement;
 use crate::keys::tool_identity;
 use crate::prepare::{Prepared, prepare};
 use crate::reasons::reason_text;
 use crate::report::{ExitClass, Report};
 use crate::repro::{ComparisonData, Repro, RunData};
+use crate::scenario_ops::effective_of;
 
 const SOLVE: &str = "solve";
 
@@ -109,6 +112,8 @@ struct Pending {
 struct Repeat {
     original: RunRecord,
     tolerance: Tolerance,
+    /// How the tools of this build differ from those the run was made with, when they do.
+    tool_changed: Option<String>,
 }
 
 /// A document that has been looked at and has work to do.
@@ -117,6 +122,10 @@ pub struct DocJob {
     path: PathBuf,
     action: JobAction,
     study_json: String,
+    /// The study the case is made from: the document's own, or the effective study of a variant.
+    effective: Study,
+    /// The variant the job is for; `None` is the study itself.
+    scenario: Option<String>,
     hash: String,
     end_time: f64,
     recipes: StageRecipes,
@@ -142,6 +151,14 @@ fn run_data(run: Option<String>, pending: Pending, keys: &StageKeys) -> RunData 
         reused: stage_words(!pending.mesh, !pending.result),
         mesh_key: keys.mesh.to_string(),
         result_key: keys.result.to_string(),
+    }
+}
+
+/// `report`, with the variant it is about named as an artifact when there is one.
+fn with_scenario(report: Report, scenario: Option<&str>) -> Report {
+    match scenario {
+        Some(id) => report.with_artifact("scenario", id),
+        None => report,
     }
 }
 
@@ -177,41 +194,67 @@ pub(crate) fn inconsistent(reason: &str) -> Finding {
     )
 }
 
-/// Whether a reason given for a bad artifact index is about the run history.
-fn is_run_log_reason(reason: &str) -> bool {
-    reason.starts_with("run ")
-        || reason.starts_with("the run id")
-        || reason.contains(" run records")
-}
-
 /// A file that cannot be opened, as the refusal a solve answers with. A run history that does not
 /// hold together is told apart from a file that is not a study file.
 pub(crate) fn open_refusal(operation: &str, error: &DocError, path: &Path) -> DocOutcome {
     match error {
-        DocError::BadJson { member, reason }
-            if member.as_str() == ARTIFACTS_MEMBER && is_run_log_reason(reason) =>
-        {
-            refused(operation, problem(inconsistent(reason)))
-        }
+        DocError::RunLog(reason) => refused(operation, problem(inconsistent(reason))),
+        DocError::Scenarios(reason) => refused(
+            operation,
+            problem((
+                "CFD-SCN-002",
+                Line::ScenarioRefused {
+                    reason: reason.clone(),
+                },
+            )),
+        ),
         other => refused(operation, problem(read_failure(other, path))),
     }
 }
 
-/// Whether a stage has to be made. A fresh stage whose stored blob is gone counts as out of date,
-/// and the warning that says so is added.
+/// Whether the blob `hash` is in the store as a file of the size the record gave it. A blob that
+/// was cut short, emptied or swapped for another length counts as gone; a full check of the content
+/// is the store's `verify`, which packing runs.
+pub(crate) fn blob_present(store: Option<&Store>, hash: &ContentHash, size: u64) -> bool {
+    store.is_some_and(|store| {
+        std::fs::metadata(store.blob_path(hash)).is_ok_and(|m| m.is_file() && m.len() == size)
+    })
+}
+
+/// What a job does with the results that were removed on purpose.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JobOptions {
+    /// Make a result that was pruned again. Left off, a pruned result is not out of date and
+    /// nothing is run for it.
+    pub remake_pruned: bool,
+}
+
+/// The results the document lists as pruned, and whether a job makes them again.
+#[derive(Debug, Clone, Copy)]
+struct Pruned<'a> {
+    hashes: &'a [ContentHash],
+    remake: bool,
+}
+
+/// Whether a stage has to be made. A fresh stage whose stored blob is gone (or is not the size the
+/// record gave it) counts as out of date, and the warning that says so is added. `blob` is the hash
+/// and size the newest record of the stage holds. A blob that was pruned on purpose is not gone by
+/// accident: it has no warning, and the stage waits only when pruned results are to be remade.
 fn stage_pending(
     stage: Stage,
     state: &StageState,
-    blob: Option<ContentHash>,
-    present: &dyn Fn(&ContentHash) -> bool,
+    blob: Option<(ContentHash, u64)>,
+    present: &dyn Fn(&ContentHash, u64) -> bool,
+    pruned: Pruned<'_>,
     warnings: &mut Vec<Diagnostic>,
 ) -> bool {
     if !matches!(state, StageState::Fresh { .. }) {
         return true;
     }
     match blob {
-        Some(hash) if present(&hash) => false,
-        Some(hash) => {
+        Some((hash, size)) if present(&hash, size) => false,
+        Some((hash, _)) if pruned.hashes.contains(&hash) => pruned.remake,
+        Some((hash, _)) => {
             warnings.push(finding(
                 Severity::Warning,
                 "stored result",
@@ -229,34 +272,25 @@ fn stage_pending(
     }
 }
 
-/// One note for the steps an older file went through, worded for a file that is saved back.
-fn saved_migration(notes: &[MigrationNote]) -> Option<MigrationNote> {
-    let (first, last) = (notes.first()?, notes.last()?);
-    let summary = notes
-        .iter()
-        .map(|note| note.summary.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let (from, to) = (first.from, last.to);
-    Some(MigrationNote {
-        from,
-        to,
-        summary: say(&Line::MigratedAndSaved { from, to, summary }),
-    })
-}
-
 /// A document that was read, its study prepared, and its stages compared with the records.
 struct Looked {
     document: Document,
+    effective: Study,
+    scenario: Option<String>,
     study_json: String,
     prepared: Prepared,
     recipes: StageRecipes,
     state: Status,
 }
 
-/// Open the document at `path`, prepare its study and say where each stage stands. The file is
-/// not changed.
-fn look(operation: &str, path: &Path, tool: &ToolIdentity) -> Result<Looked, Box<DocOutcome>> {
+/// Open the document at `path`, prepare the study of `scenario` (the document's own when it is
+/// `None`) and say where each stage stands. The file is not changed.
+fn look(
+    operation: &str,
+    path: &Path,
+    tool: &ToolIdentity,
+    scenario: Option<&str>,
+) -> Result<Looked, Box<DocOutcome>> {
     if is_pack_name(path) {
         return Err(Box::new(refused(operation, problem(pack_kept(path)))));
     }
@@ -265,8 +299,8 @@ fn look(operation: &str, path: &Path, tool: &ToolIdentity) -> Result<Looked, Box
         return Err(Box::new(refused(operation, problem(pack_kept(path)))));
     }
     let document = opened.document;
-    let mut study_json =
-        serde_json::to_string_pretty(&document.study).expect("a study is plain data");
+    let (effective, tag) = effective_of(operation, &document, scenario)?;
+    let mut study_json = serde_json::to_string_pretty(&effective).expect("a study is plain data");
     study_json.push('\n');
 
     let prepared = prepare(&study_json, Dialect::EsiV2512).map_err(|report| {
@@ -283,14 +317,23 @@ fn look(operation: &str, path: &Path, tool: &ToolIdentity) -> Result<Looked, Box
             problem(inconsistent(&e.to_string())),
         )));
     }
-    let state = status(runs, &recipes);
+    let state = status_for(runs, &recipes, tag.as_deref());
     Ok(Looked {
         document,
+        effective,
+        scenario: tag,
         study_json,
         prepared,
         recipes,
         state,
     })
+}
+
+/// Refuse a job whose record would not fit in the file, before its case runs and not after.
+fn room_for_run(operation: &str, path: &Path, document: &Document) -> Result<(), Box<DocOutcome>> {
+    document
+        .check_room_for_run()
+        .map_err(|e| Box::new(refused(operation, problem(not_written(path, e)))))
 }
 
 /// The stages of the document at `path` that are out of date, as items called `label`, the mesh
@@ -300,8 +343,66 @@ pub(crate) fn pending_items(
     path: &Path,
     label: &str,
 ) -> Result<Vec<Item>, Box<DocOutcome>> {
-    let looked = look(operation, path, &tool_identity(Dialect::EsiV2512))?;
-    Ok(pending(label, &looked.state))
+    let looked = look(operation, path, &tool_identity(Dialect::EsiV2512), None)?;
+    let runs = &looked.document.artifacts.runs;
+    // The same question a solve asks, so the plan and the job cannot disagree: a fresh stage whose
+    // stored blob is gone is waiting too.
+    let pruned = Pruned {
+        hashes: &looked.document.artifacts.pruned,
+        remake: false,
+    };
+    let found = pending_stages(
+        path,
+        &looked.recipes,
+        &looked.state,
+        runs,
+        pruned,
+        &mut Vec::new(),
+    );
+    let items: Vec<Item> = [(Stage::Mesh, found.mesh), (Stage::Result, found.result)]
+        .into_iter()
+        .filter(|(_, waiting)| *waiting)
+        .map(|(stage, _)| Item::new(label, stage))
+        .collect();
+    if !items.is_empty() {
+        room_for_run(operation, path, &looked.document)?;
+    }
+    Ok(items)
+}
+
+/// Which stages of the document at `path` are out of date: those that are stale or never made, and
+/// those that are fresh by their records but whose stored blob is gone. The warning for each blob
+/// that is gone is added to `warnings`; a blob that was pruned on purpose has none, and its stage
+/// waits only when `pruned` asks for pruned results to be made again.
+fn pending_stages(
+    path: &Path,
+    recipes: &StageRecipes,
+    state: &Status,
+    runs: &[RunRecord],
+    pruned: Pruned<'_>,
+    warnings: &mut Vec<Diagnostic>,
+) -> Pending {
+    let keys = recipes.keys();
+    let store = Store::open(store_dir(path)).ok();
+    let present = |hash: &ContentHash, size: u64| blob_present(store.as_ref(), hash, size);
+    Pending {
+        mesh: stage_pending(
+            Stage::Mesh,
+            &state.mesh,
+            latest_mesh(runs, keys.mesh).map(|(_, out)| (out.blob, out.size)),
+            &present,
+            pruned,
+            warnings,
+        ),
+        result: stage_pending(
+            Stage::Result,
+            &state.result,
+            latest_result(runs, keys.result).map(|(_, out)| (out.blob, out.size)),
+            &present,
+            pruned,
+            warnings,
+        ),
+    }
 }
 
 /// Look at the document at `path` and decide what `action` has to make.
@@ -311,7 +412,38 @@ pub(crate) fn pending_items(
 /// waiting, a run that cannot be repeated), or the report that nothing is out of date. The
 /// document is never changed here.
 pub fn plan_job(path: &Path, action: JobAction) -> Result<DocJob, Box<DocOutcome>> {
-    plan_job_with_tool(path, action, tool_identity(Dialect::EsiV2512))
+    plan_scenario_job(path, None, action)
+}
+
+/// [`plan_job`] for the variant `scenario` of the document. `None` and `base` mean the study
+/// itself and record no tag.
+///
+/// A variant that does not exist and a change of a variant that does not apply to the study are
+/// refused here, before anything runs. A rerun takes its variant from the run it repeats and
+/// ignores `scenario`.
+pub fn plan_scenario_job(
+    path: &Path,
+    scenario: Option<&str>,
+    action: JobAction,
+) -> Result<DocJob, Box<DocOutcome>> {
+    plan_scenario_job_with(path, scenario, action, &JobOptions::default())
+}
+
+/// [`plan_scenario_job`] with options. With `remake_pruned` set, a stage whose stored result was
+/// pruned counts as out of date and is made again; otherwise it is left as it is.
+pub fn plan_scenario_job_with(
+    path: &Path,
+    scenario: Option<&str>,
+    action: JobAction,
+    options: &JobOptions,
+) -> Result<DocJob, Box<DocOutcome>> {
+    plan_with_tool(
+        path,
+        scenario,
+        action,
+        tool_identity(Dialect::EsiV2512),
+        options,
+    )
 }
 
 /// [`plan_job`] for another set of tools than this build's. It exists so tests can make a
@@ -322,6 +454,16 @@ pub fn plan_job_with_tool(
     action: JobAction,
     tool: ToolIdentity,
 ) -> Result<DocJob, Box<DocOutcome>> {
+    plan_with_tool(path, None, action, tool, &JobOptions::default())
+}
+
+fn plan_with_tool(
+    path: &Path,
+    scenario: Option<&str>,
+    action: JobAction,
+    tool: ToolIdentity,
+    options: &JobOptions,
+) -> Result<DocJob, Box<DocOutcome>> {
     if let JobAction::Rerun {
         run,
         tolerance,
@@ -330,19 +472,23 @@ pub fn plan_job_with_tool(
     {
         return plan_rerun(path, run, *tolerance, *allow_tool_change, &tool);
     }
-    plan_make(path, action, &tool)
+    plan_make(path, scenario, action, &tool, options)
 }
 
 /// Plan a solve, or the update of one stage.
 fn plan_make(
     path: &Path,
+    requested: Option<&str>,
     action: JobAction,
     tool: &ToolIdentity,
+    options: &JobOptions,
 ) -> Result<DocJob, Box<DocOutcome>> {
     let operation = operation_of(&action);
-    let looked = look(operation, path, tool)?;
+    let looked = look(operation, path, tool, requested)?;
     let Looked {
         document,
+        effective,
+        scenario,
         study_json,
         prepared,
         recipes,
@@ -357,24 +503,11 @@ fn plan_make(
     let runs = &document.artifacts.runs;
 
     let keys = recipes.keys();
-    let store = Store::open(store_dir(path)).ok();
-    let present = |hash: &ContentHash| store.as_ref().is_some_and(|s| s.contains(hash));
-    let found = Pending {
-        mesh: stage_pending(
-            Stage::Mesh,
-            &state.mesh,
-            latest_mesh(runs, keys.mesh).map(|(_, out)| out.blob),
-            &present,
-            &mut warnings,
-        ),
-        result: stage_pending(
-            Stage::Result,
-            &state.result,
-            latest_result(runs, keys.result).map(|(_, out)| out.blob),
-            &present,
-            &mut warnings,
-        ),
+    let pruned = Pruned {
+        hashes: &document.artifacts.pruned,
+        remake: options.remake_pruned,
     };
+    let found = pending_stages(path, &recipes, &state, runs, pruned, &mut warnings);
 
     let wanted = if let JobAction::Item(stage) = &action {
         let stage = *stage;
@@ -403,7 +536,8 @@ fn plan_make(
     } else {
         if !found.mesh && !found.result {
             let report = Report::from_diagnostics(operation, warnings, Some(hash))
-                .with_artifact("document", shown(path))
+                .with_artifact("document", shown(path));
+            let report = with_scenario(report, scenario.as_deref())
                 .with_repro(Repro::Run(run_data(None, found, &keys)));
             return Err(Box::new(DocOutcome {
                 report,
@@ -413,10 +547,13 @@ fn plan_make(
         found
     };
 
+    room_for_run(operation, path, &document)?;
     Ok(DocJob {
         path: path.to_owned(),
         action,
         study_json,
+        effective,
+        scenario,
         hash,
         end_time: resolved.solver.end_time,
         recipes,
@@ -488,6 +625,7 @@ fn plan_rerun(
     let recipes = StageRecipes::from_resolved(&prepared.resolved, tool);
     // The same settings under the two sets of tools differ in the tools alone.
     let changes = diff_mesh(&recorded.mesh, &recipes.mesh);
+    let tool_changed = (!changes.is_empty()).then(|| reason_text(&changes));
     let mut warnings = prepared.warnings;
     if !changes.is_empty() {
         let line = Line::ToolMismatch {
@@ -507,9 +645,13 @@ fn plan_rerun(
         return Err(fail(inconsistent(&reason)));
     }
 
+    room_for_run(OP, path, &document)?;
+    let effective = original.provenance.settings.clone();
+    let scenario = original.scenario.clone();
     let repeat = Repeat {
         original: original.clone(),
         tolerance,
+        tool_changed,
     };
     Ok(DocJob {
         path: path.to_owned(),
@@ -519,6 +661,8 @@ fn plan_rerun(
             allow_tool_change,
         },
         study_json,
+        effective,
+        scenario,
         hash: prepared.hash,
         end_time: prepared.resolved.solver.end_time,
         recipes,
@@ -573,28 +717,36 @@ impl DocJob {
     }
 
     /// Read the document again and check that it is what was planned and that every check of the
-    /// run held.
-    fn reopen(&self, run: &CaseRun) -> Result<Opened, Box<DocOutcome>> {
+    /// run held. The stamp is that of the bytes read, for the save that follows.
+    fn reopen(&self, run: &CaseRun) -> Result<(Opened, Stamp), Box<DocOutcome>> {
         let operation = operation_of(&self.action);
-        let opened =
-            open(&self.path).map_err(|e| Box::new(open_refusal(operation, &e, &self.path)))?;
+        let (opened, stamp) = open_stamped(&self.path)
+            .map_err(|e| Box::new(open_refusal(operation, &e, &self.path)))?;
         let moved = opened.packed_entries > 0
             || opened.document.study != self.document.study
+            || opened.document.artifacts.scenarios != self.document.artifacts.scenarios
             || opened.document.artifacts.runs.len() != self.document.artifacts.runs.len();
         if moved {
-            let reason = format!("the document changed while the case ran; {operation} it again");
-            return Err(Box::new(self.not_recorded(&reason)));
+            return Err(Box::new(self.changed()));
         }
         if let Some(check) = run.checks.iter().find(|check| !check.passed) {
             let reason = format!("the check \"{}\" did not pass", check.name);
             return Err(Box::new(self.not_recorded(&reason)));
         }
-        Ok(opened)
+        Ok((opened, stamp))
     }
 
-    /// Capture the output of the run, store it, and build the record of the run.
-    fn record(&self, run: CaseRun, runs: &[RunRecord]) -> Result<RunRecord, String> {
-        let keys = self.recipes.keys();
+    /// The answer when the document is not what the job was planned from.
+    fn changed(&self) -> DocOutcome {
+        let operation = operation_of(&self.action);
+        let reason = format!("the document changed while the case ran; {operation} it again");
+        self.not_recorded(&reason)
+    }
+
+    /// Capture the output of the run the job is waiting for and put it into the store. Blobs are
+    /// named by their content, so storing them before the document is looked at again does no
+    /// harm when the record is then refused.
+    fn store_output(&self, run: &CaseRun) -> Result<Stored, String> {
         let dir = run.results_dir.as_path();
         let mesh = self
             .pending
@@ -615,14 +767,36 @@ impl DocJob {
         };
 
         let store = Store::create(store_dir(&self.path)).map_err(|e| e.to_string())?;
-        let mesh_blob = mesh
+        let mesh = mesh
             .map(|bundle| store_bundle(&store, &bundle))
             .transpose()
             .map_err(|e| e.to_string())?;
-        let result_blob = result
+        let result = result
             .map(|bundle| store_bundle(&store, &bundle))
             .transpose()
             .map_err(|e| e.to_string())?;
+        Ok(Stored {
+            mesh,
+            result,
+            numbers,
+            regenerated_mesh: None,
+        })
+    }
+
+    /// Build the record of the run from what was stored, as the next entry of `runs`.
+    fn record(
+        &self,
+        run: CaseRun,
+        stored: Stored,
+        runs: &[RunRecord],
+    ) -> Result<RunRecord, String> {
+        let keys = self.recipes.keys();
+        let Stored {
+            mesh: mesh_blob,
+            result: result_blob,
+            numbers,
+            ..
+        } = stored;
         let mesh_hash = match mesh_blob {
             Some((hash, _)) => hash,
             None => latest_mesh(runs, keys.mesh)
@@ -633,6 +807,7 @@ impl DocJob {
         Ok(RunRecord {
             id: next_run_id(runs),
             rerun_of: None,
+            scenario: self.scenario.clone(),
             mesh: mesh_blob.map(|(blob, size)| Output {
                 key: keys.mesh,
                 recipe: self.recipes.mesh.clone(),
@@ -650,7 +825,7 @@ impl DocJob {
                 mesh_key: keys.mesh,
                 mesh_hash,
                 result_key: result_blob.map(|_| keys.result),
-                settings: self.document.study.clone(),
+                settings: self.effective.clone(),
                 tool: self.recipes.mesh.tool.clone(),
                 host: run.host,
             },
@@ -660,26 +835,46 @@ impl DocJob {
         })
     }
 
-    /// Capture the result of a rerun, store it, and build its record with the comparison against
-    /// the run it repeats. The settings and the mesh are the original's.
+    /// Build the record of a rerun from what was stored, with the comparison against the run it
+    /// repeats. The settings and the mesh are the original's.
     fn record_rerun(
         &self,
         run: CaseRun,
+        stored: Stored,
         runs: &[RunRecord],
         repeat: &Repeat,
     ) -> Result<(RunRecord, Comparison), String> {
         let keys = self.recipes.keys();
         let original = &repeat.original;
-        let dir = run.results_dir.as_path();
-        let bundle = result_bundle(dir, self.end_time).map_err(|e| e.to_string())?;
-        let numbers = key_numbers(dir, self.end_time).map_err(|e| e.to_string())?;
-        let store = Store::create(store_dir(&self.path)).map_err(|e| e.to_string())?;
-        let (blob, size) = store_bundle(&store, &bundle).map_err(|e| e.to_string())?;
-        let comparison = compare(&original.key_numbers, &numbers, repeat.tolerance);
+        let (blob, size) = stored.result.ok_or("the rerun stored no result")?;
+        let comparison = compare(&original.key_numbers, &stored.numbers, repeat.tolerance);
+        // With other tools the mesh the run stood on is the one it regenerated, not the recorded
+        // one, and the record says which tools made it.
+        let mesh_hash = stored
+            .regenerated_mesh
+            .unwrap_or(original.provenance.mesh_hash);
+        let mut checks = run.checks;
+        if let Some(reasons) = &repeat.tool_changed {
+            let same = Tolerance::same_image();
+            let note = if repeat.tolerance == same {
+                "; the numbers were compared under the tight tolerance for the same image, which another image may not meet"
+            } else {
+                ""
+            };
+            checks.push(Check {
+                name: "tool_changed".to_owned(),
+                passed: true,
+                detail: format!(
+                    "made with other tools than {}: {reasons}{note}",
+                    original.id
+                ),
+            });
+        }
 
         let record = RunRecord {
             id: next_run_id(runs),
             rerun_of: Some(original.id.clone()),
+            scenario: original.scenario.clone(),
             mesh: None,
             result: Some(Output {
                 key: keys.result,
@@ -690,27 +885,49 @@ impl DocJob {
             provenance: Provenance {
                 geometry_hash: self.recipes.mesh.geometry.hash(),
                 mesh_key: keys.mesh,
-                mesh_hash: original.provenance.mesh_hash,
+                mesh_hash,
                 result_key: Some(keys.result),
                 settings: original.provenance.settings.clone(),
                 tool: self.recipes.mesh.tool.clone(),
                 host: run.host,
             },
-            checks: run.checks,
-            key_numbers: numbers,
+            checks,
+            key_numbers: stored.numbers,
             comparison: Some(comparison.clone()),
         };
         Ok((record, comparison))
     }
 
+    /// Save the document with the run added, unless another save came in since it was read.
+    fn save_run(&self, document: &Document, stamp: Stamp) -> Result<(), Box<DocOutcome>> {
+        match save_if_unchanged(document, &self.path, stamp) {
+            Ok(()) => Ok(()),
+            Err(DocError::Changed(_)) => Err(Box::new(self.changed())),
+            Err(e) => Err(Box::new(refused(
+                operation_of(&self.action),
+                problem(not_written(&self.path, e)),
+            ))),
+        }
+    }
+
     fn finish_make(self, run: CaseRun) -> DocOutcome {
         let operation = operation_of(&self.action);
-        let opened = match self.reopen(&run) {
-            Ok(opened) => opened,
+        // Refuse what can be refused before the output is read and stored.
+        if let Err(outcome) = self.reopen(&run) {
+            return *outcome;
+        }
+        let stored = match self.store_output(&run) {
+            Ok(stored) => stored,
+            Err(reason) => return self.not_recorded(&reason),
+        };
+        // The capture may have taken a long time: read the file again, build the record on what is
+        // in it now, and save only if no one saved it since.
+        let (opened, stamp) = match self.reopen(&run) {
+            Ok(read) => read,
             Err(outcome) => return *outcome,
         };
         let mut document = opened.document;
-        let record = match self.record(run, &document.artifacts.runs) {
+        let record = match self.record(run, stored, &document.artifacts.runs) {
             Ok(record) => record,
             Err(reason) => return self.not_recorded(&reason),
         };
@@ -718,8 +935,8 @@ impl DocJob {
         if let Err(e) = document.add_run(record) {
             return self.not_recorded(&e.to_string());
         }
-        if let Err(e) = save(&document, &self.path) {
-            return refused(operation, problem(not_written(&self.path, e)));
+        if let Err(outcome) = self.save_run(&document, stamp) {
+            return *outcome;
         }
 
         let mut data = run_data(Some(id.clone()), self.pending, &self.recipes.keys());
@@ -738,9 +955,9 @@ impl DocJob {
             },
         };
         let report = Report::from_diagnostics(operation, self.warnings, Some(self.hash))
-            .with_migration(saved_migration(&opened.notes))
-            .with_artifact("document", shown(&self.path))
-            .with_repro(Repro::Run(data));
+            .with_migration(migration_with(&opened.notes, true))
+            .with_artifact("document", shown(&self.path));
+        let report = with_scenario(report, self.scenario.as_deref()).with_repro(Repro::Run(data));
         DocOutcome {
             report,
             line: Some(line),
@@ -749,21 +966,35 @@ impl DocJob {
 
     fn finish_rerun(self, run: CaseRun, repeat: &Repeat) -> DocOutcome {
         let operation = operation_of(&self.action);
-        let opened = match self.reopen(&run) {
-            Ok(opened) => opened,
+        if let Err(outcome) = self.reopen(&run) {
+            return *outcome;
+        }
+        let mut stored = match self.store_output(&run) {
+            Ok(stored) => stored,
+            Err(reason) => return self.not_recorded(&reason),
+        };
+        if repeat.tool_changed.is_some() {
+            match mesh_bundle(run.results_dir.as_path()).and_then(|bundle| bundle.hash()) {
+                Ok(hash) => stored.regenerated_mesh = Some(hash),
+                Err(e) => return self.not_recorded(&e.to_string()),
+            }
+        }
+        let (opened, stamp) = match self.reopen(&run) {
+            Ok(read) => read,
             Err(outcome) => return *outcome,
         };
         let mut document = opened.document;
-        let (record, comparison) = match self.record_rerun(run, &document.artifacts.runs, repeat) {
-            Ok(done) => done,
-            Err(reason) => return self.not_recorded(&reason),
-        };
+        let (record, comparison) =
+            match self.record_rerun(run, stored, &document.artifacts.runs, repeat) {
+                Ok(done) => done,
+                Err(reason) => return self.not_recorded(&reason),
+            };
         let id = record.id.clone();
         if let Err(e) = document.add_run(record) {
             return self.not_recorded(&e.to_string());
         }
-        if let Err(e) = save(&document, &self.path) {
-            return refused(operation, problem(not_written(&self.path, e)));
+        if let Err(outcome) = self.save_run(&document, stamp) {
+            return *outcome;
         }
 
         let (found, line, failed) = judgement(&comparison, &id, &repeat.original.id);
@@ -774,9 +1005,10 @@ impl DocJob {
             other: id,
             comparison,
         };
-        let mut report = Report::from_diagnostics(operation, diagnostics, Some(self.hash))
-            .with_migration(saved_migration(&opened.notes))
-            .with_artifact("document", shown(&self.path))
+        let report = Report::from_diagnostics(operation, diagnostics, Some(self.hash))
+            .with_migration(migration_with(&opened.notes, true))
+            .with_artifact("document", shown(&self.path));
+        let mut report = with_scenario(report, self.scenario.as_deref())
             .with_repro(Repro::Comparison(Box::new(data)));
         if failed {
             report.set_class(ExitClass::GateFailed);
@@ -788,10 +1020,32 @@ impl DocJob {
     }
 }
 
+/// What was captured from a run and put into the store: the blob and size of each stage the job
+/// was waiting for, and the key numbers.
+struct Stored {
+    mesh: Option<(ContentHash, u64)>,
+    result: Option<(ContentHash, u64)>,
+    numbers: KeyNumbers,
+    /// For a rerun made with other tools: the hash of the mesh that run regenerated.
+    regenerated_mesh: Option<ContentHash>,
+}
+
 /// Solve the document at `path` with `runner`: run the case if the mesh or the result is out of
 /// date, store what it made and record the run. When nothing is out of date nothing runs.
 pub fn solve_document(path: &Path, runner: &mut dyn CaseRunner) -> DocOutcome {
-    match plan_job(path, JobAction::Solve) {
+    solve_scenario(path, None, runner)
+}
+
+/// [`solve_document`] for the variant `scenario`: its effective study goes through the same
+/// checks and keys as the study itself, a mesh any record already holds is reused, and the run is
+/// recorded with the variant and the effective study it was made from. `None` and `base` mean the
+/// study itself.
+pub fn solve_scenario(
+    path: &Path,
+    scenario: Option<&str>,
+    runner: &mut dyn CaseRunner,
+) -> DocOutcome {
+    match plan_scenario_job(path, scenario, JobAction::Solve) {
         Ok(job) => job.run_with(runner),
         Err(outcome) => *outcome,
     }

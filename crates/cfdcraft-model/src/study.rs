@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::{
     Quantity,
     migrate::{MigrationNote, migrate_v0_to_v1},
+    raw::RawOverride,
 };
 
 /// A unit-carrying study, schema version 1.
@@ -23,6 +24,11 @@ pub struct Study {
     pub mesh: MeshSpec,
     pub solver: SolverControl,
     pub monitors: Monitors,
+    /// Raw dictionary overrides keyed by a label (same naming rule as boundaries). For expert
+    /// use: each one sets a solver dictionary entry the study does not model. They show in
+    /// diffs and are part of the result's identity.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw_overrides: BTreeMap<String, RawOverride>,
 }
 
 #[derive(Debug, Error)]

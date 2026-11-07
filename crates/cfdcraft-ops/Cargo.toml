@@ -13,9 +13,12 @@ cfdcraft-capture = { path = "../cfdcraft-capture", version = "=0.1.0" }
 cfdcraft-compare = { path = "../cfdcraft-compare", version = "=0.1.0" }
 cfdcraft-doc = { path = "../cfdcraft-doc", version = "=0.1.0" }
 cfdcraft-keys = { path = "../cfdcraft-keys", version = "=0.1.0" }
+cfdcraft-diskuse = { path = "../cfdcraft-diskuse", version = "=0.1.0" }
 cfdcraft-pack = { path = "../cfdcraft-pack", version = "=0.1.0" }
 cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
+cfdcraft-scenarios = { path = "../cfdcraft-scenarios", version = "=0.1.0" }
 cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+cfdcraft-sweep = { path = "../cfdcraft-sweep", version = "=0.1.0" }
 cfdcraft-text = { path = "../cfdcraft-text", version = "=0.1.0" }
 craft-atomic = { workspace = true }
 schemars = "=1.2.3"

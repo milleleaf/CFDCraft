@@ -27,6 +27,7 @@ use crate::model::{
     THUMBNAIL_MEMBER,
 };
 use crate::runlog::check_runs;
+use crate::scenelog::check_scenario_records;
 
 /// Why a study file could not be written or read.
 #[derive(Debug, Error)]
@@ -56,6 +57,14 @@ pub enum DocError {
         /// What is wrong with it.
         reason: String,
     },
+    /// The run history of the artifact index does not hold together, or does not agree with the
+    /// list of stored results. The reason is a plain sentence and never names a path.
+    #[error("artifacts.json in the study file is not valid: {0}")]
+    RunLog(String),
+    /// The variants, sweeps or pruned list of the artifact index break a rule. The reason is a
+    /// plain sentence made of ids and counts and never names a path.
+    #[error("artifacts.json in the study file is not valid: {0}")]
+    Scenarios(String),
     /// The file was written by a newer version.
     #[error(
         "this study file uses schema {found}, but this version only understands up to schema {supported}; open it with a newer version"
@@ -79,6 +88,9 @@ pub enum DocError {
     /// The file to create already exists. Nothing was written and the file is as it was.
     #[error("{} already exists; nothing was written", .0.display())]
     TargetExists(PathBuf),
+    /// The file was changed by someone else after it was read. Nothing was written.
+    #[error("{} was changed by another save after it was read; nothing was written", .0.display())]
+    Changed(PathBuf),
     /// The disk refused a read or a write.
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -156,10 +168,8 @@ pub fn write_members<W: Write + Seek>(
     )?;
     // A file this program saves must be a file it can open: the run history and the list of
     // stored results have to agree before anything is written.
-    check_runs(&doc.artifacts).map_err(|reason| DocError::BadJson {
-        member: ARTIFACTS_MEMBER.to_owned(),
-        reason,
-    })?;
+    check_runs(&doc.artifacts).map_err(DocError::RunLog)?;
+    check_scenario_records(&doc.artifacts).map_err(DocError::Scenarios)?;
     put(
         zip,
         ARTIFACTS_MEMBER,
@@ -309,10 +319,8 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Opened, DocError> {
         member: ARTIFACTS_MEMBER.to_owned(),
         reason,
     })?;
-    check_runs(&artifacts).map_err(|reason| DocError::BadJson {
-        member: ARTIFACTS_MEMBER.to_owned(),
-        reason,
-    })?;
+    check_runs(&artifacts).map_err(DocError::RunLog)?;
+    check_scenario_records(&artifacts).map_err(DocError::Scenarios)?;
     let thumbnail = read_member(&mut zip, THUMBNAIL_MEMBER, THUMBNAIL_LIMIT)?;
 
     Ok(Opened {

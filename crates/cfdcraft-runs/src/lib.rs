@@ -20,8 +20,8 @@ pub use record::{
     BlobUse, Check, Output, Provenance, RunRecord, find_run, latest_mesh, latest_result,
     newest_mesh_output, newest_result_output, next_run_id,
 };
-pub use status::{StageState, Status, status};
-pub use verify::{MAX_RUNS, RunsError, redact_hosts, verify_runs};
+pub use status::{StageState, Status, status, status_for};
+pub use verify::{MAX_RUNS, RunsError, is_plain_name, redact_hosts, verify_runs};
 
 pub use cfdcraft_compare::{Comparison, KeyNumbers, Tolerance, Verdict};
 pub use cfdcraft_keys::{

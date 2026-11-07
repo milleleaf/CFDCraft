@@ -1,0 +1,14 @@
+{
+  "links": [],
+  "blobs": [
+    {
+      "kind": "result",
+      "size": 1024,
+      "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ],
+  "runs": [],
+  "pruned": [
+    "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+  ]
+}

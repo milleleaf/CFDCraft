@@ -137,6 +137,7 @@ fn a_tiny_recipe_has_the_pinned_text() {
             faces: vec![Face::XMin],
         }],
         cells: CellsRecipe { x: 2, y: 3, z: 1 },
+        raw: Vec::new(),
     };
     assert_eq!(
         serde_jcs::to_string(&recipe).unwrap(),

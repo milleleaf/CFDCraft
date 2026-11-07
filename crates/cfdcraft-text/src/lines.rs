@@ -81,6 +81,35 @@ const NOTHING_TO_UPDATE: &str = "Nothing is out of date.";
 const MIGRATED_AND_SAVED: &str = "This file was written by an older version (schema {from}) and was saved at schema {to}. {summary}";
 const OUTPUT_NOT_RECORDED: &str = "The output of the run could not be recorded: {reason}";
 const DUPLICATE_NAME: &str = "Two documents are called {name}; give them different file names.";
+const SCENARIO_CREATED: &str = "Created variant {scenario} of {parent}.";
+const SCENARIO_UPDATED: &str = "Updated variant {scenario}.";
+const SCENARIO_LABELLED: &str = "Updated the name, pin or notes of {scenario}.";
+const SCENARIO_UNKNOWN: &str = "There is no variant {scenario} in this file.";
+const SCENARIO_REFUSED: &str = "The variants cannot be saved: {reason}";
+const OVERRIDE_NOT_APPLIED: &str =
+    "The change to {setting} in {scenario} does not apply to the study: {reason}";
+const SCENARIO_DIFFERS: &str = "{to} differs from {from}: {reasons}.";
+const SCENARIO_SAME: &str = "{from} and {to} make the same case.";
+const REASON_RAW_OVERRIDE: &str = "raw override {id} {from} → {to}";
+const REASON_RAW_MESH: &str = "a raw mesh override changed";
+const SWEEP_TOO_LARGE: &str =
+    "Sweep {sweep} would make {points} points, more than the {max} allowed.";
+const SWEEP_REFUSED: &str = "Sweep {sweep} cannot be made: {reason}";
+const SWEEP_CREATED: &str = "Created sweep {sweep}: {points} variants.";
+const SWEEP_UNKNOWN: &str = "There is no sweep {sweep} in this file.";
+const PREFLIGHT_POINT_FAILED: &str = "{point} fails the checks: {reason}";
+const PREFLIGHT_PASSED: &str =
+    "All {points} points of {sweep} pass the checks; they need {meshes} different meshes.";
+const PREFLIGHT_FAILED: &str =
+    "{failed} of {points} points of {sweep} fail the checks; nothing was solved.";
+const DISK_TOTAL: &str = "The stored results use {bytes} bytes across {scenarios} variants.";
+const PRUNE_NOTHING: &str = "Nothing to prune.";
+const PRUNE_DRY_RUN: &str = "Pruning would remove {blobs} stored results and free {bytes} bytes. Nothing was removed; run again with apply to remove them.";
+const PRUNED: &str = "Removed {blobs} stored results and freed {bytes} bytes. The key numbers of every run are kept.";
+const STAGE_PRUNED: &str =
+    "The stored {stage} of {run} was pruned to free disk; its key numbers are kept.";
+const PRUNE_REFUSED: &str = "Pruning was refused: {reason}";
+const PRUNE_NOT_REMOVED: &str = "A stored result could not be removed: {reason}";
 
 /// Every English source text: the plain templates and both forms of each plural pair.
 pub const SOURCES: &[&str] = &[
@@ -152,6 +181,30 @@ pub const SOURCES: &[&str] = &[
     MIGRATED_AND_SAVED,
     OUTPUT_NOT_RECORDED,
     DUPLICATE_NAME,
+    SCENARIO_CREATED,
+    SCENARIO_UPDATED,
+    SCENARIO_LABELLED,
+    SCENARIO_UNKNOWN,
+    SCENARIO_REFUSED,
+    OVERRIDE_NOT_APPLIED,
+    SCENARIO_DIFFERS,
+    SCENARIO_SAME,
+    REASON_RAW_OVERRIDE,
+    REASON_RAW_MESH,
+    SWEEP_TOO_LARGE,
+    SWEEP_REFUSED,
+    SWEEP_CREATED,
+    SWEEP_UNKNOWN,
+    PREFLIGHT_POINT_FAILED,
+    PREFLIGHT_PASSED,
+    PREFLIGHT_FAILED,
+    DISK_TOTAL,
+    PRUNE_NOTHING,
+    PRUNE_DRY_RUN,
+    PRUNED,
+    STAGE_PRUNED,
+    PRUNE_REFUSED,
+    PRUNE_NOT_REMOVED,
 ];
 
 /// One thing the document layer tells a person. Data only: the sentence is made by
@@ -393,6 +446,106 @@ pub enum Line {
     DuplicateName {
         name: String,
     },
+    /// A variant was made from its parent.
+    ScenarioCreated {
+        scenario: String,
+        parent: String,
+    },
+    /// An existing variant's changes were replaced.
+    ScenarioUpdated {
+        scenario: String,
+    },
+    /// The name, pin or notes of a variant changed.
+    ScenarioLabelled {
+        scenario: String,
+    },
+    ScenarioUnknown {
+        scenario: String,
+    },
+    /// The list of variants broke a rule.
+    ScenarioRefused {
+        reason: String,
+    },
+    /// A change of a variant does not fit the study it is applied to.
+    OverrideNotApplied {
+        scenario: String,
+        setting: String,
+        reason: String,
+    },
+    /// Two variants differ; `reasons` is the joined reason sentences.
+    ScenarioDiffers {
+        from: String,
+        to: String,
+        reasons: String,
+    },
+    ScenarioSame {
+        from: String,
+        to: String,
+    },
+    /// A raw override changed; each side is its text or `none`.
+    ReasonRawOverride {
+        id: String,
+        from: String,
+        to: String,
+    },
+    ReasonRawMesh,
+    SweepTooLarge {
+        sweep: String,
+        points: String,
+        max: String,
+    },
+    SweepRefused {
+        sweep: String,
+        reason: String,
+    },
+    SweepCreated {
+        sweep: String,
+        points: String,
+    },
+    SweepUnknown {
+        sweep: String,
+    },
+    /// One point of a sweep fails the checks made before solving.
+    PreflightPointFailed {
+        point: String,
+        reason: String,
+    },
+    PreflightPassed {
+        sweep: String,
+        points: String,
+        meshes: String,
+    },
+    PreflightFailed {
+        sweep: String,
+        failed: String,
+        points: String,
+    },
+    DiskTotal {
+        bytes: String,
+        scenarios: String,
+    },
+    PruneNothing,
+    /// A pruning that was only planned.
+    PruneDryRun {
+        blobs: String,
+        bytes: String,
+    },
+    /// A pruning that was carried out.
+    Pruned {
+        blobs: String,
+        bytes: String,
+    },
+    /// A stage whose stored output was pruned, so it is not out of date.
+    StagePruned {
+        stage: String,
+        run: String,
+    },
+    PruneRefused {
+        reason: String,
+    },
+    PruneNotRemoved {
+        reason: String,
+    },
 }
 
 impl Line {
@@ -465,6 +618,30 @@ impl Line {
             Line::MigratedAndSaved { .. } => MIGRATED_AND_SAVED,
             Line::OutputNotRecorded { .. } => OUTPUT_NOT_RECORDED,
             Line::DuplicateName { .. } => DUPLICATE_NAME,
+            Line::ScenarioCreated { .. } => SCENARIO_CREATED,
+            Line::ScenarioUpdated { .. } => SCENARIO_UPDATED,
+            Line::ScenarioLabelled { .. } => SCENARIO_LABELLED,
+            Line::ScenarioUnknown { .. } => SCENARIO_UNKNOWN,
+            Line::ScenarioRefused { .. } => SCENARIO_REFUSED,
+            Line::OverrideNotApplied { .. } => OVERRIDE_NOT_APPLIED,
+            Line::ScenarioDiffers { .. } => SCENARIO_DIFFERS,
+            Line::ScenarioSame { .. } => SCENARIO_SAME,
+            Line::ReasonRawOverride { .. } => REASON_RAW_OVERRIDE,
+            Line::ReasonRawMesh => REASON_RAW_MESH,
+            Line::SweepTooLarge { .. } => SWEEP_TOO_LARGE,
+            Line::SweepRefused { .. } => SWEEP_REFUSED,
+            Line::SweepCreated { .. } => SWEEP_CREATED,
+            Line::SweepUnknown { .. } => SWEEP_UNKNOWN,
+            Line::PreflightPointFailed { .. } => PREFLIGHT_POINT_FAILED,
+            Line::PreflightPassed { .. } => PREFLIGHT_PASSED,
+            Line::PreflightFailed { .. } => PREFLIGHT_FAILED,
+            Line::DiskTotal { .. } => DISK_TOTAL,
+            Line::PruneNothing => PRUNE_NOTHING,
+            Line::PruneDryRun { .. } => PRUNE_DRY_RUN,
+            Line::Pruned { .. } => PRUNED,
+            Line::StagePruned { .. } => STAGE_PRUNED,
+            Line::PruneRefused { .. } => PRUNE_REFUSED,
+            Line::PruneNotRemoved { .. } => PRUNE_NOT_REMOVED,
         }
     }
 
@@ -583,6 +760,70 @@ impl Line {
             Line::NothingToRun | Line::NoRuns | Line::OrderMismatch | Line::NothingToUpdate => {
                 Vec::new()
             }
+            Line::ScenarioCreated { scenario, parent } => {
+                vec![("scenario", s(scenario)), ("parent", s(parent))]
+            }
+            Line::ScenarioUpdated { scenario }
+            | Line::ScenarioLabelled { scenario }
+            | Line::ScenarioUnknown { scenario } => vec![("scenario", s(scenario))],
+            Line::ScenarioRefused { reason }
+            | Line::PruneRefused { reason }
+            | Line::PruneNotRemoved { reason } => vec![("reason", s(reason))],
+            Line::OverrideNotApplied {
+                scenario,
+                setting,
+                reason,
+            } => vec![
+                ("scenario", s(scenario)),
+                ("setting", s(setting)),
+                ("reason", s(reason)),
+            ],
+            Line::ScenarioDiffers { from, to, reasons } => {
+                vec![("from", s(from)), ("to", s(to)), ("reasons", s(reasons))]
+            }
+            Line::ScenarioSame { from, to } => vec![("from", s(from)), ("to", s(to))],
+            Line::ReasonRawOverride { id, from, to } => {
+                vec![("id", s(id)), ("from", s(from)), ("to", s(to))]
+            }
+            Line::ReasonRawMesh | Line::PruneNothing => Vec::new(),
+            Line::SweepTooLarge { sweep, points, max } => {
+                vec![("sweep", s(sweep)), ("points", s(points)), ("max", s(max))]
+            }
+            Line::SweepRefused { sweep, reason } => {
+                vec![("sweep", s(sweep)), ("reason", s(reason))]
+            }
+            Line::SweepCreated { sweep, points } => {
+                vec![("sweep", s(sweep)), ("points", s(points))]
+            }
+            Line::SweepUnknown { sweep } => vec![("sweep", s(sweep))],
+            Line::PreflightPointFailed { point, reason } => {
+                vec![("point", s(point)), ("reason", s(reason))]
+            }
+            Line::PreflightPassed {
+                sweep,
+                points,
+                meshes,
+            } => vec![
+                ("sweep", s(sweep)),
+                ("points", s(points)),
+                ("meshes", s(meshes)),
+            ],
+            Line::PreflightFailed {
+                sweep,
+                failed,
+                points,
+            } => vec![
+                ("sweep", s(sweep)),
+                ("failed", s(failed)),
+                ("points", s(points)),
+            ],
+            Line::DiskTotal { bytes, scenarios } => {
+                vec![("bytes", s(bytes)), ("scenarios", s(scenarios))]
+            }
+            Line::PruneDryRun { blobs, bytes } | Line::Pruned { blobs, bytes } => {
+                vec![("blobs", s(blobs)), ("bytes", s(bytes))]
+            }
+            Line::StagePruned { stage, run } => vec![("stage", s(stage)), ("run", s(run))],
         }
     }
 
@@ -790,6 +1031,93 @@ impl Line {
                 reason: t("a result file is a link"),
             },
             Line::DuplicateName { name: t("cavity") },
+            Line::ScenarioCreated {
+                scenario: t("fast-lid"),
+                parent: t("base"),
+            },
+            Line::ScenarioUpdated {
+                scenario: t("fast-lid"),
+            },
+            Line::ScenarioLabelled {
+                scenario: t("fast-lid"),
+            },
+            Line::ScenarioUnknown {
+                scenario: t("fast-lid"),
+            },
+            Line::ScenarioRefused {
+                reason: t("a parent must come first"),
+            },
+            Line::OverrideNotApplied {
+                scenario: t("fast-lid"),
+                setting: t("/mesh/cells_x"),
+                reason: t("there is no such setting"),
+            },
+            Line::ScenarioDiffers {
+                from: t("base"),
+                to: t("fast-lid"),
+                reasons: t("lid velocity 0.1 → 0.2 m/s; cells in x 128 → 256"),
+            },
+            Line::ScenarioSame {
+                from: t("base"),
+                to: t("copy"),
+            },
+            Line::ReasonRawOverride {
+                id: t("relax-u"),
+                from: t("esi system/fvSolution relaxationFactors/equations/U = 0.7"),
+                to: t("esi system/fvSolution relaxationFactors/equations/U = 0.5"),
+            },
+            Line::ReasonRawMesh,
+            Line::SweepTooLarge {
+                sweep: t("grid"),
+                points: t("1000"),
+                max: t("200"),
+            },
+            Line::SweepRefused {
+                sweep: t("wind"),
+                reason: t("a parameter has no values"),
+            },
+            Line::SweepCreated {
+                sweep: t("wind"),
+                points: t("9"),
+            },
+            Line::SweepUnknown { sweep: t("wind") },
+            Line::PreflightPointFailed {
+                point: t("wind-004"),
+                reason: t("cells in x is zero"),
+            },
+            Line::PreflightPassed {
+                sweep: t("wind"),
+                points: t("9"),
+                meshes: t("3"),
+            },
+            Line::PreflightFailed {
+                sweep: t("wind"),
+                failed: t("2"),
+                points: t("9"),
+            },
+            Line::DiskTotal {
+                bytes: t("4096"),
+                scenarios: t("3"),
+            },
+            Line::PruneNothing,
+            Line::PruneDryRun {
+                blobs: t("3"),
+                bytes: t("1024"),
+            },
+            Line::Pruned {
+                blobs: t("3"),
+                bytes: t("1024"),
+            },
+            Line::StagePruned {
+                stage: t("result"),
+                run: t("run-3"),
+            },
+            Line::PruneRefused {
+                reason: t("a variant is unknown"),
+            },
+            Line::PruneNotRemoved {
+                reason: t("permission denied"),
+            },
         ]
     }
 }

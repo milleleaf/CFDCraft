@@ -131,6 +131,30 @@ fn every_variant_renders_to_its_english_sentence() {
         "This file was written by an older version (schema 1) and was saved at schema 2. Added runs.",
         "The output of the run could not be recorded: a result file is a link",
         "Two documents are called cavity; give them different file names.",
+        "Created variant fast-lid of base.",
+        "Updated variant fast-lid.",
+        "Updated the name, pin or notes of fast-lid.",
+        "There is no variant fast-lid in this file.",
+        "The variants cannot be saved: a parent must come first",
+        "The change to /mesh/cells_x in fast-lid does not apply to the study: there is no such setting",
+        "fast-lid differs from base: lid velocity 0.1 → 0.2 m/s; cells in x 128 → 256.",
+        "base and copy make the same case.",
+        "raw override relax-u esi system/fvSolution relaxationFactors/equations/U = 0.7 → esi system/fvSolution relaxationFactors/equations/U = 0.5",
+        "a raw mesh override changed",
+        "Sweep grid would make 1000 points, more than the 200 allowed.",
+        "Sweep wind cannot be made: a parameter has no values",
+        "Created sweep wind: 9 variants.",
+        "There is no sweep wind in this file.",
+        "wind-004 fails the checks: cells in x is zero",
+        "All 9 points of wind pass the checks; they need 3 different meshes.",
+        "2 of 9 points of wind fail the checks; nothing was solved.",
+        "The stored results use 4096 bytes across 3 variants.",
+        "Nothing to prune.",
+        "Pruning would remove 3 stored results and free 1024 bytes. Nothing was removed; run again with apply to remove them.",
+        "Removed 3 stored results and freed 1024 bytes. The key numbers of every run are kept.",
+        "The stored result of run-3 was pruned to free disk; its key numbers are kept.",
+        "Pruning was refused: a variant is unknown",
+        "A stored result could not be removed: permission denied",
     ]);
     let samples = Line::samples();
     assert_eq!(samples.len(), expected.len());
@@ -326,6 +350,12 @@ fn a_reason_value_that_looks_like_a_placeholder_is_inserted_as_written() {
         to: "2".to_string(),
     });
     assert_eq!(out, "{from} velocity 1 → 2 m/s");
+    let out = Text::english().render(&Line::ScenarioDiffers {
+        from: "base".to_string(),
+        to: "fast-lid".to_string(),
+        reasons: "{from}".to_string(),
+    });
+    assert_eq!(out, "fast-lid differs from base: {from}.");
 }
 
 #[test]
@@ -377,5 +407,134 @@ fn an_update_refusal_names_the_item_and_what_it_needs() {
     assert_eq!(
         out,
         "cavity:result is made from cavity:mesh, which is also out of date; update cavity:mesh too, and first."
+    );
+}
+
+#[test]
+fn a_raw_override_change_reads_with_both_sides() {
+    let english = Text::english();
+    let side = "esi system/fvSolution relaxationFactors/equations/U";
+    let out = english.render(&Line::ReasonRawOverride {
+        id: "relax-u".to_string(),
+        from: format!("{side} = 0.7"),
+        to: format!("{side} = 0.5"),
+    });
+    assert_eq!(
+        out,
+        "raw override relax-u esi system/fvSolution relaxationFactors/equations/U = 0.7 → esi system/fvSolution relaxationFactors/equations/U = 0.5"
+    );
+    let added = english.render(&Line::ReasonRawOverride {
+        id: "relax-u".to_string(),
+        from: "none".to_string(),
+        to: format!("{side} = 0.5"),
+    });
+    assert_eq!(
+        added,
+        "raw override relax-u none → esi system/fvSolution relaxationFactors/equations/U = 0.5"
+    );
+}
+
+#[test]
+fn a_mesh_override_change_has_its_own_sentence() {
+    assert_eq!(
+        Text::english().render(&Line::ReasonRawMesh),
+        "a raw mesh override changed"
+    );
+}
+
+#[test]
+fn a_diff_reads_with_its_reasons() {
+    let english = Text::english();
+    let differs = english.render(&Line::ScenarioDiffers {
+        from: "base".to_string(),
+        to: "fast-lid".to_string(),
+        reasons: "lid velocity 0.1 → 0.2 m/s; cells in x 128 → 256".to_string(),
+    });
+    assert_eq!(
+        differs,
+        "fast-lid differs from base: lid velocity 0.1 → 0.2 m/s; cells in x 128 → 256."
+    );
+    let same = english.render(&Line::ScenarioSame {
+        from: "base".to_string(),
+        to: "copy".to_string(),
+    });
+    assert_eq!(same, "base and copy make the same case.");
+}
+
+#[test]
+fn a_dry_run_prune_says_nothing_was_removed() {
+    let out = Text::english().render(&Line::PruneDryRun {
+        blobs: "3".to_string(),
+        bytes: "1024".to_string(),
+    });
+    assert_eq!(
+        out,
+        "Pruning would remove 3 stored results and free 1024 bytes. Nothing was removed; run again with apply to remove them."
+    );
+}
+
+#[test]
+fn an_applied_prune_says_the_key_numbers_are_kept() {
+    let out = Text::english().render(&Line::Pruned {
+        blobs: "3".to_string(),
+        bytes: "1024".to_string(),
+    });
+    assert_eq!(
+        out,
+        "Removed 3 stored results and freed 1024 bytes. The key numbers of every run are kept."
+    );
+}
+
+#[test]
+fn a_pruned_stage_is_not_called_stale() {
+    let out = Text::english().render(&Line::StagePruned {
+        stage: "result".to_string(),
+        run: "run-3".to_string(),
+    });
+    assert_eq!(
+        out,
+        "The stored result of run-3 was pruned to free disk; its key numbers are kept."
+    );
+    assert!(!out.contains("stale") && !out.contains("out of date"));
+}
+
+#[test]
+fn pre_flight_sentences_name_the_point_and_the_count() {
+    let english = Text::english();
+    let failed = english.render(&Line::PreflightFailed {
+        sweep: "wind".to_string(),
+        failed: "2".to_string(),
+        points: "9".to_string(),
+    });
+    assert_eq!(
+        failed,
+        "2 of 9 points of wind fail the checks; nothing was solved."
+    );
+    let passed = english.render(&Line::PreflightPassed {
+        sweep: "wind".to_string(),
+        points: "9".to_string(),
+        meshes: "3".to_string(),
+    });
+    assert_eq!(
+        passed,
+        "All 9 points of wind pass the checks; they need 3 different meshes."
+    );
+    let point = english.render(&Line::PreflightPointFailed {
+        point: "wind-004".to_string(),
+        reason: "cells in x is zero".to_string(),
+    });
+    assert_eq!(point, "wind-004 fails the checks: cells in x is zero");
+}
+
+#[test]
+fn a_sweep_that_is_too_large_says_how_large() {
+    let out = Text::english().render(&Line::SweepTooLarge {
+        sweep: "grid".to_string(),
+        points: "1000".to_string(),
+        max: "200".to_string(),
+    });
+    assert_eq!(
+        out,
+        "Sweep grid would make 1000 points, more than the 200 allowed."
     );
 }

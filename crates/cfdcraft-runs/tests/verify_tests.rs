@@ -1,7 +1,7 @@
 use cfdcraft_model::{Study, resolve};
 use cfdcraft_runs::{
     Check, KeyNumbers, MAX_RUNS, Output, Provenance, RunRecord, RunsError, Stage, StageRecipes,
-    ToolIdentity, redact_hosts, verify_runs,
+    ToolIdentity, is_plain_name, redact_hosts, verify_runs,
 };
 use cfdcraft_store::ContentHash;
 
@@ -42,6 +42,7 @@ fn record_for(id: &str, study: &Study) -> RunRecord {
     RunRecord {
         id: id.to_owned(),
         rerun_of: None,
+        scenario: None,
         mesh: Some(Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),
@@ -151,7 +152,6 @@ fn duplicate_ids_are_refused() {
 #[test]
 fn an_id_that_is_not_a_plain_name_is_refused() {
     let too_long = "a".repeat(41);
-    let longest = "a".repeat(40);
     for id in ["../x", "RUN-1", "", "-run", too_long.as_str()] {
         assert_eq!(
             verify_runs(&[bare_record(id)]),
@@ -159,9 +159,65 @@ fn an_id_that_is_not_a_plain_name_is_refused() {
             "{id:?}"
         );
     }
-    for id in ["run-1", "a", "0", longest.as_str()] {
-        assert_eq!(verify_runs(&[bare_record(id)]), Ok(()), "{id:?}");
+    assert_eq!(verify_runs(&[bare_record("run-1")]), Ok(()));
+}
+
+#[test]
+fn one_rule_decides_what_a_plain_name_is() {
+    // Run ids, link ids, document names and the names of runs a verb takes all follow it.
+    let longest = "a".repeat(40);
+    for name in ["run-1", "a", "0", "a-b-c", "9-", longest.as_str()] {
+        assert!(is_plain_name(name), "{name:?}");
     }
+    let too_long = "a".repeat(41);
+    for name in [
+        "",
+        "-a",
+        "A",
+        "run_1",
+        "run 1",
+        "run.1",
+        "ä",
+        "../x",
+        too_long.as_str(),
+    ] {
+        assert!(!is_plain_name(name), "{name:?}");
+    }
+}
+
+#[test]
+fn run_ids_must_count_up_from_run_1_in_order() {
+    let longest = "a".repeat(40);
+    // A plain name that is not the one this place in the log has: the next record could never
+    // be added to such a log.
+    for id in ["run-2", "a", "0", "run-0", "run-01", longest.as_str()] {
+        assert_eq!(
+            verify_runs(&[bare_record(id)]),
+            Err(RunsError::OutOfOrder {
+                found: id.to_owned(),
+                expected: "run-1".to_owned(),
+            }),
+            "{id:?}"
+        );
+    }
+    let swapped = [
+        bare_record("run-1"),
+        bare_record("run-3"),
+        bare_record("run-2"),
+    ];
+    assert_eq!(
+        verify_runs(&swapped),
+        Err(RunsError::OutOfOrder {
+            found: "run-3".to_owned(),
+            expected: "run-2".to_owned(),
+        })
+    );
+    let text = RunsError::OutOfOrder {
+        found: "run-3".to_owned(),
+        expected: "run-2".to_owned(),
+    }
+    .to_string();
+    assert!(text.contains("run-3") && text.contains("run-2"), "{text}");
 }
 
 #[test]
@@ -208,6 +264,52 @@ fn a_rerun_must_name_an_earlier_run() {
         verify_runs(&[rerun_record("run-1", "run-1")]),
         Err(RunsError::BadRerun {
             run: "run-1".to_owned(),
+            of: "run-1".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn a_run_that_holds_output_must_have_passed_every_check() {
+    let failing = Check {
+        name: "evidence".to_owned(),
+        passed: false,
+        detail: "outside the allowed range".to_owned(),
+    };
+    let mut record = full_record("run-1");
+    record.checks.push(failing.clone());
+    assert_eq!(
+        verify_runs(&[record]),
+        Err(RunsError::FailedCheck {
+            run: "run-1".to_owned(),
+            check: "evidence".to_owned(),
+        })
+    );
+
+    // A run that stored nothing may say what went wrong.
+    let mut bare = bare_record("run-1");
+    bare.checks.push(failing);
+    assert_eq!(verify_runs(&[bare]), Ok(()));
+}
+
+#[test]
+fn a_rerun_holds_a_result_only_and_repeats_a_run_that_has_one() {
+    let mut with_mesh = rerun_record("run-2", "run-1");
+    with_mesh.mesh = full_record("run-2").mesh;
+    assert_eq!(
+        verify_runs(&[full_record("run-1"), with_mesh]),
+        Err(RunsError::RerunHoldsMesh {
+            run: "run-2".to_owned()
+        })
+    );
+
+    let mut mesh_only = full_record("run-1");
+    mesh_only.result = None;
+    mesh_only.provenance.result_key = None;
+    assert_eq!(
+        verify_runs(&[mesh_only, rerun_record("run-2", "run-1")]),
+        Err(RunsError::RerunOfNoResult {
+            run: "run-2".to_owned(),
             of: "run-1".to_owned(),
         })
     );

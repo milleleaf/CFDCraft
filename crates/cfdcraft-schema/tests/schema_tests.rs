@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use cfdcraft_doc::FORMAT_ID;
+use cfdcraft_doc::{ArtifactIndex, FORMAT_ID};
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::Study;
 use cfdcraft_schema::{
@@ -200,10 +200,57 @@ fn every_version_has_its_files_and_older_ones_are_frozen() {
     }
 }
 
+/// The schema 1 and schema 2 files as they stood when the next schema was introduced: the length
+/// in bytes and an FNV-1a 64-bit checksum of each. The artifact-index file for schema 1 carries
+/// the link id rule that commit 844169c added earlier the same day, before any release; the
+/// schema/README.md says so. The checksum is there to notice an edit, and it is not a security
+/// hash.
+const FROZEN_SUMS: [(&str, usize, u64); 4] = [
+    ("cfdcraft-artifacts-v1.json", 2978, 0x8ed5_3786_352f_22a3),
+    ("cfdcraft-artifacts-v2.json", 24176, 0x2b47_f412_48b7_3eec),
+    ("cfdcraft-manifest-v1.json", 1289, 0x7643_2505_6cea_c61e),
+    ("cfdcraft-manifest-v2.json", 1289, 0x22f5_c08b_b492_dd7b),
+];
+
+fn checksum(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |sum, &byte| {
+        (sum ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+#[test]
+fn the_schema_1_and_2_files_are_the_text_recorded_when_they_were_frozen() {
+    // Comparing the file with its frozen copy only shows that the two agree: a change to both at
+    // once passes that. The recorded checksum is what such a change has to get past.
+    let frozen_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frozen");
+    for (file, length, sum) in FROZEN_SUMS {
+        for (place, dir) in [
+            ("schema", schema_dir()),
+            ("frozen copy", frozen_dir.clone()),
+        ] {
+            let bytes = fs::read(dir.join(file)).unwrap();
+            assert_eq!(
+                (bytes.len(), checksum(&bytes)),
+                (length, sum),
+                "the {place} of {file} is not the text recorded when it was frozen; a \
+                 published file is never edited, so raise the schema number instead"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_readme_names_every_published_file() {
     let readme = fs::read_to_string(schema_dir().join("README.md")).unwrap();
-    for (file, _) in published() {
+    let frozen = [
+        "cfdcraft-manifest-v1.json",
+        "cfdcraft-manifest-v2.json",
+        "cfdcraft-artifacts-v1.json",
+        "cfdcraft-artifacts-v2.json",
+    ]
+    .map(str::to_owned);
+    let published_files = published().into_iter().map(|(file, _)| file);
+    for file in published_files.chain(frozen) {
         assert!(
             readme.contains(&file),
             "schema/README.md does not mention {file}"
@@ -249,7 +296,8 @@ fn the_artifact_index_schema_describes_a_run_record_completely() {
             "mesh",
             "provenance",
             "rerun_of",
-            "result"
+            "result",
+            "scenario"
         ]
     );
     assert_eq!(
@@ -281,4 +329,176 @@ fn a_schema_2_study_file_without_runs_validates() {
         assert_eq!(validate(&schema, &index), Ok(()), "{index}");
     }
     assert!(validate(&schema, &json!({ "runs": {} })).is_err());
+}
+
+const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[test]
+fn the_artifact_index_schema_describes_variants_sweeps_and_the_pruned_list() {
+    let schema = artifacts_schema();
+    for (name, definition) in [
+        ("scenarios", "Scenario"),
+        ("sweeps", "Sweep"),
+        ("pruned", "ContentHash"),
+    ] {
+        assert_eq!(schema["properties"][name]["type"], "array", "{name}");
+        assert_eq!(
+            schema["properties"][name]["items"]["$ref"],
+            format!("#/$defs/{definition}"),
+            "{name}"
+        );
+    }
+    assert!(
+        schema.get("required").is_none(),
+        "a file without variants, sweeps or pruned results must stay valid"
+    );
+
+    let defs = &schema["$defs"];
+    assert_eq!(
+        property_names(&defs["Scenario"]),
+        [
+            "id",
+            "name",
+            "notes",
+            "origin",
+            "overrides",
+            "parent",
+            "pinned"
+        ]
+    );
+    assert_eq!(defs["Scenario"]["required"], json!(["id"]));
+    assert_eq!(property_names(&defs["Sweep"]), ["base", "id", "parameters"]);
+    assert_eq!(
+        property_names(&defs["MeshRecipe"]),
+        ["cells", "geometry", "patches", "raw", "tool"]
+    );
+    assert_eq!(
+        property_names(&defs["ResultRecipe"]),
+        [
+            "boundaries",
+            "fluid",
+            "mesh_key",
+            "monitors",
+            "raw",
+            "solver",
+            "tool"
+        ]
+    );
+    assert!(defs["Study"]["properties"].get("raw_overrides").is_some());
+    for name in [
+        "Override",
+        "Origin",
+        "Parameter",
+        "Target",
+        "Values",
+        "RawOverride",
+        "RawBackend",
+    ] {
+        assert!(defs.get(name).is_some(), "{name} is not described");
+    }
+}
+
+#[test]
+fn the_study_schema_is_extended_not_changed() {
+    let schema = study_schema();
+    let mut with = cavity();
+    with["raw_overrides"] = json!({
+        "relax": {
+            "backend": "esi",
+            "file": "system/fvSolution",
+            "entry": "relaxationFactors/equations/U",
+            "value": "0.7"
+        }
+    });
+    assert_eq!(validate(&schema, &cavity()), Ok(()));
+    assert_eq!(validate(&schema, &with), Ok(()));
+    Study::from_json(&with.to_string()).unwrap();
+
+    let mut extra = with.clone();
+    extra["raw_overrides"]["relax"]["comment"] = json!("x");
+    assert!(validate(&schema, &extra).is_err());
+
+    let mut other = with;
+    other["raw_overrides"]["relax"]["backend"] = json!("openfoam");
+    assert!(validate(&schema, &other).is_err());
+}
+
+#[test]
+fn an_index_with_variants_sweeps_and_pruned_hashes_validates() {
+    let schema = artifacts_schema();
+    let lid = "/boundary_conditions/lid/velocity/value";
+    let index = json!({
+        "blobs": [{ "hash": HASH, "size": 1, "kind": "result" }],
+        "scenarios": [{
+            "id": "fast-lid",
+            "parent": "base",
+            "name": "Faster lid",
+            "pinned": true,
+            "notes": "Checked against the slower lid.",
+            "overrides": [
+                { "op": "set", "setting": lid, "value": 2.0 },
+                { "op": "remove", "setting": "/raw_overrides/relax" }
+            ],
+            "origin": { "sweep": "lid-sweep", "index": 0 }
+        }],
+        "sweeps": [{
+            "id": "lid-sweep",
+            "base": "base",
+            "parameters": [
+                {
+                    "name": "lid",
+                    "target": { "kind": "quantity", "setting": lid, "unit": "m/s" },
+                    "values": { "mode": "list", "items": [1.0, 2.0] }
+                },
+                {
+                    "name": "cells",
+                    "target": { "kind": "count", "setting": "/mesh/cells_x" },
+                    "values": { "mode": "range", "start": 16.0, "stop": 64.0, "step": 16.0 }
+                },
+                {
+                    "name": "limit",
+                    "target": { "kind": "number", "setting": "/solver/convergence/p" },
+                    "values": { "mode": "steps", "start": 0.001, "stop": 0.01, "count": 4 }
+                },
+                {
+                    "name": "angle",
+                    "target": {
+                        "kind": "direction",
+                        "setting_x": "/a/x",
+                        "setting_y": "/a/y",
+                        "unit": "m/s",
+                        "base_x": 1.0,
+                        "base_y": 0.0
+                    },
+                    "values": { "mode": "list", "items": [0.0, 90.0] }
+                }
+            ]
+        }],
+        "pruned": [HASH]
+    });
+    assert_eq!(validate(&schema, &index), Ok(()));
+    serde_json::from_value::<ArtifactIndex>(index.clone()).unwrap();
+
+    let mut other_op = index.clone();
+    other_op["scenarios"][0]["overrides"][0]["op"] = json!("replace");
+    assert!(validate(&schema, &other_op).is_err());
+
+    let mut no_value = index.clone();
+    no_value["scenarios"][0]["overrides"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("value");
+    assert!(validate(&schema, &no_value).is_err());
+
+    let mut other_kind = index.clone();
+    other_kind["sweeps"][0]["parameters"][0]["target"]["kind"] = json!("angle");
+    assert!(validate(&schema, &other_kind).is_err());
+
+    let mut other_mode = index.clone();
+    other_mode["sweeps"][0]["parameters"][0]["values"]["mode"] = json!("random");
+    assert!(validate(&schema, &other_mode).is_err());
+
+    let mut extra = index;
+    extra["scenarios"][0]["origin"]["comment"] = json!("x");
+    assert!(validate(&schema, &extra).is_err());
 }

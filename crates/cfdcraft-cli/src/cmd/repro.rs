@@ -11,16 +11,20 @@ use std::path::{Path, PathBuf};
 
 use cfdcraft_compare::Tolerance;
 use cfdcraft_ops::{
-    DocOutcome, ExitClass, HostRunner, JobAction, Repro, RunMode, RunRequest, plan_job,
+    DocOutcome, HostRunner, JobAction, JobOptions, Repro, RunMode, RunRequest, plan_job,
+    plan_scenario_job_with,
 };
 use cfdcraft_text::{Line, Text};
 
 use super::run::label;
-use super::{Error, emit_doc};
+use super::{Error, emit_doc, print_data};
 
 /// Whether the mesh and the result of the study file are up to date, and if not why.
-pub fn status(doc: &Path, json: bool) -> Result<i32, Error> {
-    Ok(emit_doc(&cfdcraft_ops::document_status(doc), json))
+pub fn status(doc: &Path, scenario: Option<&str>, json: bool) -> Result<i32, Error> {
+    Ok(emit_doc(
+        &cfdcraft_ops::scenario_status(doc, scenario),
+        json,
+    ))
 }
 
 /// The runs of the study file.
@@ -60,28 +64,6 @@ pub fn tolerance(abs_tol: Option<f64>, rel_tol: Option<f64>) -> Result<Tolerance
         abs_tol.unwrap_or(tight.abs),
         rel_tol.unwrap_or(tight.rel),
     )?)
-}
-
-/// Prints an outcome that carries data and returns the process exit status for it.
-///
-/// With `json` the report is the only thing on stdout and nothing goes to stderr. Otherwise the
-/// data of a passing report is the only thing on stdout, and every note and finding goes to
-/// stderr.
-pub fn print_data(outcome: &DocOutcome, json: bool) -> Result<i32, Error> {
-    let report = &outcome.report;
-    if json {
-        println!("{}", report.to_json());
-    } else {
-        let data = report
-            .repro
-            .as_ref()
-            .filter(|_| report.class() == ExitClass::Passed);
-        if let Some(data) = data {
-            println!("{}", serde_json::to_string_pretty(data)?);
-        }
-        eprint!("{}", report.render_text());
-    }
-    Ok(i32::from(report.exit_class))
 }
 
 /// Which compute host runs the case, and how.
@@ -128,10 +110,21 @@ fn emit_run(outcome: &DocOutcome, runner: &mut HostRunner, json: bool) -> i32 {
     code
 }
 
-/// Make whatever mesh and result of the study file is out of date, and record the run.
-pub fn solve(doc: &Path, host: &Host, json: bool) -> Result<i32, Error> {
+/// Make whatever mesh and result of the study file, or of its variant `scenario`, is out of date,
+/// and record the run. With `remake_pruned` a result that was pruned counts as out of date.
+pub fn solve(
+    doc: &Path,
+    host: &Host,
+    scenario: Option<&str>,
+    remake_pruned: bool,
+    json: bool,
+) -> Result<i32, Error> {
     let mut runner = host_runner(host, doc)?;
-    let outcome = cfdcraft_ops::solve_document(doc, &mut runner);
+    let options = JobOptions { remake_pruned };
+    let outcome = match plan_scenario_job_with(doc, scenario, JobAction::Solve, &options) {
+        Ok(job) => job.run_with(&mut runner),
+        Err(refused) => *refused,
+    };
     Ok(emit_run(&outcome, &mut runner, json))
 }
 

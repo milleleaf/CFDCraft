@@ -21,6 +21,8 @@ pub enum CompileError {
     NotTwoDimensional,
     #[error("resolved study is invalid: {0}")]
     Invalid(&'static str),
+    #[error("raw override {label}: {reason}")]
+    Raw { label: String, reason: String },
 }
 
 /// One written OpenFOAM patch. Names come from a fixed table keyed by boundary kind, never from
@@ -172,7 +174,7 @@ pub fn compile(s: &ResolvedStudy, _dialect: Dialect) -> Result<CaseTree, Compile
         return Err(CompileError::Invalid("cell count or sample count"));
     }
     let patches = patch_plan(s)?;
-    let files = [
+    let mut files: Vec<CaseFile> = [
         ("0/U", transport::velocity(&patches)),
         ("0/p", transport::pressure(&patches)),
         (
@@ -197,6 +199,7 @@ pub fn compile(s: &ResolvedStudy, _dialect: Dialect) -> Result<CaseTree, Compile
         bytes: text.into_bytes(),
     })
     .collect();
+    crate::raw::apply(&mut files, &s.raw_overrides)?;
     Ok(CaseTree { files })
 }
 

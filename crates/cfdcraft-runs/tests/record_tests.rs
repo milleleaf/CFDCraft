@@ -28,6 +28,7 @@ fn full_record(id: &str) -> RunRecord {
     RunRecord {
         id: id.to_owned(),
         rerun_of: None,
+        scenario: None,
         mesh: Some(Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),
@@ -196,4 +197,20 @@ fn the_provenance_holds_what_the_roadmap_lists() {
     }
     assert!(tool["sidecar_lock"].is_null());
     assert_eq!(provenance["host"], "box");
+}
+
+#[test]
+fn a_rerun_is_never_found_as_the_owner_of_a_mesh_key() {
+    let original = full_record("run-1");
+    let key = original.mesh.as_ref().unwrap().key;
+    // A rerun that carries a mesh with the same key, as a file from elsewhere might.
+    let mut rerun = full_record("run-2");
+    rerun.rerun_of = Some("run-1".to_owned());
+    let runs = [original, rerun];
+
+    assert_eq!(latest_mesh(&runs, key).unwrap().0.id, "run-1");
+    assert_eq!(
+        newest_mesh_output(&runs).unwrap().blob,
+        runs[0].mesh.as_ref().unwrap().blob
+    );
 }

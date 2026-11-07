@@ -1,10 +1,13 @@
 pub mod check_case;
 pub mod compile;
+pub mod disk;
 pub mod document;
 pub mod export;
 pub mod keys;
 pub mod repro;
 pub mod run;
+pub mod scenario;
+pub mod sweep;
 pub type Error = Box<dyn std::error::Error>;
 
 /// Reads a study file and runs `operation` on its text. A file that cannot be read is a finished,
@@ -68,4 +71,38 @@ pub fn emit_doc(outcome: &cfdcraft_ops::DocOutcome, json: bool) -> i32 {
         eprint!("{}", report.render_text());
     }
     i32::from(report.exit_class)
+}
+
+/// Prints an outcome that carries data and returns the process exit status for it.
+///
+/// With `json` the report is the only thing on stdout and nothing goes to stderr. Otherwise the
+/// data of a passing report is the only thing on stdout, and every note and finding goes to
+/// stderr.
+pub fn print_data(outcome: &cfdcraft_ops::DocOutcome, json: bool) -> Result<i32, Error> {
+    let report = &outcome.report;
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        let data = report
+            .repro
+            .as_ref()
+            .filter(|_| report.class() == cfdcraft_ops::ExitClass::Passed);
+        if let Some(data) = data {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        }
+        eprint!("{}", report.render_text());
+    }
+    Ok(i32::from(report.exit_class))
+}
+
+/// [`print_data`], and for a passing report the outcome's sentence after the data, on stdout.
+pub fn emit_data(outcome: &cfdcraft_ops::DocOutcome, json: bool) -> Result<i32, Error> {
+    let code = print_data(outcome, json)?;
+    if !json
+        && outcome.report.class() == cfdcraft_ops::ExitClass::Passed
+        && let Some(line) = &outcome.line
+    {
+        println!("{}", cfdcraft_text::Text::english().render(line));
+    }
+    Ok(code)
 }

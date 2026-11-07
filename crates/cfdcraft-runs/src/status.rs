@@ -33,22 +33,27 @@ pub struct Status {
     pub result: StageState,
 }
 
-/// The state of each stage for a log of runs and the recipes the study makes now. A rerun never
+/// The state of each stage for a log of runs and the recipes the study makes now, for the study
+/// itself. It is `status_for` with no scenario.
+pub fn status(runs: &[RunRecord], current: &StageRecipes) -> Status {
+    status_for(runs, current, None)
+}
+
+/// The state of each stage for the scenario `scenario` (`None` is the study itself). A stage is
+/// fresh when any record, of any scenario, holds its current key, so a setting-only variant finds
+/// the mesh its parent made. A stage that is not fresh is judged against the newest output of the
+/// same scenario only, so one scenario is never compared with another one's run. A rerun never
 /// makes a stage fresh and is never the newest output a stage is compared with. Blobs are not
 /// inspected: the caller checks that a recorded blob is still in the store.
-pub fn status(runs: &[RunRecord], current: &StageRecipes) -> Status {
+pub fn status_for(runs: &[RunRecord], current: &StageRecipes, scenario: Option<&str>) -> Status {
     let mesh = match latest_mesh(runs, current.mesh.key()) {
         Some((run, _)) => StageState::Fresh {
             run: run.id.clone(),
         },
-        None => match runs
-            .iter()
-            .rev()
-            .find_map(|r| r.mesh.as_ref().map(|o| (r, o)))
-        {
+        None => match newest_of(runs, scenario, |r| r.mesh.as_ref().map(|o| &o.recipe)) {
             Some((run, old)) => StageState::Stale {
                 since: run.id.clone(),
-                changes: diff_mesh(&old.recipe, &current.mesh),
+                changes: diff_mesh(old, &current.mesh),
             },
             None => StageState::NeverMade,
         },
@@ -57,18 +62,25 @@ pub fn status(runs: &[RunRecord], current: &StageRecipes) -> Status {
         Some((run, _)) => StageState::Fresh {
             run: run.id.clone(),
         },
-        None => match runs
-            .iter()
-            .rev()
-            .filter(|r| r.rerun_of.is_none())
-            .find_map(|r| r.result.as_ref().map(|o| (r, o)))
-        {
+        None => match newest_of(runs, scenario, |r| r.result.as_ref().map(|o| &o.recipe)) {
             Some((run, old)) => StageState::Stale {
                 since: run.id.clone(),
-                changes: diff_result(&old.recipe, &current.result),
+                changes: diff_result(old, &current.result),
             },
             None => StageState::NeverMade,
         },
     };
     Status { mesh, result }
+}
+
+/// The newest non-rerun record of this scenario that holds the stage, with the recipe it holds.
+fn newest_of<'a, R>(
+    runs: &'a [RunRecord],
+    scenario: Option<&str>,
+    recipe: impl Fn(&'a RunRecord) -> Option<&'a R>,
+) -> Option<(&'a RunRecord, &'a R)> {
+    runs.iter()
+        .rev()
+        .filter(|r| r.rerun_of.is_none() && r.scenario.as_deref() == scenario)
+        .find_map(|r| recipe(r).map(|old| (r, old)))
 }

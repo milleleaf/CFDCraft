@@ -35,6 +35,7 @@ fn record(id: &str, recipes: &StageRecipes, with_mesh: bool, rerun_of: Option<&s
     RunRecord {
         id: id.to_owned(),
         rerun_of: rerun_of.map(str::to_owned),
+        scenario: None,
         mesh: with_mesh.then(|| Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),
@@ -169,6 +170,20 @@ fn a_rerun_does_not_make_a_stage_fresh() {
             changes: vec![lid(0.1, 0.2)],
         }
     );
+}
+
+#[test]
+fn a_rerun_that_holds_a_mesh_does_not_make_the_mesh_fresh() {
+    // This code never writes one, but a file from elsewhere may carry it.
+    let runs = [
+        record("run-1", &recipes(0.1, 128), true, None),
+        record("run-2", &recipes(0.1, 256), true, Some("run-1")),
+    ];
+    let found = status(&runs, &recipes(0.1, 256));
+    match found.mesh {
+        StageState::Stale { since, .. } => assert_eq!(since, "run-1"),
+        other => panic!("expected stale, found {other:?}"),
+    }
 }
 
 #[test]

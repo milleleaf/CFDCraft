@@ -76,6 +76,7 @@ fn record(id: &str) -> RunRecord {
     RunRecord {
         id: id.to_owned(),
         rerun_of: None,
+        scenario: None,
         mesh: Some(Output {
             key: keys.mesh,
             recipe: recipes.mesh.clone(),
@@ -133,6 +134,8 @@ fn expect_bad_artifacts(error: DocError) -> String {
             assert_eq!(member, "artifacts.json");
             reason
         }
+        // A history that does not hold together has an error of its own.
+        DocError::RunLog(reason) => reason,
         other => panic!("{other}"),
     }
 }
@@ -153,19 +156,20 @@ fn a_document_with_runs_saves_and_opens_equal() {
 }
 
 #[test]
-fn a_schema_1_file_opens_with_one_note_and_no_runs() {
+fn a_schema_1_file_opens_with_two_notes_and_no_runs() {
     let bytes = file_with_artifacts(1, &json!({"blobs": [], "links": []}));
     let opened = from_bytes(&bytes).unwrap();
 
     assert_eq!(opened.schema_version, 1);
-    assert_eq!(opened.notes.len(), 1);
+    assert_eq!(opened.notes.len(), 2);
     assert_eq!((opened.notes[0].from, opened.notes[0].to), (1, 2));
+    assert_eq!((opened.notes[1].from, opened.notes[1].to), (2, 3));
     assert!(opened.document.artifacts.runs.is_empty());
     assert_eq!(opened.document.study, cavity());
 }
 
 #[test]
-fn a_schema_1_file_saved_back_becomes_schema_2() {
+fn a_schema_1_file_saved_back_becomes_the_current_schema() {
     let bytes = file_with_artifacts(1, &json!({"blobs": [], "links": []}));
     let opened = from_bytes(&bytes).unwrap();
 
@@ -176,7 +180,7 @@ fn a_schema_1_file_saved_back_becomes_schema_2() {
 }
 
 #[test]
-fn a_schema_0_file_opens_with_two_notes() {
+fn a_schema_0_file_opens_with_three_notes() {
     let bytes = archive(vec![
         ("manifest.json", manifest(0), DEFLATE),
         ("study.json", CAVITY_V0.as_bytes().to_vec(), DEFLATE),
@@ -185,7 +189,7 @@ fn a_schema_0_file_opens_with_two_notes() {
 
     assert_eq!(opened.schema_version, 0);
     let pairs: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
-    assert_eq!(pairs, vec![(0, 1), (1, 2)]);
+    assert_eq!(pairs, vec![(0, 1), (1, 2), (2, 3)]);
     assert_eq!(opened.document.study, cavity());
 }
 
@@ -197,6 +201,8 @@ fn an_index_that_names_a_blob_it_does_not_list_is_refused_on_read() {
         "runs": [serde_json::to_value(record("run-1")).unwrap()]
     });
     let error = from_bytes(&file_with_artifacts(CURRENT_SCHEMA, &artifacts)).unwrap_err();
+    // A history that does not hold together is told apart by its type, not by its wording.
+    assert!(matches!(error, DocError::RunLog(_)), "{error}");
     let reason = expect_bad_artifacts(error);
     assert!(reason.contains(&mesh_hash().to_string()), "{reason}");
 }
@@ -223,5 +229,7 @@ fn a_run_record_with_an_unknown_key_is_refused() {
     let mut artifacts = serde_json::to_value(&document_with_runs().artifacts).unwrap();
     artifacts["runs"][0]["surprise"] = json!(1);
     let error = from_bytes(&file_with_artifacts(CURRENT_SCHEMA, &artifacts)).unwrap_err();
+    // A record that is not the right shape is bad JSON, not an inconsistent history.
+    assert!(matches!(error, DocError::BadJson { .. }), "{error}");
     expect_bad_artifacts(error);
 }

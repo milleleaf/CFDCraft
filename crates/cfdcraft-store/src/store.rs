@@ -93,6 +93,20 @@ impl Store {
         self.blob_path(hash).is_file()
     }
 
+    /// Remove the stored file of `hash`: true when a file was removed, false when there was none.
+    ///
+    /// It removes one file inside the store, or a link standing in its place (the link, never
+    /// what it points at). It never removes a folder: where the name holds one, the call fails
+    /// and the folder stays. The path is built from the hash, which is 64 lower-case hexadecimal
+    /// characters, so nothing outside the store can be named.
+    pub fn remove(&self, hash: &ContentHash) -> Result<bool, StoreError> {
+        match std::fs::remove_file(self.blob_path(hash)) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Store `bytes` under their hash. Storing the same bytes again changes nothing, unless the
     /// blob already there is damaged: it is then replaced (see [`Store`]).
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {

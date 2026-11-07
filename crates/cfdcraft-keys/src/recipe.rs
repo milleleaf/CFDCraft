@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cfdcraft_model::{BoundaryKind, Face, ResolvedStudy};
+use cfdcraft_model::{BoundaryKind, Face, RawOverride, ResolvedStudy};
 use cfdcraft_store::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,11 @@ pub struct MeshRecipe {
     /// Sorted by their JSON text, so the order never depends on boundary labels.
     pub patches: Vec<PatchRecipe>,
     pub cells: CellsRecipe,
+    /// The raw overrides that touch a mesh dictionary, without their labels, sorted by file,
+    /// entry, value and backend. Absent when there are none, so a study without them keeps its
+    /// mesh key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw: Vec<RawOverride>,
 }
 
 impl MeshRecipe {
@@ -100,6 +105,10 @@ pub struct ResultRecipe {
     pub boundaries: BTreeMap<String, BoundaryRecipe>,
     pub solver: SolverRecipe,
     pub monitors: MonitorsRecipe,
+    /// Every raw override by the user's label, so a rename changes this recipe and never the
+    /// mesh recipe. Absent when there are none, so a study without them keeps its result key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw: BTreeMap<String, RawOverride>,
 }
 
 impl ResultRecipe {
@@ -136,6 +145,15 @@ impl StageRecipes {
             .collect();
         // A patch is plain enums, so the text cannot fail; an empty text would still be stable.
         patches.sort_by_cached_key(|p| serde_json::to_string(p).unwrap_or_default());
+        let mut mesh_raw: Vec<RawOverride> = resolved
+            .raw_overrides
+            .values()
+            .filter(|r| r.affects_mesh())
+            .cloned()
+            .collect();
+        mesh_raw.sort_by(|a, b| {
+            (&a.file, &a.entry, &a.value, a.backend).cmp(&(&b.file, &b.entry, &b.value, b.backend))
+        });
         let mesh = MeshRecipe {
             tool: tool.clone(),
             geometry: GeometryRecipe {
@@ -150,6 +168,7 @@ impl StageRecipes {
                 y: resolved.mesh.cells_y,
                 z: resolved.mesh.cells_z,
             },
+            raw: mesh_raw,
         };
         let result = ResultRecipe {
             tool: tool.clone(),
@@ -178,6 +197,7 @@ impl StageRecipes {
             monitors: MonitorsRecipe {
                 centreline_u_sample_count: resolved.monitors.centreline_u_sample_count,
             },
+            raw: resolved.raw_overrides.clone(),
         };
         Self { mesh, result }
     }

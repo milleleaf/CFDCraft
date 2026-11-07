@@ -5,7 +5,7 @@
 
 use crate::report::Report;
 use cfdcraft_backend_esi::{
-    CaseTree, Dialect, compile,
+    CaseTree, CompileError, Dialect, compile,
     export::export_tree,
     guard::{self, Refusal},
     reader::{EsiReader, source_files},
@@ -43,6 +43,17 @@ pub(crate) fn refusal_diagnostic(r: &Refusal) -> Diagnostic {
         entry: Some(r.entry.clone()),
     });
     d
+}
+
+/// A raw override the writer could not apply, as a finding at the override in the study.
+fn raw_refused(label: &str, reason: &str) -> Diagnostic {
+    Diagnostic::error(
+        "CFD-RAW-007",
+        format!("raw override {label}"),
+        format!("/raw_overrides/{label}"),
+        format!("The raw override \"{label}\" cannot be applied: {reason}."),
+    )
+    .with_hint("Check the file and the block names against the case that was written.")
 }
 
 /// A path as `/`-separated text, the form reports use.
@@ -86,11 +97,11 @@ pub fn prepare_with_tamper(
         .map_err(|e| fail(vec![model_refused(e.to_string())], None, migration.clone()))?;
     let hash = canonical_hash(&resolved);
     let mut tree = compile(&resolved, dialect).map_err(|e| {
-        fail(
-            vec![model_refused(e.to_string())],
-            Some(hash.clone()),
-            migration.clone(),
-        )
+        let finding = match e {
+            CompileError::Raw { label, reason } => raw_refused(&label, &reason),
+            other => model_refused(other.to_string()),
+        };
+        fail(vec![finding], Some(hash.clone()), migration.clone())
     })?;
     tamper(&mut tree);
     let refusals = guard::scan_tree(&tree);

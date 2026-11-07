@@ -147,6 +147,9 @@ enum Commands {
     /// Say whether a study file's mesh and result are up to date, and if not why.
     Status {
         doc: PathBuf,
+        /// Report this variant instead of the study itself; base is the study.
+        #[arg(long)]
+        scenario: Option<String>,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -208,6 +211,12 @@ enum Commands {
         /// Run the Re=100 cavity and compare it with the reference; refused for any other study.
         #[arg(long)]
         validate: bool,
+        /// Solve this variant instead of the study itself; base is the study.
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Make a result that was pruned again; otherwise a pruned result is left alone.
+        #[arg(long)]
+        remake_pruned: bool,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -264,6 +273,36 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Make, list, show, compare, name, pin and annotate the variants of a study file.
+    Scenario {
+        #[command(subcommand)]
+        action: ScenarioAction,
+    },
+    /// Plan, create and check parameter sweeps of a study file.
+    Sweep {
+        #[command(subcommand)]
+        action: SweepAction,
+    },
+    /// Say how many bytes of stored results each variant of a study file holds, as JSON data.
+    Disk {
+        doc: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove stored results no pinned variant needs; shows what would go unless --apply is given.
+    Prune {
+        doc: PathBuf,
+        /// Prune only this variant's results; repeat for several. By default every variant.
+        #[arg(long = "scenario")]
+        scenarios: Vec<String>,
+        /// Really remove the results. Without it nothing is removed.
+        #[arg(long)]
+        apply: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the typed operations to an agent over MCP on standard input and output.
     Mcp {
         /// The directory that holds studies, cases and runs. Created if it is absent.
@@ -278,7 +317,123 @@ enum Commands {
         hosts: PathBuf,
     },
 }
+#[derive(Subcommand)]
+enum ScenarioAction {
+    /// Make a variant, or change the changes of one that exists.
+    Set {
+        doc: PathBuf,
+        /// The variant to make or change.
+        id: String,
+        /// The variant it descends from; by default the study itself.
+        #[arg(long)]
+        parent: Option<String>,
+        /// A change, written SETTING=JSON, for example /mesh/cells_x=64; repeat for several.
+        #[arg(long = "set")]
+        sets: Vec<String>,
+        /// A setting to put back to what the parent has; repeat for several.
+        #[arg(long = "unset")]
+        unsets: Vec<String>,
+        /// A name for the variant.
+        #[arg(long)]
+        name: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the variants of a study file, as JSON data.
+    List {
+        doc: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one variant with its changes and keys, as JSON data.
+    Show {
+        doc: PathBuf,
+        /// The variant to show; base is the study itself.
+        id: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Say how the second variant differs from the first.
+    Diff {
+        doc: PathBuf,
+        /// The variant to compare against.
+        a: String,
+        /// The variant to compare.
+        b: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Name, pin or annotate a variant; an empty name or notes text clears it.
+    Label {
+        doc: PathBuf,
+        /// The variant to label; base is the study itself.
+        id: String,
+        /// The new name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Keep the stored results of this variant when results are pruned.
+        #[arg(long, conflicts_with = "unpin")]
+        pin: bool,
+        /// Stop keeping the stored results of this variant.
+        #[arg(long)]
+        unpin: bool,
+        /// The new notes.
+        #[arg(long)]
+        notes: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
+enum SweepAction {
+    /// Print the points a sweep would make; nothing is stored.
+    Plan {
+        doc: PathBuf,
+        /// A file holding the sweep as JSON.
+        spec: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Store the points of a sweep as variants.
+    Create {
+        doc: PathBuf,
+        /// A file holding the sweep as JSON.
+        spec: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check every point of a stored sweep without solving anything; exits 1 when a point fails.
+    Preflight {
+        doc: PathBuf,
+        /// The sweep to check.
+        sweep: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+/// The command tree is large enough that parsing it overflows the 1 MiB main-thread stack on Windows,
+/// so the whole program runs on a thread with a roomier one.
+const CLI_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() {
+    let worker = std::thread::Builder::new()
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(run);
+    match worker.map(std::thread::JoinHandle::join) {
+        Ok(Ok(())) => {}
+        _ => std::process::exit(101),
+    }
+}
+
+fn run() {
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::Compile {
@@ -356,7 +511,11 @@ fn main() {
             json,
         } => cmd::document::pack(&doc, &out, redact_host, json),
         Commands::Unpack { packed, dir, json } => cmd::document::unpack(&packed, &dir, json),
-        Commands::Status { doc, json } => cmd::repro::status(&doc, json),
+        Commands::Status {
+            doc,
+            scenario,
+            json,
+        } => cmd::repro::status(&doc, scenario.as_deref(), json),
         Commands::Runs { doc, json } => cmd::repro::runs(&doc, json),
         Commands::ShowResult { doc, run, json } => cmd::repro::result(&doc, run.as_deref(), json),
         Commands::Provenance { doc, run, json } => {
@@ -376,6 +535,8 @@ fn main() {
             profile,
             hosts,
             validate,
+            scenario,
+            remake_pruned,
             json,
         } => cmd::repro::solve(
             &doc,
@@ -385,6 +546,8 @@ fn main() {
                 hosts,
                 validate,
             },
+            scenario.as_deref(),
+            remake_pruned,
             json,
         ),
         Commands::Rerun {
@@ -432,6 +595,59 @@ fn main() {
             validate,
             json,
         }),
+        Commands::Scenario { action } => match action {
+            ScenarioAction::Set {
+                doc,
+                id,
+                parent,
+                sets,
+                unsets,
+                name,
+                json,
+            } => cmd::scenario::set(&cmd::scenario::SetArgs {
+                doc,
+                id,
+                parent,
+                sets,
+                unsets,
+                name,
+                json,
+            }),
+            ScenarioAction::List { doc, json } => cmd::scenario::list(&doc, json),
+            ScenarioAction::Show { doc, id, json } => cmd::scenario::show(&doc, &id, json),
+            ScenarioAction::Diff { doc, a, b, json } => cmd::scenario::diff(&doc, &a, &b, json),
+            ScenarioAction::Label {
+                doc,
+                id,
+                name,
+                pin,
+                unpin,
+                notes,
+                json,
+            } => cmd::scenario::label(&cmd::scenario::LabelArgs {
+                doc,
+                id,
+                name,
+                pin,
+                unpin,
+                notes,
+                json,
+            }),
+        },
+        Commands::Sweep { action } => match action {
+            SweepAction::Plan { doc, spec, json } => cmd::sweep::plan(&doc, &spec, json),
+            SweepAction::Create { doc, spec, json } => cmd::sweep::create(&doc, &spec, json),
+            SweepAction::Preflight { doc, sweep, json } => {
+                cmd::sweep::preflight(&doc, &sweep, json)
+            }
+        },
+        Commands::Disk { doc, json } => cmd::disk::disk(&doc, json),
+        Commands::Prune {
+            doc,
+            scenarios,
+            apply,
+            json,
+        } => cmd::disk::prune_results(&doc, &scenarios, apply, json),
         Commands::Mcp {
             workspace,
             key,

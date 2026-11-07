@@ -6,7 +6,11 @@
 mod support;
 
 use cfdcraft_capture::fixture::{FixtureSpec, write_results};
-use cfdcraft_ops::{CaseRun, CaseRunner, Report, save_document, solve_document};
+use cfdcraft_ops::{
+    CaseRun, CaseRunner, Report, save_document, scenario_ops, solve_document, solve_scenario,
+};
+use cfdcraft_scenarios::Override;
+use cfdcraft_store::{ContentHash, Store};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -227,6 +231,7 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
             "compare_runs",
             "compile",
             "create_study",
+            "disk_use",
             "document_status",
             "export",
             "get_provenance",
@@ -236,10 +241,19 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
             "open_document",
             "pack_document",
             "plan_update",
+            "prune",
             "run_status",
             "save_document",
+            "scenario_diff",
+            "scenario_label",
+            "scenario_list",
+            "scenario_set",
+            "scenario_show",
             "start_document_job",
             "start_run",
+            "sweep_create",
+            "sweep_plan",
+            "sweep_preflight",
             "unpack_document",
             "validate_study"
         ]
@@ -919,19 +933,20 @@ fn surface_problems(tools: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_surface_is_still_closed_with_eighteen_tools() {
+fn the_surface_is_still_closed_with_twenty_eight_tools() {
     let root = fresh("closed");
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 18);
+    assert_eq!(tools.as_array().unwrap().len(), 28);
     for name in [
         "save_document",
         "open_document",
         "pack_document",
         "unpack_document",
-        "document_status",
         "list_runs",
+        "scenario_list",
+        "disk_use",
     ] {
         let tool = tools
             .as_array()
@@ -955,7 +970,25 @@ fn the_surface_is_still_closed_with_eighteen_tools() {
             &["a", "abs_tolerance", "b", "name", "rel_tolerance"][..],
         ),
         ("plan_update", &["items", "names", "order"][..]),
-        ("start_document_job", &["job", "name", "run"][..]),
+        (
+            "start_document_job",
+            &["job", "name", "remake_pruned", "run", "scenario"][..],
+        ),
+        ("document_status", &["name", "scenario"][..]),
+        (
+            "scenario_set",
+            &["name", "overrides", "parent", "scenario", "title"][..],
+        ),
+        ("scenario_show", &["name", "scenario"][..]),
+        ("sweep_plan", &["name", "sweep"][..]),
+        ("sweep_create", &["name", "sweep"][..]),
+        ("sweep_preflight", &["name", "sweep"][..]),
+        ("prune", &["apply", "name", "scenarios"][..]),
+        ("scenario_diff", &["a", "b", "name"][..]),
+        (
+            "scenario_label",
+            &["name", "notes", "pinned", "scenario", "title"][..],
+        ),
     ] {
         let tool = tools
             .as_array()
@@ -1034,7 +1067,7 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
     let mut s = Server::start(&root, "ok");
     store_cavity(&mut s);
     let before = files_under(&root.join("ws"));
-    let valid: [(&str, Value); 12] = [
+    let valid: [(&str, Value); 22] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -1053,6 +1086,37 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
         ),
         ("run_status", json!({"run_id": "cfdcraft-nothing-1"})),
         ("get_result", json!({"run_id": "cfdcraft-nothing-1"})),
+        (
+            "scenario_set",
+            json!({"name": "cavity", "scenario": "other", "overrides": []}),
+        ),
+        ("scenario_list", json!({"name": "cavity"})),
+        (
+            "scenario_show",
+            json!({"name": "cavity", "scenario": "base"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "base", "b": "base"}),
+        ),
+        (
+            "scenario_label",
+            json!({"name": "cavity", "scenario": "base", "pinned": true}),
+        ),
+        (
+            "sweep_plan",
+            json!({"name": "cavity", "sweep": grid_sweep()}),
+        ),
+        (
+            "sweep_create",
+            json!({"name": "cavity", "sweep": grid_sweep()}),
+        ),
+        (
+            "sweep_preflight",
+            json!({"name": "cavity", "sweep": "grid"}),
+        ),
+        ("disk_use", json!({"name": "cavity"})),
+        ("prune", json!({"name": "cavity", "apply": true})),
     ];
     for (tool, arguments) in valid {
         for extra in ["dictionary", "path", "key", "host", "command"] {
@@ -1723,6 +1787,1190 @@ fn a_full_session_with_document_jobs_prints_nothing_private() {
     let r = s.raw_tool(
         "start_document_job",
         json!({"name": "cavity", "job": "solve", "path": "/x"}),
+    );
+    assert!(refused(&r), "{r}");
+    assert_nothing_private(&root, &s);
+}
+
+// ---- variants of a document, by name ----
+
+const LID_SETTING: &str = "/boundary_conditions/lid/velocity/value";
+
+fn lid_override(speed: f64) -> Override {
+    Override::Set {
+        setting: LID_SETTING.to_owned(),
+        value: json!(speed),
+    }
+}
+
+/// Add the variant `id` to the document `name` of the workspace the server will use, before it starts.
+fn add_variant(root: &Path, name: &str, id: &str, parent: Option<&str>, sets: &[Override]) {
+    let done = scenario_ops::scenario_set(&document_file(root, name), id, parent, sets, None);
+    assert_eq!(done.report.exit_class, 0, "{}", done.report.render_text());
+}
+
+/// A fresh workspace holding the cavity as a document with the variant `fast-lid`.
+fn variant_root(tag: &str) -> PathBuf {
+    let root = fresh(tag);
+    put_document(&root, "cavity", CAVITY, false);
+    add_variant(&root, "cavity", "fast-lid", None, &[lid_override(0.2)]);
+    root
+}
+
+#[test]
+fn scenario_list_over_the_protocol_returns_base_first() {
+    let root = variant_root("sl");
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool("scenario_list", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "scenario_list", "{r}");
+    assert_eq!(r["repro"]["kind"], "scenarios", "{r}");
+    let rows = r["repro"]["scenarios"].as_array().unwrap();
+    assert_eq!(rows[0]["id"], "base", "{r}");
+    assert_eq!(rows[1]["id"], "fast-lid", "{r}");
+    assert_eq!(rows[1]["parent"], "base", "{r}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn scenario_show_and_diff_over_the_protocol_return_the_data() {
+    let root = variant_root("ssd");
+    let mut s = Server::start(&root, "ok");
+
+    let shown = s.tool(
+        "scenario_show",
+        json!({"name": "cavity", "scenario": "fast-lid"}),
+    );
+    assert_eq!(shown["exit_class"], 0, "{shown}");
+    assert_eq!(shown["repro"]["kind"], "scenario", "{shown}");
+    let overrides = shown["repro"]["overrides"].as_array().unwrap();
+    assert_eq!(overrides.len(), 1, "{shown}");
+    assert_eq!(overrides[0]["setting"], LID_SETTING, "{shown}");
+
+    let diff = s.tool(
+        "scenario_diff",
+        json!({"name": "cavity", "a": "base", "b": "fast-lid"}),
+    );
+    assert_eq!(diff["exit_class"], 0, "{diff}");
+    assert_eq!(diff["repro"]["kind"], "scenario_diff", "{diff}");
+    assert_eq!(
+        diff["repro"]["sentence"], "fast-lid differs from base: lid velocity 0.1 → 0.2 m/s.",
+        "{diff}"
+    );
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn the_read_tools_never_write_and_never_start_a_run() {
+    let root = variant_root("srw");
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+    let log = events(&root);
+    let ssh = ssh_log(&root);
+
+    let calls: [(&str, Value); 7] = [
+        ("scenario_list", json!({"name": "cavity"})),
+        ("scenario_list", json!({"name": "absent"})),
+        (
+            "scenario_show",
+            json!({"name": "cavity", "scenario": "fast-lid"}),
+        ),
+        (
+            "scenario_show",
+            json!({"name": "cavity", "scenario": "nope"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "base", "b": "fast-lid"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "base", "b": "nope"}),
+        ),
+        ("scenario_diff", json!({"name": "../x", "a": "a", "b": "b"})),
+    ];
+    for (tool, arguments) in calls {
+        s.tool(tool, arguments);
+    }
+    assert_eq!(files_under(&root.join("ws")), files);
+    assert_eq!(events(&root), log, "the fake host saw nothing");
+    assert_eq!(ssh_log(&root), ssh, "nothing reached the host");
+    assert_eq!(run_count(&root), 0);
+    let known = s.tool("run_status", json!({"run_id": "cfdcraft-nothing-1"}));
+    assert_eq!(known["status"], "not_found", "{known}");
+}
+
+#[test]
+fn an_unknown_variant_over_the_protocol_is_cfd_scn_001() {
+    let root = variant_root("suv");
+    let mut s = Server::start(&root, "ok");
+    for (tool, arguments) in [
+        (
+            "scenario_show",
+            json!({"name": "cavity", "scenario": "nope"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "nope", "b": "base"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "base", "b": "nope"}),
+        ),
+    ] {
+        let r = s.tool(tool, arguments);
+        assert_eq!(r["exit_class"], 2, "{tool}: {r}");
+        assert_eq!(codes_of(&r), ["CFD-SCN-001"], "{tool}: {r}");
+    }
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+fn lid_set(speed: f64) -> Value {
+    json!({"op": "set", "setting": LID_SETTING, "value": speed})
+}
+
+fn rows_of(r: &Value) -> Vec<Value> {
+    r["repro"]["scenarios"].as_array().unwrap().clone()
+}
+
+#[test]
+fn scenario_set_over_the_protocol_creates_a_variant() {
+    let root = fresh("ssc");
+    put_document(&root, "cavity", CAVITY, false);
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "fast-lid", "overrides": [lid_set(0.2)]}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "scenario_set", "{r}");
+
+    let listed = s.tool("scenario_list", json!({"name": "cavity"}));
+    let rows = rows_of(&listed);
+    assert_eq!(rows.len(), 2, "{listed}");
+    assert_eq!(rows[1]["id"], "fast-lid", "{listed}");
+    assert_eq!(rows[1]["overrides"], 1, "{listed}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn a_raw_override_over_the_protocol_shows_in_the_diff() {
+    let root = fresh("sra");
+    put_document(&root, "cavity", CAVITY, false);
+    let mut s = Server::start(&root, "ok");
+    let raw = json!({
+        "backend": "esi",
+        "file": "system/fvSolution",
+        "entry": "relaxationFactors/equations/U",
+        "value": "0.5"
+    });
+    let made = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "relaxed", "overrides": [
+            {"op": "set", "setting": "/raw_overrides/relax-u", "value": raw}
+        ]}),
+    );
+    assert_eq!(made["exit_class"], 0, "{made}");
+
+    let diff = s.tool(
+        "scenario_diff",
+        json!({"name": "cavity", "a": "base", "b": "relaxed"}),
+    );
+    assert_eq!(diff["exit_class"], 0, "{diff}");
+    let reasons = diff["repro"]["reasons"].to_string();
+    assert!(reasons.contains("relax-u"), "{diff}");
+
+    let listed = s.tool("scenario_list", json!({"name": "cavity"}));
+    let rows = rows_of(&listed);
+    assert_ne!(rows[0]["result_key"], rows[1]["result_key"], "{listed}");
+    assert_eq!(rows[0]["mesh_key"], rows[1]["mesh_key"], "{listed}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn scenario_label_over_the_protocol_pins_and_titles() {
+    let root = variant_root("slb");
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool(
+        "scenario_label",
+        json!({"name": "cavity", "scenario": "fast-lid", "title": "Fast lid",
+               "pinned": true, "notes": "the first guess"}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "scenario_label", "{r}");
+    let rows = rows_of(&s.tool("scenario_list", json!({"name": "cavity"})));
+    assert_eq!(rows[1]["name"], "Fast lid");
+    assert_eq!(rows[1]["pinned"], true);
+    assert_eq!(rows[1]["notes"], "the first guess");
+
+    s.tool(
+        "scenario_label",
+        json!({"name": "cavity", "scenario": "fast-lid", "title": "", "pinned": false, "notes": ""}),
+    );
+    let rows = rows_of(&s.tool("scenario_list", json!({"name": "cavity"})));
+    assert!(rows[1].get("name").is_none_or(Value::is_null), "{rows:?}");
+    assert_eq!(rows[1]["pinned"], false);
+    assert!(rows[1].get("notes").is_none_or(Value::is_null), "{rows:?}");
+}
+
+#[test]
+fn an_override_with_an_unknown_member_is_refused_by_the_schema() {
+    let root = variant_root("sou");
+    let mut s = Server::start(&root, "ok");
+    let before = files_under(&root.join("ws"));
+    for override_ in [
+        json!({"op": "set", "setting": LID_SETTING, "value": 0.3, "extra": 1}),
+        json!({"op": "replace", "setting": LID_SETTING, "value": 0.3}),
+        json!({"op": "remove", "setting": LID_SETTING, "value": 0.3}),
+    ] {
+        let r = s.raw_tool(
+            "scenario_set",
+            json!({"name": "cavity", "scenario": "fast-lid", "overrides": [override_]}),
+        );
+        assert!(refused(&r), "{override_}: {r}");
+    }
+    assert_eq!(files_under(&root.join("ws")), before, "nothing changed");
+}
+
+#[test]
+fn a_bad_variant_id_or_a_missing_parent_is_a_report_not_a_crash() {
+    let root = variant_root("sbi");
+    let mut s = Server::start(&root, "ok");
+    let before = files_under(&root.join("ws"));
+    let bad = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "Fast Lid", "overrides": [lid_set(0.3)]}),
+    );
+    assert_eq!(bad["exit_class"], 2, "{bad}");
+    assert_eq!(codes_of(&bad), ["CFD-SCN-002"], "{bad}");
+    let orphan = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "second", "parent": "nope",
+               "overrides": [lid_set(0.3)]}),
+    );
+    assert_eq!(orphan["exit_class"], 2, "{orphan}");
+    assert_eq!(codes_of(&orphan), ["CFD-SCN-001"], "{orphan}");
+    assert_eq!(files_under(&root.join("ws")), before, "nothing changed");
+}
+
+#[test]
+fn only_the_named_document_changes() {
+    let root = variant_root("sod");
+    put_document(&root, "other", CAVITY, false);
+    let mut s = Server::start(&root, "ok");
+    let other = std::fs::read(document_file(&root, "other")).unwrap();
+    let r = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "second", "overrides": [lid_set(0.4)]}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    s.tool(
+        "scenario_label",
+        json!({"name": "cavity", "scenario": "base", "notes": "the reference"}),
+    );
+    assert_eq!(
+        std::fs::read(document_file(&root, "other")).unwrap(),
+        other,
+        "the second document is byte for byte as it was"
+    );
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+}
+
+#[test]
+fn no_output_names_the_workspace_folder() {
+    let root = variant_root("snw");
+    let mut s = Server::start(&root, "ok");
+    for (tool, arguments) in [
+        (
+            "scenario_set",
+            json!({"name": "cavity", "scenario": "second", "overrides": [lid_set(0.4)]}),
+        ),
+        (
+            "scenario_set",
+            json!({"name": "absent", "scenario": "second", "overrides": [lid_set(0.4)]}),
+        ),
+        (
+            "scenario_set",
+            json!({"name": "cavity", "scenario": "third",
+                   "overrides": [{"op": "set", "setting": "/nothing/here", "value": 1}]}),
+        ),
+        (
+            "scenario_label",
+            json!({"name": "cavity", "scenario": "second", "title": "Second"}),
+        ),
+        (
+            "scenario_label",
+            json!({"name": "cavity", "scenario": "nope", "pinned": true}),
+        ),
+        ("scenario_list", json!({"name": "cavity"})),
+    ] {
+        s.tool(tool, arguments);
+    }
+    let r = s.raw_tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "x", "overrides": [], "path": "/x"}),
+    );
+    assert!(refused(&r), "{r}");
+    assert_nothing_private(&root, &s);
+}
+
+// ---- status and jobs take a variant ----
+
+#[test]
+fn document_status_over_the_protocol_takes_a_scenario() {
+    let root = variant_root("sst");
+    let mut s = Server::start(&root, "ok");
+
+    let variant = s.tool(
+        "document_status",
+        json!({"name": "cavity", "scenario": "fast-lid"}),
+    );
+    assert_eq!(variant["exit_class"], 0, "{variant}");
+    assert_eq!(variant["operation"], "document_status", "{variant}");
+    assert_eq!(variant["repro"]["kind"], "status", "{variant}");
+    let tagged = variant["artifacts"].as_array().unwrap();
+    assert!(
+        tagged
+            .iter()
+            .any(|a| a["kind"] == "scenario" && a["name"] == "fast-lid"),
+        "{variant}"
+    );
+
+    let study = s.tool("document_status", json!({"name": "cavity"}));
+    assert_eq!(study["repro"]["kind"], "status", "{study}");
+    assert!(
+        !study["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["kind"] == "scenario"),
+        "{study}"
+    );
+
+    let unknown = s.tool(
+        "document_status",
+        json!({"name": "cavity", "scenario": "nope"}),
+    );
+    assert_eq!(unknown["exit_class"], 2, "{unknown}");
+    assert_eq!(codes_of(&unknown), ["CFD-SCN-001"], "{unknown}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn start_document_job_solves_a_variant_over_the_protocol() {
+    let (root, mut s) = job_server("jvar");
+    // A finer mesh of the same number of cells, so the served results still pass.
+    let made = s.tool(
+        "scenario_set",
+        json!({"name": "cavity", "scenario": "fine-mesh", "overrides": [
+            {"op": "set", "setting": "/mesh/cells_x", "value": 64},
+            {"op": "set", "setting": "/mesh/cells_y", "value": 256}
+        ]}),
+    );
+    assert_eq!(made["exit_class"], 0, "{made}");
+
+    let report = run_job(
+        &mut s,
+        json!({"name": "cavity", "job": "solve", "scenario": "fine-mesh"}),
+    );
+    assert_eq!(report["exit_class"], 0, "{report}");
+    assert_eq!(report["operation"], "solve", "{report}");
+    assert_eq!(report["repro"]["kind"], "run", "{report}");
+
+    let listed = s.tool("list_runs", json!({"name": "cavity"}));
+    let runs = listed["repro"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{listed}");
+    assert_eq!(runs[0]["scenario"], "fine-mesh", "{listed}");
+    assert_eq!(run_count(&root), 1, "{:?}", events(&root));
+
+    let status = s.tool(
+        "document_status",
+        json!({"name": "cavity", "scenario": "fine-mesh"}),
+    );
+    assert_eq!(status["repro"]["mesh"]["state"], "fresh", "{status}");
+    assert_eq!(status["repro"]["result"]["state"], "fresh", "{status}");
+
+    let again = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve", "scenario": "fine-mesh"}),
+    );
+    assert_eq!(again["status"], "nothing_to_run", "{again}");
+    assert_eq!(run_count(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn scenario_and_remake_pruned_are_only_for_the_solve_job() {
+    let (root, mut s) = job_server("jonly");
+    add_variant(&root, "cavity", "fast-lid", None, &[lid_override(0.2)]);
+    let before = files_under(&root.join("ws"));
+    for arguments in [
+        json!({"name": "cavity", "job": "rerun", "run": "run-1", "scenario": "fast-lid"}),
+        json!({"name": "cavity", "job": "update_mesh", "scenario": "fast-lid"}),
+        json!({"name": "cavity", "job": "update_result", "remake_pruned": true}),
+        json!({"name": "cavity", "job": "rerun", "remake_pruned": true}),
+    ] {
+        let r = s.tool("start_document_job", arguments.clone());
+        assert_eq!(r["status"], "refused", "{arguments}: {r}");
+        assert_eq!(r["report"]["exit_class"], 2, "{arguments}: {r}");
+        assert_eq!(codes_of(&r["report"]), ["CFD-CLI-001"], "{r}");
+    }
+    let unknown = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve", "scenario": "nope"}),
+    );
+    assert_eq!(unknown["status"], "refused", "{unknown}");
+    assert_eq!(codes_of(&unknown["report"]), ["CFD-SCN-001"], "{unknown}");
+    assert_eq!(files_under(&root.join("ws")), before, "nothing changed");
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+}
+
+// ---- sweeps of a document, by name ----
+
+const CELLS_SETTING: &str = "/mesh/cells_x";
+
+/// Three lid speeds by two cell counts: six points.
+fn grid_sweep() -> Value {
+    json!({
+        "id": "grid",
+        "base": "base",
+        "parameters": [
+            {
+                "name": "lid_speed",
+                "target": {"kind": "number", "setting": LID_SETTING},
+                "values": {"mode": "list", "items": [0.1, 0.2, 0.3]}
+            },
+            {
+                "name": "cells_x",
+                "target": {"kind": "count", "setting": CELLS_SETTING},
+                "values": {"mode": "list", "items": [20, 40]}
+            }
+        ]
+    })
+}
+
+/// A sweep of the cells in x over the given counts, one point for each.
+fn cells_sweep(id: &str, items: &[u32]) -> Value {
+    json!({
+        "id": id,
+        "base": "base",
+        "parameters": [{
+            "name": "cells_x",
+            "target": {"kind": "count", "setting": CELLS_SETTING},
+            "values": {"mode": "list", "items": items}
+        }]
+    })
+}
+
+/// A fresh workspace holding the cavity as a document, and a server on it.
+fn sweep_server(tag: &str) -> (PathBuf, Server) {
+    let root = fresh(tag);
+    put_document(&root, "cavity", CAVITY, false);
+    let s = Server::start(&root, "ok");
+    (root, s)
+}
+
+#[test]
+fn sweep_plan_over_the_protocol_returns_the_points_and_writes_nothing() {
+    let (root, mut s) = sweep_server("swp");
+    let before = std::fs::read(document_file(&root, "cavity")).unwrap();
+    let files = files_under(&root.join("ws"));
+
+    let r = s.tool(
+        "sweep_plan",
+        json!({"name": "cavity", "sweep": grid_sweep()}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "sweep_plan", "{r}");
+    assert_eq!(r["repro"]["kind"], "sweep", "{r}");
+    assert_eq!(r["repro"]["stored"], false, "{r}");
+    let points = r["repro"]["points"].as_array().unwrap();
+    assert_eq!(points.len(), 6, "{r}");
+    assert_eq!(points[0]["id"], "grid-001", "{r}");
+    assert_eq!(points[5]["id"], "grid-006", "{r}");
+
+    assert_eq!(
+        std::fs::read(document_file(&root, "cavity")).unwrap(),
+        before,
+        "the document is byte for byte as it was"
+    );
+    assert_eq!(files_under(&root.join("ws")), files);
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn sweep_create_over_the_protocol_stores_the_variants() {
+    let (root, mut s) = sweep_server("swc");
+    let r = s.tool(
+        "sweep_create",
+        json!({"name": "cavity", "sweep": grid_sweep()}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "sweep_create", "{r}");
+    assert_eq!(r["repro"]["stored"], true, "{r}");
+
+    let listed = s.tool("scenario_list", json!({"name": "cavity"}));
+    let rows = rows_of(&listed);
+    assert_eq!(rows.len(), 7, "{listed}");
+    assert_eq!(rows[0]["id"], "base", "{listed}");
+    for (at, row) in rows.iter().enumerate().skip(1) {
+        assert_eq!(row["id"], format!("grid-{at:03}"), "{listed}");
+        assert_eq!(row["sweep"], "grid", "{listed}");
+        assert_eq!(row["parent"], "base", "{listed}");
+    }
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn sweep_preflight_over_the_protocol_reports_a_failing_point_with_class_1() {
+    let (root, mut s) = sweep_server("swf");
+    let made = s.tool(
+        "sweep_create",
+        json!({"name": "cavity", "sweep": cells_sweep("cells", &[20, 0, 40])}),
+    );
+    assert_eq!(made["exit_class"], 0, "{made}");
+
+    let r = s.tool(
+        "sweep_preflight",
+        json!({"name": "cavity", "sweep": "cells"}),
+    );
+    assert_eq!(r["exit_class"], 1, "{r}");
+    assert_eq!(r["operation"], "sweep_preflight", "{r}");
+    assert_eq!(codes_of(&r), ["CFD-SWP-003"], "{r}");
+    assert!(
+        r["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cells-002"),
+        "{r}"
+    );
+    assert_eq!(r["repro"]["kind"], "preflight", "{r}");
+    assert_eq!(r["repro"]["failed"], 1, "{r}");
+    let points = r["repro"]["points"].as_array().unwrap();
+    assert_eq!(points.len(), 3, "{r}");
+    assert_eq!(points[1]["ok"], false, "{r}");
+    assert_eq!(points[0]["ok"], true, "{r}");
+
+    let good = s.tool(
+        "sweep_create",
+        json!({"name": "cavity", "sweep": grid_sweep()}),
+    );
+    assert_eq!(good["exit_class"], 0, "{good}");
+    let r = s.tool(
+        "sweep_preflight",
+        json!({"name": "cavity", "sweep": "grid"}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["distinct_meshes"], 2, "{r}");
+
+    let unknown = s.tool(
+        "sweep_preflight",
+        json!({"name": "cavity", "sweep": "nope"}),
+    );
+    assert_eq!(unknown["exit_class"], 2, "{unknown}");
+    assert_eq!(codes_of(&unknown), ["CFD-SWP-004"], "{unknown}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn a_sweep_over_the_limit_is_cfd_swp_001_over_the_protocol() {
+    let (root, mut s) = sweep_server("swl");
+    let before = files_under(&root.join("ws"));
+    let items: Vec<u32> = (20..221).collect();
+    assert_eq!(items.len(), 201);
+    for tool in ["sweep_plan", "sweep_create"] {
+        let r = s.tool(
+            tool,
+            json!({"name": "cavity", "sweep": cells_sweep("grid", &items)}),
+        );
+        assert_eq!(r["exit_class"], 2, "{tool}: {r}");
+        assert_eq!(codes_of(&r), ["CFD-SWP-001"], "{tool}: {r}");
+        let message = r["diagnostics"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("201") && message.contains("200"),
+            "{tool}: {message}"
+        );
+    }
+    assert_eq!(files_under(&root.join("ws")), before, "nothing was stored");
+    let rows = rows_of(&s.tool("scenario_list", json!({"name": "cavity"})));
+    assert_eq!(rows.len(), 1, "only the study itself");
+}
+
+#[test]
+fn a_sweep_with_an_unknown_member_or_target_kind_is_refused_by_the_schema() {
+    let (root, mut s) = sweep_server("swu");
+    let before = files_under(&root.join("ws"));
+
+    let mut extra_member = grid_sweep();
+    extra_member["extra"] = json!(1);
+    let mut extra_parameter = grid_sweep();
+    extra_parameter["parameters"][0]["extra"] = json!(1);
+    let mut unknown_kind = grid_sweep();
+    unknown_kind["parameters"][0]["target"]["kind"] = json!("frobnicate");
+    let mut unknown_mode = grid_sweep();
+    unknown_mode["parameters"][0]["values"]["mode"] = json!("random");
+    let mut extra_target = grid_sweep();
+    extra_target["parameters"][0]["target"]["extra"] = json!(1);
+
+    for tool in ["sweep_plan", "sweep_create"] {
+        for sweep in [
+            &extra_member,
+            &extra_parameter,
+            &unknown_kind,
+            &unknown_mode,
+            &extra_target,
+        ] {
+            let r = s.raw_tool(tool, json!({"name": "cavity", "sweep": sweep}));
+            assert!(refused(&r), "{tool}: {sweep}: {r}");
+        }
+    }
+    assert_eq!(files_under(&root.join("ws")), before, "nothing was stored");
+}
+
+#[test]
+fn plan_and_preflight_write_nothing_and_start_nothing() {
+    let (root, mut s) = sweep_server("swq");
+    let made = s.tool(
+        "sweep_create",
+        json!({"name": "cavity", "sweep": grid_sweep()}),
+    );
+    assert_eq!(made["exit_class"], 0, "{made}");
+    let bytes = std::fs::read(document_file(&root, "cavity")).unwrap();
+    let files = files_under(&root.join("ws"));
+    let log = events(&root);
+    let ssh = ssh_log(&root);
+
+    for (tool, arguments) in [
+        (
+            "sweep_plan",
+            json!({"name": "cavity", "sweep": grid_sweep()}),
+        ),
+        (
+            "sweep_preflight",
+            json!({"name": "cavity", "sweep": "grid"}),
+        ),
+        (
+            "sweep_preflight",
+            json!({"name": "cavity", "sweep": "nope"}),
+        ),
+        (
+            "sweep_plan",
+            json!({"name": "absent", "sweep": grid_sweep()}),
+        ),
+    ] {
+        s.tool(tool, arguments);
+    }
+    assert_eq!(
+        std::fs::read(document_file(&root, "cavity")).unwrap(),
+        bytes,
+        "the document is byte for byte as it was"
+    );
+    assert_eq!(files_under(&root.join("ws")), files);
+    assert_eq!(events(&root), log, "the fake host saw nothing");
+    assert_eq!(ssh_log(&root), ssh, "nothing reached the host");
+    assert_eq!(run_count(&root), 0);
+    let known = s.tool("run_status", json!({"run_id": "cfdcraft-nothing-1"}));
+    assert_eq!(known["status"], "not_found", "{known}");
+}
+
+// ---- disk use and pruning, by name ----
+
+/// A runner that follows the study it is given: the cell count of the folder it writes is that of
+/// the study, and the samples move a little more on each call, so studies that differ in a mesh
+/// setting or in the lid give different stored results.
+struct FollowRunner {
+    dir: PathBuf,
+    calls: usize,
+}
+
+impl CaseRunner for FollowRunner {
+    fn run_case(&mut self, study_json: &str) -> Result<CaseRun, Box<Report>> {
+        let study = value(study_json);
+        let cells: u64 = ["cells_x", "cells_y", "cells_z"]
+            .iter()
+            .map(|axis| study["mesh"][*axis].as_u64().unwrap_or(1))
+            .product();
+        let shift = 0.05 * self.calls as f64;
+        self.calls += 1;
+        let dir = self.dir.join(format!("call-{}", self.calls));
+        let spec = FixtureSpec {
+            end_time: 5000,
+            cells,
+            samples: 64,
+            shift,
+        };
+        write_results(&dir, &spec).unwrap();
+        let checks = json!([{"name": "evidence", "passed": true, "detail": "passed"}]);
+        Ok(CaseRun {
+            results_dir: dir,
+            checks: serde_json::from_value(checks).unwrap(),
+            host: Some("box".to_owned()),
+        })
+    }
+}
+
+/// A fresh workspace holding the cavity solved for the study (`run-1`, mesh and result), for
+/// `fast-lid` (`run-2`, a result on the study's mesh) and for `fine` (`run-3`, its own mesh and
+/// result), before any server starts.
+fn solved_root(tag: &str) -> PathBuf {
+    let root = fresh(tag);
+    let path = put_document(&root, "cavity", CAVITY, false);
+    let mut runner = FollowRunner {
+        dir: root.join("fixture"),
+        calls: 0,
+    };
+    let solved = solve_document(&path, &mut runner);
+    assert_eq!(
+        solved.report.exit_class,
+        0,
+        "{}",
+        solved.report.render_text()
+    );
+    let made = [
+        ("fast-lid", lid_override(0.2)),
+        (
+            "fine",
+            Override::Set {
+                setting: CELLS_SETTING.to_owned(),
+                value: json!(256),
+            },
+        ),
+    ];
+    for (id, change) in made {
+        add_variant(&root, "cavity", id, Some("base"), &[change]);
+        let solved = solve_scenario(&path, Some(id), &mut runner);
+        assert_eq!(
+            solved.report.exit_class,
+            0,
+            "{}",
+            solved.report.render_text()
+        );
+    }
+    root
+}
+
+/// The stored results of `solved_root`, each named by one run.
+struct Held {
+    mesh: ContentHash,
+    result: ContentHash,
+    fast: ContentHash,
+    fine_mesh: ContentHash,
+    fine: ContentHash,
+}
+
+fn held(root: &Path) -> Held {
+    let runs = cfdcraft_doc::open(&document_file(root, "cavity"))
+        .unwrap()
+        .document
+        .artifacts
+        .runs;
+    let mesh = |n: usize| runs[n].mesh.as_ref().unwrap().blob;
+    let result = |n: usize| runs[n].result.as_ref().unwrap().blob;
+    Held {
+        mesh: mesh(0),
+        result: result(0),
+        fast: result(1),
+        fine_mesh: mesh(2),
+        fine: result(2),
+    }
+}
+
+fn store_of(root: &Path) -> PathBuf {
+    cfdcraft_doc::store_dir(&document_file(root, "cavity"))
+}
+
+fn in_store(root: &Path, hash: &ContentHash) -> bool {
+    Store::open(store_of(root)).unwrap().contains(hash)
+}
+
+#[test]
+fn disk_use_over_the_protocol_returns_the_use_per_variant() {
+    let root = solved_root("pds");
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+
+    let r = s.tool("disk_use", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "disk_use", "{r}");
+    assert_eq!(r["repro"]["kind"], "disk", "{r}");
+    let rows = r["repro"]["scenarios"].as_array().unwrap();
+    let ids: Vec<&Value> = rows.iter().map(|row| &row["scenario"]).collect();
+    assert_eq!(ids, ["base", "fast-lid", "fine"], "{r}");
+    for row in rows {
+        assert!(row["bytes"].as_u64().unwrap() > 0, "{r}");
+        assert_eq!(row["runs"], 1, "{r}");
+    }
+    assert!(r["repro"]["stored_bytes"].as_u64().unwrap() > 0, "{r}");
+    assert_eq!(r["repro"]["pruned_bytes"], 0, "{r}");
+
+    assert_eq!(
+        files_under(&root.join("ws")),
+        files,
+        "reading wrote nothing"
+    );
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn prune_defaults_to_a_dry_run() {
+    let root = solved_root("pdr");
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+
+    for arguments in [
+        json!({"name": "cavity"}),
+        json!({"name": "cavity", "apply": false}),
+        json!({"name": "cavity", "scenarios": ["fine"]}),
+    ] {
+        let r = s.tool("prune", arguments.clone());
+        assert_eq!(r["exit_class"], 0, "{arguments}: {r}");
+        assert_eq!(r["operation"], "prune", "{arguments}: {r}");
+        assert_eq!(r["repro"]["kind"], "prune", "{arguments}: {r}");
+        assert_eq!(r["repro"]["applied"], false, "{arguments}: {r}");
+        assert!(
+            !r["repro"]["plan"]["remove"].as_array().unwrap().is_empty(),
+            "{arguments}: {r}"
+        );
+        assert_eq!(
+            files_under(&root.join("ws")),
+            files,
+            "{arguments}: nothing was removed"
+        );
+    }
+    let all = s.tool("prune", json!({"name": "cavity"}));
+    assert_eq!(all["repro"]["plan"]["remove"].as_array().unwrap().len(), 5);
+    let kept = held(&root);
+    for hash in [kept.mesh, kept.result, kept.fast, kept.fine_mesh, kept.fine] {
+        assert!(in_store(&root, &hash));
+    }
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn prune_with_apply_removes_unpinned_results_and_keeps_pinned_ones() {
+    let root = solved_root("pap");
+    let kept = held(&root);
+    let mut s = Server::start(&root, "ok");
+    let pinned = s.tool(
+        "scenario_label",
+        json!({"name": "cavity", "scenario": "fast-lid", "pinned": true}),
+    );
+    assert_eq!(pinned["exit_class"], 0, "{pinned}");
+
+    let r = s.tool("prune", json!({"name": "cavity", "apply": true}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["applied"], true, "{r}");
+    assert_eq!(
+        r["repro"]["plan"]["remove"].as_array().unwrap().len(),
+        3,
+        "{r}"
+    );
+    assert_eq!(r["repro"]["plan"]["kept_pinned"], 2, "{r}");
+
+    for gone in [kept.result, kept.fine_mesh, kept.fine] {
+        assert!(!in_store(&root, &gone));
+    }
+    // The pinned variant keeps its result and the mesh it stands on.
+    for stays in [kept.mesh, kept.fast] {
+        assert!(in_store(&root, &stays));
+    }
+
+    let listed = s.tool("list_runs", json!({"name": "cavity"}));
+    assert_eq!(
+        listed["repro"]["runs"].as_array().unwrap().len(),
+        3,
+        "{listed}"
+    );
+    for run in ["run-1", "run-2", "run-3"] {
+        let numbers = s.tool("get_run_result", json!({"name": "cavity", "run": run}));
+        assert_eq!(numbers["exit_class"], 0, "{run}: {numbers}");
+        assert!(
+            numbers["repro"]["key_numbers"].is_object(),
+            "{run}: {numbers}"
+        );
+    }
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn an_unknown_variant_in_scenarios_is_cfd_disk_001() {
+    let root = solved_root("pun");
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+    for apply in [false, true] {
+        let r = s.tool(
+            "prune",
+            json!({"name": "cavity", "scenarios": ["fine", "nope"], "apply": apply}),
+        );
+        assert_eq!(r["exit_class"], 2, "{r}");
+        assert_eq!(codes_of(&r), ["CFD-DISK-001"], "{r}");
+    }
+    assert_eq!(files_under(&root.join("ws")), files, "nothing was removed");
+}
+
+#[test]
+fn prune_takes_only_the_named_scenarios() {
+    let root = solved_root("psc");
+    let kept = held(&root);
+    let mut s = Server::start(&root, "ok");
+
+    let r = s.tool(
+        "prune",
+        json!({"name": "cavity", "scenarios": ["fine"], "apply": true}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(
+        r["repro"]["plan"]["remove"].as_array().unwrap().len(),
+        2,
+        "{r}"
+    );
+    for gone in [kept.fine_mesh, kept.fine] {
+        assert!(!in_store(&root, &gone));
+    }
+    for stays in [kept.mesh, kept.result, kept.fast] {
+        assert!(in_store(&root, &stays));
+    }
+}
+
+#[test]
+fn document_status_shows_the_pruned_stage_as_pruned() {
+    let root = solved_root("pst");
+    let mut s = Server::start(&root, "ok");
+    let fresh_status = s.tool("document_status", json!({"name": "cavity"}));
+    assert_eq!(
+        fresh_status["repro"]["mesh"]["state"], "fresh",
+        "{fresh_status}"
+    );
+    assert_eq!(
+        fresh_status["repro"]["result"]["state"], "fresh",
+        "{fresh_status}"
+    );
+
+    let r = s.tool("prune", json!({"name": "cavity", "apply": true}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+
+    let status = s.tool("document_status", json!({"name": "cavity"}));
+    assert_eq!(status["exit_class"], 0, "{status}");
+    assert_eq!(status["repro"]["mesh"]["state"], "pruned", "{status}");
+    assert_eq!(status["repro"]["result"]["state"], "pruned", "{status}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn no_other_tool_prunes() {
+    let root = solved_root("pnp");
+    let tar = results_tar(&root);
+    let mut s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
+    let before = files_under(&store_of(&root));
+    assert!(!before.is_empty());
+
+    for (tool, arguments) in [
+        ("document_status", json!({"name": "cavity"})),
+        (
+            "document_status",
+            json!({"name": "cavity", "scenario": "fine"}),
+        ),
+        ("list_runs", json!({"name": "cavity"})),
+        ("scenario_list", json!({"name": "cavity"})),
+        ("disk_use", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity"})),
+        ("get_provenance", json!({"name": "cavity"})),
+        ("plan_update", json!({"names": ["cavity"]})),
+        ("open_document", json!({"name": "cavity"})),
+        (
+            "start_document_job",
+            json!({"name": "cavity", "job": "solve"}),
+        ),
+        (
+            "start_document_job",
+            json!({"name": "cavity", "job": "solve", "scenario": "fast-lid"}),
+        ),
+        (
+            "start_document_job",
+            json!({"name": "cavity", "job": "update_mesh"}),
+        ),
+    ] {
+        s.tool(tool, arguments);
+    }
+    run_job(
+        &mut s,
+        json!({"name": "cavity", "job": "rerun", "run": "run-1"}),
+    );
+
+    let after = files_under(&store_of(&root));
+    for (name, bytes) in &before {
+        assert_eq!(after.get(name), Some(bytes), "{name} is still there");
+    }
+    let document = cfdcraft_doc::open(&document_file(&root, "cavity")).unwrap();
+    assert!(document.document.artifacts.pruned.is_empty());
+}
+
+// ---- the answer of a start that has nothing to do, and the whole surface ----
+
+const NOTHING_TO_RUN: &str = "Nothing to run: the mesh and the result are up to date.";
+
+#[test]
+fn a_start_that_finds_nothing_to_run_says_so_in_words() {
+    let root = solved_root("ntr");
+    let mut s = Server::start(&root, "ok");
+    for arguments in [
+        json!({"name": "cavity", "job": "solve"}),
+        json!({"name": "cavity", "job": "solve", "scenario": "base"}),
+        json!({"name": "cavity", "job": "solve", "scenario": "fast-lid"}),
+        json!({"name": "cavity", "job": "solve", "scenario": "fine"}),
+    ] {
+        let r = s.tool("start_document_job", arguments.clone());
+        assert_eq!(r["status"], "nothing_to_run", "{arguments}: {r}");
+        assert!(
+            r.get("run_id").is_none(),
+            "{arguments}: nothing started: {r}"
+        );
+        assert_eq!(r["message"], NOTHING_TO_RUN, "{arguments}: {r}");
+        assert_eq!(r["report"]["exit_class"], 0, "{arguments}: {r}");
+    }
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn other_answers_carry_no_message() {
+    let (root, mut s) = job_server("nomsg");
+    let started = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve"}),
+    );
+    assert_eq!(started["status"], "started", "{started}");
+    assert!(started.get("message").is_none(), "{started}");
+    let id = started["run_id"].as_str().unwrap().to_owned();
+    wait_until("the job to finish", || {
+        s.tool("run_status", json!({"run_id": id}))["status"] == "finished"
+    });
+
+    let refused_start = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "update_mesh"}),
+    );
+    assert_eq!(refused_start["status"], "refused", "{refused_start}");
+    assert!(refused_start.get("message").is_none(), "{refused_start}");
+
+    assert_eq!(run_count(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn a_busy_answer_carries_no_message() {
+    let (root, mut s) = job_server("nomsgb");
+    hold_lock(&root, now_epoch(), 3600);
+    let busy = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve"}),
+    );
+    assert_eq!(busy["status"], "busy", "{busy}");
+    assert!(busy.get("message").is_none(), "{busy}");
+}
+
+#[test]
+fn no_tool_output_names_the_workspace_folder_or_the_key() {
+    let root = solved_root("allpriv");
+    let tar = results_tar(&root);
+    let mut s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
+    store_cavity(&mut s);
+    let calls: [(&str, Value); 28] = [
+        (
+            "create_study",
+            json!({"name": "other", "study": value(CAVITY)}),
+        ),
+        ("validate_study", json!({"name": "cavity"})),
+        ("compile", json!({"name": "cavity"})),
+        ("export", json!({"name": "cavity"})),
+        ("save_document", json!({"name": "cavity"})),
+        ("open_document", json!({"name": "cavity"})),
+        ("pack_document", json!({"name": "cavity"})),
+        ("unpack_document", json!({"name": "cavity"})),
+        ("start_run", json!({"name": "absent", "mode": "run"})),
+        (
+            "start_document_job",
+            json!({"name": "cavity", "job": "solve"}),
+        ),
+        ("run_status", json!({"run_id": "cfdcraft-nothing-1"})),
+        ("get_result", json!({"run_id": "cfdcraft-nothing-1"})),
+        ("document_status", json!({"name": "cavity"})),
+        ("scenario_list", json!({"name": "cavity"})),
+        (
+            "scenario_show",
+            json!({"name": "cavity", "scenario": "fast-lid"}),
+        ),
+        (
+            "scenario_diff",
+            json!({"name": "cavity", "a": "base", "b": "fast-lid"}),
+        ),
+        (
+            "scenario_set",
+            json!({"name": "cavity", "scenario": "second", "overrides": [lid_set(0.4)]}),
+        ),
+        (
+            "scenario_label",
+            json!({"name": "cavity", "scenario": "second", "title": "Second"}),
+        ),
+        ("list_runs", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity"})),
+        ("get_provenance", json!({"name": "cavity"})),
+        (
+            "compare_runs",
+            json!({"name": "cavity", "a": "run-1", "b": "run-2"}),
+        ),
+        ("plan_update", json!({"names": ["cavity"]})),
+        (
+            "sweep_plan",
+            json!({"name": "cavity", "sweep": grid_sweep()}),
+        ),
+        (
+            "sweep_create",
+            json!({"name": "cavity", "sweep": grid_sweep()}),
+        ),
+        (
+            "sweep_preflight",
+            json!({"name": "cavity", "sweep": "grid"}),
+        ),
+        ("disk_use", json!({"name": "cavity"})),
+        ("prune", json!({"name": "cavity"})),
+    ];
+    let mut called = std::collections::BTreeSet::new();
+    for (tool, arguments) in calls {
+        s.tool(tool, arguments);
+        called.insert(tool.to_owned());
+    }
+    // The failing and the refused paths too.
+    for (tool, arguments) in [
+        (
+            "sweep_preflight",
+            json!({"name": "cavity", "sweep": "nope"}),
+        ),
+        ("sweep_plan", json!({"name": "../x", "sweep": grid_sweep()})),
+        (
+            "prune",
+            json!({"name": "cavity", "scenarios": ["nope"], "apply": true}),
+        ),
+        ("disk_use", json!({"name": "absent"})),
+    ] {
+        s.tool(tool, arguments);
+    }
+    assert_eq!(called.into_iter().collect::<Vec<_>>(), s.tool_names());
+    let r = s.raw_tool(
+        "prune",
+        json!({"name": "cavity", "apply": true, "path": "/x"}),
     );
     assert!(refused(&r), "{r}");
     assert_nothing_private(&root, &s);

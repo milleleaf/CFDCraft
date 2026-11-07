@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "Writer": {
+      "additionalProperties": false,
+      "description": "Which program wrote the file.",
+      "properties": {
+        "name": {
+          "description": "Program name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Program version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:manifest:2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The first member of a file: what it is, which schema it follows and who wrote it.",
+  "properties": {
+    "format": {
+      "const": "cfdcraft-study",
+      "description": "Always [`FORMAT_ID`].",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "description": "The one schema number that covers every member of the file.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "writer": {
+      "$ref": "#/$defs/Writer",
+      "description": "The program that wrote the file."
+    }
+  },
+  "required": [
+    "format",
+    "schema_version",
+    "writer"
+  ],
+  "title": "CFDCraft manifest.json, schema 2",
+  "type": "object"
+}

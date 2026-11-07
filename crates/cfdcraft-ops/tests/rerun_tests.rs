@@ -256,6 +256,54 @@ fn a_different_tool_is_refused_unless_allowed() {
 }
 
 #[test]
+fn a_rerun_with_other_tools_says_so_and_records_the_mesh_it_regenerated() {
+    let dir = scratch("rerun-tool-mesh");
+    let path = new_document(&dir, "cavity", CAVITY);
+    let current = tool_identity(Dialect::EsiV2512);
+    let old = ToolIdentity::new(
+        "sha256:old",
+        current.dialect.clone(),
+        current.sidecar_lock.clone(),
+        current.writer_version.clone(),
+    );
+    let mut runner = FixtureRunner::new(&dir.join("runs"));
+    let Ok(job) = plan_job_with_tool(&path, JobAction::Solve, old) else {
+        panic!("the document is planned for solving");
+    };
+    passed(&job.run_with(&mut runner).report);
+    // The second call, the rerun, leaves another mesh than the first.
+    runner.cells_on_call = Some((2, 100));
+
+    // The outcome may be a difference: it is recorded all the same.
+    let _ = rerun(&path, "run-1", &mut runner, Tolerance::same_image(), true);
+    assert_eq!(runner.calls, 2);
+
+    let runs = open(&path).unwrap().document.artifacts.runs;
+    assert_eq!(runs.len(), 2);
+    let repeated = &runs[1];
+    let check = repeated
+        .checks
+        .iter()
+        .find(|check| check.name == "tool_changed")
+        .expect("the record says the tools differ");
+    assert!(check.passed);
+    assert!(check.detail.contains("run-1"), "{}", check.detail);
+    assert!(check.detail.contains("solver image"), "{}", check.detail);
+    assert!(check.detail.contains("tight tolerance"), "{}", check.detail);
+    assert_eq!(repeated.provenance.tool, current);
+    assert_ne!(repeated.provenance.mesh_key, runs[0].provenance.mesh_key);
+
+    // It names the mesh it stood on, not the one made with the old tools.
+    let regenerated = cfdcraft_capture::mesh_bundle(&dir.join("runs/call-2"))
+        .unwrap()
+        .hash()
+        .unwrap();
+    assert_eq!(repeated.provenance.mesh_hash, regenerated);
+    assert_ne!(repeated.provenance.mesh_hash, runs[0].provenance.mesh_hash);
+    passed(&list_runs(&path).report);
+}
+
+#[test]
 fn an_unknown_run_or_a_run_without_a_result_is_refused() {
     let (path, mut runner) = solved("rerun-unknown", Vec::new());
     for name in ["run-9", "../x"] {

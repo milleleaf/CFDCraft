@@ -10,8 +10,9 @@ use cfdcraft_compare::Verdict;
 use cfdcraft_doc::{open, store_dir};
 use cfdcraft_ops::{
     DocJobKind, ExitClass, Report, Repro, ResultOutcome, RunRegistry, ServerSettings, Stage,
-    StartOutcome, Workspace, save_document,
+    StartOutcome, Workspace, save_document, scenario_ops::scenario_set,
 };
+use cfdcraft_scenarios::Override;
 use cfdcraft_store::Store;
 use std::{
     path::{Path, PathBuf},
@@ -293,6 +294,55 @@ fn jobs_worker() {
             assert_eq!(s.bytes(), before);
             assert!(s.runs().is_empty());
         }
+        "variant" => {
+            // A finer mesh of the same number of cells, so the prepared results still pass.
+            let cells = |setting: &str, count: u32| Override::Set {
+                setting: setting.to_owned(),
+                value: serde_json::Value::from(count),
+            };
+            let made = scenario_set(
+                &s.doc,
+                "fine-mesh",
+                None,
+                &[cells("/mesh/cells_x", 64), cells("/mesh/cells_y", 256)],
+                None,
+            );
+            passed(&made.report);
+            let solve = || DocJobKind::SolveScenario {
+                scenario: Some("fine-mesh".to_owned()),
+                remake_pruned: false,
+            };
+            let report = s.run(solve());
+            passed(&report);
+            assert_eq!(report.operation, "solve");
+            let runs = s.runs();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].scenario.as_deref(), Some("fine-mesh"));
+
+            let before = s.bytes();
+            let report = s.refused("cavity", solve());
+            passed(&report);
+            let Some(Repro::Run(data)) = &report.repro else {
+                panic!("expected the data of a solve: {report:?}");
+            };
+            assert_eq!(data.run, None);
+            assert!(data.recorded.is_empty());
+            assert_eq!(s.bytes(), before);
+        }
+        "unknown-variant" => {
+            let before = s.bytes();
+            let report = s.refused(
+                "cavity",
+                DocJobKind::SolveScenario {
+                    scenario: Some("nope".to_owned()),
+                    remake_pruned: false,
+                },
+            );
+            assert_eq!(report.class(), ExitClass::StudyInvalid);
+            assert_eq!(codes(&report), ["CFD-SCN-001"], "{}", report.render_text());
+            assert_eq!(s.bytes(), before);
+            assert!(s.runs().is_empty());
+        }
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -354,4 +404,16 @@ fn bad_names_and_missing_documents_are_refused_with_reports() {
 fn a_failed_case_records_nothing() {
     let root = scenario("failed", "failed", false);
     assert_eq!(containers(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn a_solve_job_for_a_variant_records_a_tagged_run() {
+    let root = scenario("variant", "variant", true);
+    assert_eq!(containers(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn an_unknown_variant_in_a_job_is_a_refused_start() {
+    let root = scenario("unknown-variant", "unknown-variant", true);
+    assert_eq!(containers(&root), 0, "{:?}", events(&root));
 }

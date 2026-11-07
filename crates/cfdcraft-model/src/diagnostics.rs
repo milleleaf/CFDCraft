@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Quantity, StudyError,
     quantity::Dimension,
+    raw::{MAX_RAW_OVERRIDES, RawBackend},
     study::{BoundaryKind, Face, Study},
     units::si_value,
 };
@@ -146,6 +147,25 @@ pub const CODES: &[(&str, &str)] = &[
         "CFD-CLI-001",
         "the output directory is not empty or cannot be used",
     ),
+    ("CFD-RAW-001", "a raw override label breaks the naming rule"),
+    (
+        "CFD-RAW-002",
+        "a raw override's file is not a case file the study may name",
+    ),
+    ("CFD-RAW-003", "a raw override's entry path is malformed"),
+    (
+        "CFD-RAW-004",
+        "a raw override's value is empty or holds a character that could end or extend the entry",
+    ),
+    (
+        "CFD-RAW-005",
+        "a raw override is tagged for another backend",
+    ),
+    ("CFD-RAW-006", "the study has too many raw overrides"),
+    (
+        "CFD-RAW-007",
+        "the written case has no such file or block for a raw override, raised by the writer",
+    ),
 ];
 // END OF CATALOGUE: code literals below this line are the ones the model emits.
 
@@ -245,6 +265,8 @@ pub struct Capabilities {
     /// The backend writes one patch per boundary kind, so boundaries of one kind must impose
     /// the same velocity.
     pub same_kind_boundaries_must_agree: bool,
+    /// The backend whose raw overrides this backend runs. `None` accepts any tag.
+    pub raw_backend: Option<RawBackend>,
 }
 
 impl Capabilities {
@@ -253,6 +275,7 @@ impl Capabilities {
             boundary_kinds: ALL_KINDS.to_vec(),
             requires_single_cell_z: false,
             same_kind_boundaries_must_agree: false,
+            raw_backend: None,
         }
     }
 }
@@ -301,6 +324,7 @@ pub fn diagnose(study: &Study, capabilities: &Capabilities) -> Vec<Diagnostic> {
     face_coverage(study, &mut found);
     domain_consistency(study, &mut found);
     capability_limits(study, capabilities, &mut found);
+    raw_overrides(study, capabilities, &mut found);
     warnings(study, &mut found);
     found.sort_by(|a, b| (&a.pointer, &a.code, &a.message).cmp(&(&b.pointer, &b.code, &b.message)));
     found
@@ -715,6 +739,140 @@ fn capability_limits(study: &Study, capabilities: &Capabilities, found: &mut Vec
             }
         }
     }
+}
+
+/// The raw overrides: each is checked for a plain label, a case file the study may name, a
+/// well-formed entry path, a value that cannot end or extend the entry, and a backend tag the
+/// backend runs. Rejected text is never echoed: the label names the override.
+fn raw_overrides(study: &Study, capabilities: &Capabilities, found: &mut Vec<Diagnostic>) {
+    if study.raw_overrides.len() > MAX_RAW_OVERRIDES {
+        found.push(
+            Diagnostic::error(
+                "CFD-RAW-006",
+                "raw overrides",
+                "/raw_overrides",
+                format!(
+                    "The study has {} raw overrides, but at most {MAX_RAW_OVERRIDES} are allowed.",
+                    study.raw_overrides.len()
+                ),
+            )
+            .with_hint("Remove the ones you no longer need."),
+        );
+    }
+    for (name, item) in &study.raw_overrides {
+        let base = format!("/raw_overrides/{}", pointer_token(name));
+        let shown = label(name);
+        let setting = format!("raw override {shown}");
+        if !valid_boundary_name(name) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-RAW-001",
+                    "raw override label",
+                    base.clone(),
+                    "A raw override label must start with a letter and use only letters, digits, \
+                     hyphens and underscores, up to 32 characters.",
+                )
+                .with_hint("Rename the override, for example to \"relax-u\"."),
+            );
+        }
+        if !valid_raw_file(&item.file) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-RAW-002",
+                    format!("{setting} file"),
+                    format!("{base}/file"),
+                    format!(
+                        "The file of the raw override \"{shown}\" must be a case file under \
+                         system, constant or 0, such as system/fvSolution."
+                    ),
+                )
+                .with_hint("Use a relative name with one or two plain folder or file names."),
+            );
+        }
+        if !valid_raw_entry(&item.entry) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-RAW-003",
+                    format!("{setting} entry"),
+                    format!("{base}/entry"),
+                    format!(
+                        "The entry of the raw override \"{shown}\" must be one to six names \
+                         joined by /, each starting with a letter, for example \
+                         relaxationFactors/equations/U."
+                    ),
+                )
+                .with_hint("Use letters, digits and underscores only in each name."),
+            );
+        }
+        if !valid_raw_value(&item.value) {
+            found.push(
+                Diagnostic::error(
+                    "CFD-RAW-004",
+                    format!("{setting} value"),
+                    format!("{base}/value"),
+                    format!(
+                        "The value of the raw override \"{shown}\" must be 1 to 200 printable \
+                         characters without ; {{ }} # $ \" or a backslash."
+                    ),
+                )
+                .with_hint("Give the plain text that goes after the entry name, such as 0.5."),
+            );
+        }
+        if let Some(own) = capabilities.raw_backend
+            && item.backend != own
+        {
+            found.push(
+                Diagnostic::error(
+                    "CFD-RAW-005",
+                    format!("{setting} backend"),
+                    format!("{base}/backend"),
+                    format!(
+                        "The raw override \"{shown}\" is written for the {} backend, but the \
+                         selected solver setup runs {own} overrides.",
+                        item.backend
+                    ),
+                )
+                .with_hint("Tag the override for the backend you run, or remove it."),
+            );
+        }
+    }
+}
+
+/// `system/`, `constant/` or `0/`, then one or two plain names.
+fn valid_raw_file(file: &str) -> bool {
+    let mut parts = file.split('/');
+    let top = matches!(parts.next(), Some("system" | "constant" | "0"));
+    let rest: Vec<&str> = parts.collect();
+    let plain = |part: &&str| {
+        !part.is_empty()
+            && *part != "."
+            && !part.contains("..")
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    };
+    top && file.len() <= 100 && (1..=2).contains(&rest.len()) && rest.iter().all(plain)
+}
+
+/// One to six names joined by `/`, each `[A-Za-z][A-Za-z0-9_]{0,63}`.
+fn valid_raw_entry(entry: &str) -> bool {
+    let name = |part: &str| {
+        let mut chars = part.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && part.len() <= 64
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    (1..=6).contains(&entry.split('/').count()) && entry.split('/').all(name)
+}
+
+/// 1 to 200 printable ASCII characters, none of which can end the entry, open or close a block,
+/// start a directive, expand a variable, open a string or escape.
+fn valid_raw_value(value: &str) -> bool {
+    (1..=200).contains(&value.len())
+        && value.chars().all(|c| {
+            (c.is_ascii_graphic() || c == ' ')
+                && !matches!(c, ';' | '{' | '}' | '#' | '$' | '"' | '\\')
+        })
 }
 
 fn warnings(study: &Study, found: &mut Vec<Diagnostic>) {

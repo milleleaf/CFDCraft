@@ -19,13 +19,14 @@ use cfdcraft_doc::{Document, open, store_dir};
 use cfdcraft_keys::{Stage, StageKey, StageRecipes};
 use cfdcraft_model::{Diagnostic, Severity};
 use cfdcraft_runs::{
-    RunRecord, StageState, find_run, latest_mesh, latest_result, status, verify_runs,
+    RunRecord, StageState, find_run, is_plain_name, latest_mesh, latest_result, status_for,
+    verify_runs,
 };
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
 
 use crate::documents::{DocOutcome, Finding, finding, problem, refused, say, shown, study_hash};
-use crate::jobs::{inconsistent, open_refusal};
+use crate::jobs::{blob_present, inconsistent, open_refusal};
 use crate::keys::tool_identity;
 use crate::prepare::prepare;
 use crate::reasons::{reason_parts, stale_line};
@@ -34,6 +35,7 @@ use crate::repro::{
     ComparisonData, ProvenanceData, Repro, ResultData, RunSummary, RunsData, StageStatus,
     StatusData,
 };
+use crate::scenario_ops::effective_of;
 
 /// A document that was opened and whose run records hold together.
 struct Loaded<'a> {
@@ -143,17 +145,6 @@ impl<'a> Loaded<'a> {
     }
 }
 
-/// The same rule run ids follow: 1 to 40 lower-case letters, digits or hyphens, not starting
-/// with a hyphen.
-pub(crate) fn is_plain_name(id: &str) -> bool {
-    let bytes = id.as_bytes();
-    (1..=40).contains(&bytes.len())
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(at, &c)| c.is_ascii_lowercase() || c.is_ascii_digit() || (at > 0 && c == b'-'))
-}
-
 fn blank_stage(key: StageKey, state: &str) -> StageStatus {
     StageStatus {
         key: key.to_string(),
@@ -166,29 +157,41 @@ fn blank_stage(key: StageKey, state: &str) -> StageStatus {
     }
 }
 
-/// Where one stage stands, and the warning that goes with it when it is not up to date.
+/// Where one stage stands, and the warning that goes with it when it is not up to date. A stored
+/// result that is gone and is on the `pruned` list was removed on purpose: the stage is `pruned`,
+/// with no warning.
 fn stage_status(
     stage: Stage,
     key: StageKey,
     state: &StageState,
-    blob: Option<ContentHash>,
-    present: &dyn Fn(&ContentHash) -> bool,
+    blob: Option<(ContentHash, u64)>,
+    present: &dyn Fn(&ContentHash, u64) -> bool,
+    pruned: &[ContentHash],
     found: &mut Vec<Diagnostic>,
 ) -> StageStatus {
     let word = stage.as_str();
     match state {
         StageState::Fresh { run } => {
-            let gone = blob.filter(|hash| !present(hash));
+            let gone = blob
+                .filter(|(hash, size)| !present(hash, *size))
+                .map(|(hash, _)| hash);
+            let on_purpose = gone.is_some_and(|hash| pruned.contains(&hash));
             let mut out = blank_stage(
                 key,
-                if gone.is_some() {
-                    "blob_missing"
-                } else {
-                    "fresh"
+                match gone {
+                    None => "fresh",
+                    Some(_) if on_purpose => "pruned",
+                    Some(_) => "blob_missing",
                 },
             );
             out.run = Some(run.clone());
             match gone {
+                Some(_) if on_purpose => {
+                    out.sentence = say(&Line::StagePruned {
+                        stage: word.to_owned(),
+                        run: run.clone(),
+                    });
+                }
                 Some(hash) => {
                     let line = Line::StageBlobMissing {
                         stage: word.to_owned(),
@@ -238,14 +241,25 @@ fn stage_status(
 /// The answer is a passing report whatever the state. A stage that was never made, or whose
 /// recorded inputs differ from the study, or whose stored data is gone, is a warning.
 pub fn document_status(path: &Path) -> DocOutcome {
+    scenario_status(path, None)
+}
+
+/// [`document_status`] for the variant `scenario`, built from its effective study. A mesh any run
+/// holds the key of counts, so a variant that changes only settings finds the mesh its parent
+/// made; a stage that is out of date is judged against the runs made for this variant alone. `None`
+/// and `base` mean the study itself, which no run of a variant is ever compared with.
+pub fn scenario_status(path: &Path, scenario: Option<&str>) -> DocOutcome {
     const OP: &str = "status";
     let loaded = match Loaded::load(OP, path) {
         Ok(loaded) => loaded,
         Err(outcome) => return *outcome,
     };
     let document = &loaded.document;
-    let mut study_json =
-        serde_json::to_string_pretty(&document.study).expect("a study is plain data");
+    let (effective, tag) = match effective_of(OP, document, scenario) {
+        Ok(found) => found,
+        Err(outcome) => return *outcome,
+    };
+    let mut study_json = serde_json::to_string_pretty(&effective).expect("a study is plain data");
     study_json.push('\n');
     let dialect = Dialect::EsiV2512;
     let prepared = match prepare(&study_json, dialect) {
@@ -260,31 +274,40 @@ pub fn document_status(path: &Path) -> DocOutcome {
     let recipes = StageRecipes::from_resolved(&prepared.resolved, &tool_identity(dialect));
     let keys = recipes.keys();
     let runs = loaded.runs();
-    let state = status(runs, &recipes);
+    let state = status_for(runs, &recipes, tag.as_deref());
     let store = Store::open(store_dir(path)).ok();
-    let present = |hash: &ContentHash| store.as_ref().is_some_and(|s| s.contains(hash));
+    let present = |hash: &ContentHash, size: u64| blob_present(store.as_ref(), hash, size);
+    let pruned = document.artifacts.pruned.as_slice();
 
     let mut found = prepared.warnings;
     let mesh = stage_status(
         Stage::Mesh,
         keys.mesh,
         &state.mesh,
-        latest_mesh(runs, keys.mesh).map(|(_, out)| out.blob),
+        latest_mesh(runs, keys.mesh).map(|(_, out)| (out.blob, out.size)),
         &present,
+        pruned,
         &mut found,
     );
     let result = stage_status(
         Stage::Result,
         keys.result,
         &state.result,
-        latest_result(runs, keys.result).map(|(_, out)| out.blob),
+        latest_result(runs, keys.result).map(|(_, out)| (out.blob, out.size)),
         &present,
+        pruned,
         &mut found,
     );
-    let all_fresh = mesh.state == "fresh" && result.state == "fresh";
-    let report = Report::from_diagnostics(OP, found, Some(prepared.hash))
-        .with_artifact("document", shown(path))
-        .with_repro(Repro::Status(Box::new(StatusData { mesh, result })));
+    // A pruned stage is not out of date: there is nothing to update for it.
+    let all_fresh = [&mesh, &result]
+        .iter()
+        .all(|stage| matches!(stage.state.as_str(), "fresh" | "pruned"));
+    let mut report = Report::from_diagnostics(OP, found, Some(prepared.hash))
+        .with_artifact("document", shown(path));
+    if let Some(id) = tag.as_deref() {
+        report = report.with_artifact("scenario", id);
+    }
+    let report = report.with_repro(Repro::Status(Box::new(StatusData { mesh, result })));
     DocOutcome {
         report,
         line: all_fresh.then_some(Line::NothingToUpdate),
@@ -303,6 +326,7 @@ fn summary(run: &RunRecord) -> RunSummary {
     RunSummary {
         id: run.id.clone(),
         rerun_of: run.rerun_of.clone(),
+        scenario: run.scenario.clone(),
         recorded,
         mesh_key: run.mesh.as_ref().map(|out| out.key.to_string()),
         result_key: run.result.as_ref().map(|out| out.key.to_string()),

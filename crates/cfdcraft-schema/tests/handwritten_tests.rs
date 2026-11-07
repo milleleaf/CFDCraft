@@ -13,6 +13,7 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
 const MANIFEST: &[u8] = include_bytes!("fixtures/handwritten/manifest.json");
 const MANIFEST_V1: &[u8] = include_bytes!("fixtures/handwritten-v1/manifest.json");
+const MANIFEST_V2: &[u8] = include_bytes!("fixtures/handwritten-v2/manifest.json");
 const STUDY: &[u8] = include_bytes!("fixtures/handwritten/study.json");
 const ARTIFACTS: &[u8] = include_bytes!("fixtures/handwritten/artifacts.json");
 
@@ -116,7 +117,33 @@ fn a_file_assembled_by_plain_zip_code_opens_with_the_expected_study() {
 }
 
 #[test]
-fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+fn a_handwritten_schema_2_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+    let manifest: Value = serde_json::from_slice(MANIFEST_V2).unwrap();
+    let study: Value = serde_json::from_slice(STUDY).unwrap();
+    let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
+    assert_eq!(
+        validate(&frozen_schema(Member::Manifest, 2), &manifest),
+        Ok(())
+    );
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    assert_eq!(
+        validate(&frozen_schema(Member::Artifacts, 2), &artifacts),
+        Ok(())
+    );
+    // The current manifest file allows its own number only.
+    assert!(validate(&published_schema(Member::Manifest), &manifest).is_err());
+
+    let opened = from_bytes(&archive(MANIFEST_V2, STUDY, ARTIFACTS)).unwrap();
+    assert_eq!(opened.schema_version, 2);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (2, 3));
+    assert!(opened.document.artifacts.scenarios.is_empty());
+    assert!(opened.document.artifacts.sweeps.is_empty());
+    assert!(opened.document.artifacts.pruned.is_empty());
+}
+
+#[test]
+fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_two_notes() {
     let manifest: Value = serde_json::from_slice(MANIFEST_V1).unwrap();
     let study: Value = serde_json::from_slice(STUDY).unwrap();
     let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
@@ -134,14 +161,16 @@ fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with
 
     let opened = from_bytes(&archive(MANIFEST_V1, STUDY, ARTIFACTS)).unwrap();
     assert_eq!(opened.schema_version, 1);
-    assert_eq!(opened.notes.len(), 1);
-    assert_eq!((opened.notes[0].from, opened.notes[0].to), (1, 2));
+    assert_eq!(opened.notes.len(), 2);
+    let steps: Vec<(u32, u32)> = opened.notes.iter().map(|n| (n.from, n.to)).collect();
+    assert_eq!(steps, [(1, 2), (2, 3)]);
     assert!(opened.document.artifacts.runs.is_empty());
 }
 
 /// File (relative to `tests/fixtures`), which member it is, whether the schema accepts it, and
-/// whether the reader accepts the file it makes. The two columns agree on every row except three:
-/// the unit alias, the repeated link id and the run record whose keys are not those of its recipes.
+/// whether the reader accepts the file it makes. The two columns agree on every row except five:
+/// the unit alias, the repeated link id, the run record whose keys are not those of its recipes,
+/// a variant listed before its parent and a pruned hash that the list of stored results lacks.
 const CASES: &[(&str, Member, bool, bool)] = &[
     ("handwritten/manifest.json", Member::Manifest, true, true),
     ("handwritten/study.json", Member::Study, true, true),
@@ -227,6 +256,29 @@ const CASES: &[(&str, Member, bool, bool)] = &[
         true,
         false,
     ),
+    // A variant is a closed record, so a member it does not define is refused by both.
+    (
+        "invalid/artifacts_scenario_unknown_key.json",
+        Member::Artifacts,
+        false,
+        false,
+    ),
+    // Both variants are well-formed, so the schema accepts the list. That a parent is listed before
+    // its child involves two items, which only the reader checks, and it refuses the file.
+    (
+        "invalid/artifacts_scenario_parent_later.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
+    // The hash is well-formed, so the schema accepts it. That a pruned hash is one the index lists
+    // under `blobs` involves two members, which only the reader checks, and it refuses the file.
+    (
+        "invalid/artifacts_pruned_unlisted.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
 ];
 
 /// The schema verdict and the reader verdict for one fixture. The reader verdict is that of the
@@ -244,7 +296,7 @@ fn verdicts(file: &str, member: Member) -> (bool, bool) {
 }
 
 #[test]
-fn schema_and_reader_agree_on_every_fixture_but_the_three_documented_ones() {
+fn schema_and_reader_agree_on_every_fixture_but_the_five_documented_ones() {
     for (file, member, schema_accepts, reader_accepts) in CASES {
         assert_eq!(
             verdicts(file, *member),
@@ -269,7 +321,7 @@ fn every_invalid_fixture_is_in_the_table() {
 }
 
 #[test]
-fn only_the_unit_alias_the_repeated_link_id_and_foreign_run_keys_differ() {
+fn only_the_unit_alias_the_repeated_link_id_foreign_run_keys_and_the_two_new_rules_differ() {
     let differ: Vec<&str> = CASES
         .iter()
         .filter(|(_, _, schema_accepts, reader_accepts)| schema_accepts != reader_accepts)
@@ -280,7 +332,9 @@ fn only_the_unit_alias_the_repeated_link_id_and_foreign_run_keys_differ() {
         [
             "invalid/study_unit_alias.json",
             "invalid/artifacts_repeated_link_id.json",
-            "invalid/artifacts_run_with_foreign_keys.json"
+            "invalid/artifacts_run_with_foreign_keys.json",
+            "invalid/artifacts_scenario_parent_later.json",
+            "invalid/artifacts_pruned_unlisted.json"
         ]
     );
 }

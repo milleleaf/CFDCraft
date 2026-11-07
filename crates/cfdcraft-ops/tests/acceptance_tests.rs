@@ -335,7 +335,10 @@ fn sc3_every_run_keeps_its_provenance() {
             run.id
         );
         assert_eq!(provenance.tool.dialect, "esi-v2512");
-        assert_eq!(provenance.tool.writer_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            provenance.tool.writer_version,
+            tool_identity(Dialect::EsiV2512).writer_version
+        );
         assert_eq!(provenance.host.as_deref(), Some("fixture-host"));
     }
 }

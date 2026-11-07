@@ -24,8 +24,8 @@ use std::io;
 use std::path::Path;
 
 use cfdcraft_doc::{
-    DocError, Document, Link, LinkError, check_links, check_links_within, open,
-    resolve as follow_link, save, save_new, store_dir, verify,
+    DocError, Document, Link, LinkError, Stamp, check_links, check_links_within, open,
+    open_stamped, resolve as follow_link, save_if_unchanged, save_new, store_dir, verify,
 };
 use cfdcraft_model::{
     Diagnostic, MigrationNote, Severity, Study, canonical_hash, resolve as resolve_study,
@@ -229,9 +229,10 @@ pub(crate) fn study_hash(study: &Study) -> Option<String> {
         .map(|resolved| canonical_hash(&resolved))
 }
 
-/// Each distinct stored result of the document once, in index order.
+/// Each distinct stored result of the document once, in index order. A result that was pruned on
+/// purpose is no longer stored and is left out.
 fn result_hashes(document: &Document) -> Vec<ContentHash> {
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<ContentHash> = document.artifacts.pruned.iter().copied().collect();
     document
         .artifacts
         .blobs
@@ -248,7 +249,7 @@ fn migration(notes: &[MigrationNote]) -> Option<MigrationNote> {
 }
 
 /// The same note, worded for a file that was written back at the current schema when `saved`.
-fn migration_with(notes: &[MigrationNote], saved: bool) -> Option<MigrationNote> {
+pub(crate) fn migration_with(notes: &[MigrationNote], saved: bool) -> Option<MigrationNote> {
     let (first, last) = (notes.first()?, notes.last()?);
     let summary = notes
         .iter()
@@ -308,7 +309,7 @@ pub fn save_document(study_json: &str, out: &Path, replace: bool) -> DocOutcome 
     let hash = study_hash(&study);
     let saved = if exists {
         match replacement(study, out) {
-            Ok(document) => save(&document, out),
+            Ok((document, stamp)) => save_if_unchanged(&document, out, stamp),
             Err(found) => return refused(OP, problem(found)),
         }
     } else {
@@ -329,15 +330,16 @@ pub fn save_document(study_json: &str, out: &Path, replace: bool) -> DocOutcome 
     }
 }
 
-/// The document that replaces the study file `out`: the one in it, with only the study changed.
-fn replacement(study: Study, out: &Path) -> Result<Document, Finding> {
-    let opened = open(out).map_err(|e| read_failure(&e, out))?;
+/// The document that replaces the study file `out`: the one in it, with only the study changed,
+/// and the stamp of the bytes it was read from.
+fn replacement(study: Study, out: &Path) -> Result<(Document, Stamp), Finding> {
+    let (opened, stamp) = open_stamped(out).map_err(|e| read_failure(&e, out))?;
     if opened.packed_entries > 0 {
         return Err(pack_kept(out));
     }
     let mut document = opened.document;
     document.study = study;
-    Ok(document)
+    Ok((document, stamp))
 }
 
 /// Open the study file at `path`.
@@ -429,8 +431,8 @@ pub fn link_file(doc_path: &Path, target: &Path, id: &str) -> DocOutcome {
     if is_pack_name(doc_path) {
         return refused(OP, problem(pack_kept(doc_path)));
     }
-    let opened = match open(doc_path) {
-        Ok(opened) => opened,
+    let (opened, stamp) = match open_stamped(doc_path) {
+        Ok(read) => read,
         Err(e) => return refused(OP, problem(read_failure(&e, doc_path))),
     };
     if opened.packed_entries > 0 {
@@ -460,7 +462,7 @@ pub fn link_file(doc_path: &Path, target: &Path, id: &str) -> DocOutcome {
     if let Err(e) = document.add_link(link) {
         return refused(OP, not_added(e));
     }
-    if let Err(e) = save(&document, doc_path) {
+    if let Err(e) = save_if_unchanged(&document, doc_path, stamp) {
         return refused(OP, problem(not_written(doc_path, e)));
     }
     DocOutcome {

@@ -1,4 +1,4 @@
-use cfdcraft_model::{BoundaryKind, Capabilities};
+use cfdcraft_model::{BoundaryKind, Capabilities, RawBackend};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -21,8 +21,8 @@ impl Dialect {
     }
 
     /// What this dialect's writer can run: every boundary kind, one cell through z (the front
-    /// and back patches are empty), and one velocity per boundary kind (patch names come from a
-    /// fixed table).
+    /// and back patches are empty), one velocity per boundary kind (patch names come from a
+    /// fixed table), and raw overrides tagged `esi`.
     pub fn capabilities(self) -> Capabilities {
         match self {
             Self::EsiV2512 => Capabilities {
@@ -36,6 +36,7 @@ impl Dialect {
                 ],
                 requires_single_cell_z: true,
                 same_kind_boundaries_must_agree: true,
+                raw_backend: Some(RawBackend::Esi),
             },
         }
     }
@@ -53,5 +54,13 @@ mod tests {
         assert_eq!(Dialect::EsiV2512.id(), "esi-v2512");
         assert_eq!(Dialect::EsiV2512.image(), IMAGE);
         assert!(Dialect::EsiV2512.image().contains("@sha256:"));
+    }
+
+    #[test]
+    fn the_dialect_runs_overrides_tagged_for_its_backend() {
+        assert_eq!(
+            Dialect::EsiV2512.capabilities().raw_backend,
+            Some(RawBackend::Esi)
+        );
     }
 }

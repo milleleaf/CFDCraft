@@ -123,6 +123,12 @@ pub fn change_line(change: &Change) -> Line {
             to: to.to_string(),
         },
         Change::MeshChanged => Line::ReasonMesh,
+        Change::RawOverride { id, from, to } => Line::ReasonRawOverride {
+            id: id.clone(),
+            from: from.clone().unwrap_or_else(|| "none".to_owned()),
+            to: to.clone().unwrap_or_else(|| "none".to_owned()),
+        },
+        Change::RawMesh => Line::ReasonRawMesh,
     }
 }
 
@@ -334,10 +340,50 @@ mod tests {
                 "centreline samples 64 → 128",
             ),
             (Change::MeshChanged, "its mesh changed"),
+            (
+                Change::RawOverride {
+                    id: "relax-u".to_owned(),
+                    from: Some(
+                        "esi system/fvSolution relaxationFactors/equations/U = 0.7".to_owned(),
+                    ),
+                    to: Some(
+                        "esi system/fvSolution relaxationFactors/equations/U = 0.5".to_owned(),
+                    ),
+                },
+                "raw override relax-u esi system/fvSolution relaxationFactors/equations/U = 0.7 \
+                 → esi system/fvSolution relaxationFactors/equations/U = 0.5",
+            ),
+            (Change::RawMesh, "a raw mesh override changed"),
         ];
         for (change, expected) in table {
             assert_eq!(text(&change), expected, "{change:?}");
         }
+    }
+
+    #[test]
+    fn a_raw_override_change_reads_as_a_sentence() {
+        let added = Change::RawOverride {
+            id: "relax-u".to_owned(),
+            from: None,
+            to: Some("esi system/fvSolution relaxationFactors/equations/U = 0.5".to_owned()),
+        };
+        assert_eq!(
+            reason_text(&[added]),
+            "raw override relax-u none → esi system/fvSolution relaxationFactors/equations/U = 0.5"
+        );
+        let removed = Change::RawOverride {
+            id: "relax-u".to_owned(),
+            from: Some("esi system/fvSolution relaxationFactors/equations/U = 0.5".to_owned()),
+            to: None,
+        };
+        assert_eq!(
+            reason_text(&[removed]),
+            "raw override relax-u esi system/fvSolution relaxationFactors/equations/U = 0.5 → none"
+        );
+        assert_eq!(
+            reason_text(&[Change::RawMesh]),
+            "a raw mesh override changed"
+        );
     }
 
     #[test]

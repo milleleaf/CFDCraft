@@ -1,13 +1,17 @@
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
+use std::sync::Barrier;
+use std::thread;
 
 use cfdcraft_doc::{
-    ArtifactIndex, DocError, Document, FORMAT_ID, MANIFEST_MEMBER, PLACEHOLDER_THUMBNAIL,
-    STUDY_LIMIT, STUDY_MEMBER, from_bytes, open, save, to_bytes, write_members,
+    ARTIFACTS_LIMIT, ARTIFACTS_MEMBER, ArtifactIndex, DocError, Document, FORMAT_ID, Link,
+    MANIFEST_MEMBER, PLACEHOLDER_THUMBNAIL, STUDY_LIMIT, STUDY_MEMBER, THUMBNAIL_LIMIT,
+    THUMBNAIL_MEMBER, from_bytes, open, save, save_new, to_bytes, write_members,
 };
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::{Study, canonical_hash, resolve};
+use cfdcraft_store::ContentHash;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
@@ -258,4 +262,124 @@ fn the_placeholder_thumbnail_is_a_64_by_64_png() {
     assert_eq!(&png[12..16], b"IHDR");
     assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 64);
     assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 64);
+}
+
+fn too_large(error: DocError, member: &str, limit: u64) {
+    match error {
+        DocError::TooLarge { name, limit: got } => {
+            assert_eq!((name.as_str(), got), (member, limit));
+        }
+        other => panic!("expected TooLarge, got {other}"),
+    }
+}
+
+#[test]
+fn a_member_the_reader_would_refuse_is_never_written() {
+    let mut big_thumbnail = Document::new(cavity());
+    big_thumbnail.thumbnail = Some(vec![0; THUMBNAIL_LIMIT as usize + 1]);
+    too_large(
+        to_bytes(&big_thumbnail).unwrap_err(),
+        THUMBNAIL_MEMBER,
+        THUMBNAIL_LIMIT,
+    );
+
+    // One link whose path alone is longer than the largest artifact index that is read.
+    let mut big_index = Document::new(cavity());
+    big_index.artifacts.links.push(Link {
+        id: "a".to_owned(),
+        path: "a".repeat(ARTIFACTS_LIMIT as usize + 1),
+        name: "a".to_owned(),
+        hash: ContentHash::of(b"a"),
+    });
+    too_large(
+        to_bytes(&big_index).unwrap_err(),
+        ARTIFACTS_MEMBER,
+        ARTIFACTS_LIMIT,
+    );
+}
+
+#[test]
+fn a_refused_save_leaves_the_previous_file_as_it_was() {
+    let path = fresh("refused-save").join("cavity.cfdcraft");
+    save(&Document::new(cavity()), &path).unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let mut big = Document::new(cavity());
+    big.thumbnail = Some(vec![0; THUMBNAIL_LIMIT as usize + 1]);
+    assert!(matches!(save(&big, &path), Err(DocError::TooLarge { .. })));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    open(&path).unwrap();
+}
+
+#[test]
+fn save_new_never_replaces_a_file_even_when_callers_race() {
+    let path = fresh("save-new-race").join("cavity.cfdcraft");
+    let start = Barrier::new(8);
+    let results: Vec<Result<(), DocError>> = thread::scope(|scope| {
+        let runners: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let doc = Document::new(cavity());
+                    start.wait();
+                    save_new(&doc, &path)
+                })
+            })
+            .collect();
+        runners.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(results.iter().flatten().count(), 1);
+    for refused in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert!(matches!(refused, DocError::TargetExists(p) if *p == path));
+    }
+    open(&path).unwrap();
+}
+
+#[test]
+fn save_new_leaves_an_existing_file_as_it_was() {
+    let path = fresh("save-new-existing").join("cavity.cfdcraft");
+    fs::write(&path, b"not a study file").unwrap();
+    assert!(matches!(
+        save_new(&Document::new(cavity()), &path),
+        Err(DocError::TargetExists(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), b"not a study file");
+}
+
+/// A file whose artifact index lists links with the given ids.
+fn with_link_ids(ids: &[&str]) -> Vec<u8> {
+    let hash = ContentHash::of(b"x").to_string();
+    let links: Vec<_> = ids
+        .iter()
+        .map(|id| serde_json::json!({ "id": id, "path": "a", "name": "a", "hash": hash }))
+        .collect();
+    archive(vec![
+        ("manifest.json", manifest(CURRENT_SCHEMA), DEFLATE),
+        ("study.json", CAVITY.as_bytes().to_vec(), DEFLATE),
+        (
+            "artifacts.json",
+            serde_json::json!({ "blobs": [], "links": links })
+                .to_string()
+                .into_bytes(),
+            DEFLATE,
+        ),
+    ])
+}
+
+#[test]
+fn link_ids_are_checked_when_a_file_is_read() {
+    assert_eq!(
+        from_bytes(&with_link_ids(&["one", "two"]))
+            .unwrap()
+            .document
+            .artifacts
+            .links
+            .len(),
+        2
+    );
+    for bad in [vec!["Bad Id"], vec![""], vec!["one", "one"]] {
+        match from_bytes(&with_link_ids(&bad)).unwrap_err() {
+            DocError::BadJson { member, .. } => assert_eq!(member, ARTIFACTS_MEMBER),
+            other => panic!("expected BadJson, got {other}"),
+        }
+    }
 }

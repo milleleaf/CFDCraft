@@ -8,6 +8,12 @@
 //! entries are stored without compression, in index order, so the same inputs always give the same
 //! bytes. An ordinary open reads the document and ignores the result entries.
 //!
+//! # Run records
+//!
+//! The run records of the artifact index travel with the pack, each with the label of the host it
+//! ran on. [`PackOptions::redact_host`] clears those labels in the pack's copy; the study file the
+//! pack is made from keeps them.
+//!
 //! # Order
 //!
 //! Unpacking checks the index against the archive first, then stores every result (each is hashed
@@ -30,7 +36,7 @@
 mod pack;
 mod unpack;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
@@ -39,8 +45,16 @@ use cfdcraft_store::{ContentHash, StoreError};
 use thiserror::Error;
 use zip::result::ZipError;
 
-pub use pack::{PackReport, pack};
-pub use unpack::{UnpackReport, unpack};
+pub use pack::{PackOptions, PackReport, pack, pack_with};
+pub use unpack::{UnpackReport, unpack, unpack_limited};
+
+/// Most distinct stored results one pack carries. A study lists a handful; the cap only stops an
+/// index crafted to be as long as the size limit of the index allows.
+pub const MAX_RESULTS: usize = 10_000;
+
+/// Most bytes of stored results a pack carries and [`unpack`] accepts. The sizes come from the
+/// index of the file, which cannot be trusted; [`unpack_limited`] takes another limit.
+pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 /// Why a pack could not be written or unpacked.
 #[derive(Debug, Error)]
@@ -72,6 +86,9 @@ pub enum PackError {
     /// A result in the pack is compressed.
     #[error("the result {0} in the pack is not stored as plain bytes")]
     EntryNotStored(ContentHash),
+    /// The study lists more stored results, or more bytes of them, than a pack carries.
+    #[error("the study lists more stored results than a pack carries: {0}")]
+    OverLimit(String),
     /// The disk refused a read or a write.
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -93,16 +110,114 @@ pub(crate) fn blob_entry(hash: &ContentHash) -> String {
 }
 
 /// Each distinct result of the index once, in index order, with its recorded size. A hash listed
-/// twice with two sizes cannot both be right and is refused.
+/// twice with two sizes cannot both be right and is refused, and so is an index with more than
+/// [`MAX_RESULTS`] distinct results. One pass over the index, whatever it repeats.
 pub(crate) fn distinct_blobs(index: &ArtifactIndex) -> Result<Vec<(ContentHash, u64)>, PackError> {
-    let mut seen = HashSet::new();
+    let mut first_size: HashMap<ContentHash, u64> = HashMap::new();
     let mut out: Vec<(ContentHash, u64)> = Vec::new();
     for blob in &index.blobs {
-        if seen.insert(blob.hash) {
-            out.push((blob.hash, blob.size));
-        } else if out.iter().any(|&(h, s)| h == blob.hash && s != blob.size) {
-            return Err(PackError::SizeMismatch(blob.hash));
+        match first_size.get(&blob.hash) {
+            Some(&size) if size != blob.size => return Err(PackError::SizeMismatch(blob.hash)),
+            Some(_) => {}
+            None => {
+                if out.len() >= MAX_RESULTS {
+                    return Err(PackError::OverLimit(format!(
+                        "more than {MAX_RESULTS} distinct results"
+                    )));
+                }
+                first_size.insert(blob.hash, blob.size);
+                out.push((blob.hash, blob.size));
+            }
         }
     }
     Ok(out)
+}
+
+/// Refuse results that add up to more than `max` bytes.
+pub(crate) fn within_bytes(wanted: &[(ContentHash, u64)], max: u64) -> Result<(), PackError> {
+    let total = wanted
+        .iter()
+        .fold(0u64, |total, &(_, size)| total.saturating_add(size));
+    if total > max {
+        return Err(PackError::OverLimit(format!(
+            "the results add up to more than {max} bytes"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use cfdcraft_doc::{BlobKind, BlobRef};
+
+    use super::*;
+
+    fn blob(n: u32, size: u64) -> BlobRef {
+        BlobRef {
+            hash: ContentHash::of(&n.to_le_bytes()),
+            size,
+            kind: BlobKind::Result,
+        }
+    }
+
+    fn index(blobs: Vec<BlobRef>) -> ArtifactIndex {
+        ArtifactIndex {
+            blobs,
+            links: Vec::new(),
+            runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_long_index_of_repeats_is_read_in_one_pass() {
+        // The old scan cost about 10 000 comparisons per repeat: tens of billions here.
+        let mut blobs: Vec<BlobRef> = (0..9_900).map(|n| blob(n, 1)).collect();
+        blobs.extend((0..500_000).map(|_| blob(9_899, 1)));
+        let started = Instant::now();
+        let distinct = distinct_blobs(&index(blobs)).unwrap();
+        assert_eq!(distinct.len(), 9_900);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_number_of_distinct_results_is_bounded_and_repeats_are_not_counted() {
+        let at_limit: Vec<BlobRef> = (0..MAX_RESULTS as u32).map(|n| blob(n, 1)).collect();
+        let mut with_repeat = at_limit.clone();
+        with_repeat.push(blob(0, 1));
+        assert_eq!(
+            distinct_blobs(&index(with_repeat)).unwrap().len(),
+            MAX_RESULTS
+        );
+
+        let mut over = at_limit;
+        over.push(blob(MAX_RESULTS as u32, 1));
+        assert!(matches!(
+            distinct_blobs(&index(over)),
+            Err(PackError::OverLimit(_))
+        ));
+    }
+
+    #[test]
+    fn one_hash_with_two_sizes_is_still_refused() {
+        let blobs = vec![blob(1, 5), blob(2, 5), blob(1, 6)];
+        assert!(matches!(
+            distinct_blobs(&index(blobs)),
+            Err(PackError::SizeMismatch(h)) if h == ContentHash::of(&1u32.to_le_bytes())
+        ));
+    }
+
+    #[test]
+    fn the_byte_limit_is_on_the_sum_and_cannot_overflow() {
+        let wanted = vec![blob(1, u64::MAX), blob(2, u64::MAX)]
+            .into_iter()
+            .map(|b| (b.hash, b.size))
+            .collect::<Vec<_>>();
+        assert!(within_bytes(&wanted, u64::MAX).is_ok());
+        assert!(matches!(
+            within_bytes(&wanted, u64::MAX - 1),
+            Err(PackError::OverLimit(_))
+        ));
+    }
 }

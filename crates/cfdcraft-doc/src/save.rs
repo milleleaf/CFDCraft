@@ -28,6 +28,24 @@ pub fn save(doc: &Document, path: &Path) -> Result<(), DocError> {
     Ok(())
 }
 
+/// Write `doc` to `path` only if nothing is there: the shared exclusive create gives the file its
+/// name in one step that fails, rather than replaces, when a file has appeared in the meantime, so
+/// "never replaced" holds under concurrent callers too. A file already there is refused with
+/// [`DocError::TargetExists`] and stays as it was.
+pub fn save_new(doc: &Document, path: &Path) -> Result<(), DocError> {
+    let bytes = to_bytes(doc)?;
+    match craft_atomic::write_new(path, &bytes) {
+        Ok(()) => {
+            sweep_after_save(path);
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            Err(DocError::TargetExists(path.to_owned()))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// [`save`] through an injected file system.
 ///
 /// This exists for tests that inject failures or stalls at each step of the shared save. Nothing

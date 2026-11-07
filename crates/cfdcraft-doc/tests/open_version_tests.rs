@@ -76,10 +76,13 @@ fn an_older_file_opens_migrated_and_says_what_changed() {
     );
     assert_eq!(opened.document.artifacts, ArtifactIndex::default());
     assert_eq!(opened.schema_version, 0);
-    assert_eq!(opened.notes.len(), 1);
-    let note = &opened.notes[0];
-    assert_eq!((note.from, note.to), (0, 1));
-    assert!(note.summary.contains("lid") && note.summary.contains("walls"));
+    assert_eq!(opened.notes.len(), 2);
+    let first = &opened.notes[0];
+    assert_eq!((first.from, first.to), (0, 1));
+    assert!(first.summary.contains("lid") && first.summary.contains("walls"));
+    let second = &opened.notes[1];
+    assert_eq!((second.from, second.to), (1, 2));
+    assert!(second.summary.contains("runs"));
 }
 
 #[test]

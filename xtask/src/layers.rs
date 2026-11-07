@@ -6,7 +6,8 @@ use toml::Value;
 /// The model crate must never gain a compute, UI or transport dependency (no `uom` for now;
 /// the wasm-clean rule bans tokio/ssh/egui in the core). The document crates are held to the
 /// same discipline: they stay off compute, UI and transport code so the per-crate CI gate
-/// stays fast and a browser viewer can reuse them. A crate that is not listed is unconstrained.
+/// stays fast and a browser viewer can reuse them. The keys, compare, runs and capture crates
+/// stay pure or off compute for the same reason. A crate that is not listed is unconstrained.
 const RULES: &[(&str, &[&str])] = &[
     (
         "cfdcraft-model",
@@ -42,6 +43,7 @@ const RULES: &[(&str, &[&str])] = &[
             "cfdcraft-model",
             "cfdcraft-migrate",
             "cfdcraft-store",
+            "cfdcraft-runs",
             "craft-atomic",
             "craft-docpath",
             "zip",
@@ -77,6 +79,39 @@ const RULES: &[(&str, &[&str])] = &[
             "zip",
             "thiserror",
         ],
+    ),
+    (
+        "cfdcraft-keys",
+        &[
+            "cfdcraft-model",
+            "cfdcraft-store",
+            "blake3",
+            "serde",
+            "serde_json",
+            "serde_jcs",
+            "schemars",
+        ],
+    ),
+    (
+        "cfdcraft-compare",
+        &["serde", "schemars", "thiserror", "serde_json"],
+    ),
+    (
+        "cfdcraft-runs",
+        &[
+            "cfdcraft-keys",
+            "cfdcraft-compare",
+            "cfdcraft-model",
+            "cfdcraft-store",
+            "serde",
+            "serde_json",
+            "schemars",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-capture",
+        &["cfdcraft-compare", "cfdcraft-store", "zip", "thiserror"],
     ),
 ];
 
@@ -210,6 +245,10 @@ mod tests {
             ("cfdcraft-text", "blake3"),
             ("cfdcraft-pack", "cfdcraft-migrate"),
             ("cfdcraft-schema", "craft-atomic"),
+            ("cfdcraft-keys", "zip"),
+            ("cfdcraft-compare", "blake3"),
+            ("cfdcraft-runs", "zip"),
+            ("cfdcraft-capture", "cfdcraft-keys"),
         ] {
             let root = named_workspace(name, &deps_of(&[foreign]));
             let error = check_layers(&root).unwrap_err();
@@ -255,6 +294,10 @@ mod tests {
                 "cfdcraft-doc",
                 "cfdcraft-pack",
                 "cfdcraft-schema",
+                "cfdcraft-keys",
+                "cfdcraft-compare",
+                "cfdcraft-runs",
+                "cfdcraft-capture",
             ]
         );
     }

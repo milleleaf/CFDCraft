@@ -98,6 +98,32 @@ pub struct LinkCheck {
     pub result: Result<PathBuf, LinkError>,
 }
 
+/// The id a link gets when none is given: the whole file name, lower-case, every character outside
+/// a to z and 0 to 9 turned into a hyphen, leading hyphens dropped, cut to the longest id allowed.
+/// The result is empty when the name has nothing to build an id from; it is then not a valid id.
+pub fn default_link_id(target: &Path) -> String {
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let hyphenated: String = name
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    hyphenated
+        .trim_start_matches('-')
+        .chars()
+        .take(ID_MAX)
+        .collect()
+}
+
 fn valid_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     let Some((first, rest)) = bytes.split_first() else {
@@ -187,6 +213,28 @@ fn refused(name: &str, reason: craft_docpath::Refused) -> LinkError {
     }
 }
 
+/// Why the links of a document that was read are not usable: an id that `add_link` would refuse,
+/// or one that two links share. A file from disk is untrusted, and later code finds links by id.
+pub(crate) fn check_ids(index: &ArtifactIndex) -> Result<(), String> {
+    let shown = |id: &str| format!("{:?}", id.chars().take(ID_MAX).collect::<String>());
+    let mut seen = std::collections::HashSet::new();
+    for link in &index.links {
+        if !valid_id(&link.id) {
+            return Err(format!(
+                "the link id {} is not a valid link id",
+                shown(&link.id)
+            ));
+        }
+        if !seen.insert(link.id.as_str()) {
+            return Err(format!(
+                "the link id {} is used by two links",
+                shown(&link.id)
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Link {
     /// Make a link named `id` to the existing file `target`, for the study file at `doc_path`.
     ///
@@ -250,9 +298,27 @@ impl Document {
 /// Fails with [`LinkError::Refused`] when the stored text is not a path to a local file, and with
 /// [`LinkError::Missing`] when there is no file at the resolved path. The file is not read.
 pub fn resolve(doc_path: &Path, link: &Link) -> Result<PathBuf, LinkError> {
+    resolve_in(doc_path, link, None)
+}
+
+/// [`resolve`] for a study file whose author is not trusted to name only their own files, as on a
+/// server: a link that leads outside the folder `root`, by `..` or through a symbolic link, is
+/// refused ([`LinkError::Refused`]) before the file system is asked about it, and the refusal does
+/// not say where the link led.
+pub fn resolve_within(doc_path: &Path, link: &Link, root: &Path) -> Result<PathBuf, LinkError> {
+    resolve_in(doc_path, link, Some(root))
+}
+
+fn resolve_in(doc_path: &Path, link: &Link, root: Option<&Path>) -> Result<PathBuf, LinkError> {
     let doc = absolute(doc_path, &link.name)?;
     let expected = craft_docpath::resolve_absolute(&link.path, Some(&doc))
         .map_err(|r| refused(&link.name, r))?;
+    if root.is_some_and(|root| !inside(&expected, root)) {
+        return Err(LinkError::Refused {
+            name: link.name.clone(),
+            reason: "the path leads outside the folder this server works in".to_owned(),
+        });
+    }
     if expected.is_file() {
         Ok(expected)
     } else {
@@ -260,6 +326,18 @@ pub fn resolve(doc_path: &Path, link: &Link) -> Result<PathBuf, LinkError> {
             name: link.name.clone(),
             expected,
         })
+    }
+}
+
+/// Whether `path` is under `root`, as written and again after symbolic links are followed.
+fn inside(path: &Path, root: &Path) -> bool {
+    if !path.starts_with(root) {
+        return false;
+    }
+    match (path.canonicalize(), root.canonicalize()) {
+        (Ok(real), Ok(real_root)) => real.starts_with(real_root),
+        // Nothing there to follow, so nothing there to escape through.
+        _ => true,
     }
 }
 
@@ -284,13 +362,22 @@ pub fn verify(doc_path: &Path, link: &Link) -> Result<(), LinkError> {
 /// Resolve every link of `index`, in order. Files are not read, so this stays cheap; call
 /// [`verify`] to compare content.
 pub fn check_links(doc_path: &Path, index: &ArtifactIndex) -> Vec<LinkCheck> {
+    check_in(doc_path, index, None)
+}
+
+/// [`check_links`] with every link confined to the folder `root`, as [`resolve_within`] does.
+pub fn check_links_within(doc_path: &Path, index: &ArtifactIndex, root: &Path) -> Vec<LinkCheck> {
+    check_in(doc_path, index, Some(root))
+}
+
+fn check_in(doc_path: &Path, index: &ArtifactIndex, root: Option<&Path>) -> Vec<LinkCheck> {
     index
         .links
         .iter()
         .map(|link| LinkCheck {
             id: link.id.clone(),
             name: link.name.clone(),
-            result: resolve(doc_path, link),
+            result: resolve_in(doc_path, link, root),
         })
         .collect()
 }

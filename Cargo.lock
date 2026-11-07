@@ -188,13 +188,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-capture"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-compare",
+ "cfdcraft-store",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
 name = "cfdcraft-cli"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-capture",
+ "cfdcraft-compare",
  "cfdcraft-doc",
  "cfdcraft-mcp",
  "cfdcraft-model",
  "cfdcraft-ops",
+ "cfdcraft-runs",
  "cfdcraft-store",
  "cfdcraft-text",
  "clap",
@@ -204,12 +217,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-compare"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-doc"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "cfdcraft-migrate",
  "cfdcraft-model",
+ "cfdcraft-runs",
  "cfdcraft-store",
  "craft-atomic",
  "craft-docpath",
@@ -228,6 +252,18 @@ dependencies = [
  "serde_json",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "cfdcraft-keys"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-model",
+ "cfdcraft-store",
+ "schemars",
+ "serde",
+ "serde_jcs",
+ "serde_json",
 ]
 
 [[package]]
@@ -271,10 +307,14 @@ version = "0.1.0"
 dependencies = [
  "cfdcraft-backend-esi",
  "cfdcraft-bench-ghia",
+ "cfdcraft-capture",
+ "cfdcraft-compare",
  "cfdcraft-doc",
  "cfdcraft-executor",
+ "cfdcraft-keys",
  "cfdcraft-model",
  "cfdcraft-pack",
+ "cfdcraft-runs",
  "cfdcraft-store",
  "cfdcraft-text",
  "craft-atomic",
@@ -296,6 +336,20 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zip",
+]
+
+[[package]]
+name = "cfdcraft-runs"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-compare",
+ "cfdcraft-keys",
+ "cfdcraft-model",
+ "cfdcraft-store",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

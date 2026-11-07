@@ -1,0 +1,13 @@
+[package]
+name = "cfdcraft-keys"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+schemars = "=1.2.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+serde_jcs = "=0.2.0"

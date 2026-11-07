@@ -97,15 +97,10 @@ fn damage_is_detected() {
     assert!(matches!(s.verify(&hash), Err(StoreError::Corrupt(_))));
     assert!(matches!(s.read(hash), Err(StoreError::Corrupt(_))));
 
+    // Storing the same content again replaces a damaged blob instead of failing for ever.
     fs::write(s.blob_path(&hash), b"short").unwrap();
-    assert!(matches!(
-        s.put_bytes(b"0123456789"),
-        Err(StoreError::Corrupt(_))
-    ));
-    assert!(matches!(
-        s.put_verified(hash, b"0123456789"),
-        Err(StoreError::Corrupt(_))
-    ));
+    assert_eq!(s.put_bytes(b"0123456789").unwrap(), hash);
+    s.verify(&hash).unwrap();
 
     let absent = ContentHash::of(b"absent");
     assert!(matches!(s.verify(&absent), Err(StoreError::Missing(_))));
@@ -130,5 +125,65 @@ fn storing_a_large_file_again_leaves_the_first_blob() {
             .unwrap(),
         before
     );
+    assert_eq!(blob_count(&s), 1);
+}
+
+const GOOD: &[u8] = b"0123456789";
+const SAME_LENGTH_DAMAGE: &[u8] = b"9876543210";
+
+fn damaged(s: &Store, hash: &ContentHash, bytes: &[u8]) {
+    fs::write(s.blob_path(hash), bytes).unwrap();
+    assert!(matches!(s.verify(hash), Err(StoreError::Corrupt(_))));
+}
+
+#[test]
+fn a_same_length_damaged_blob_is_not_taken_for_a_stored_one() {
+    let dir = fresh("same-length");
+    let s = store(&dir);
+    let hash = s.put_bytes(GOOD).unwrap();
+
+    damaged(&s, &hash, SAME_LENGTH_DAMAGE);
+    assert_eq!(s.put_bytes(GOOD).unwrap(), hash);
+    s.verify(&hash).unwrap();
+    assert_eq!(fs::read(s.blob_path(&hash)).unwrap(), GOOD);
+
+    let file = dir.join("good.bin");
+    fs::write(&file, GOOD).unwrap();
+    damaged(&s, &hash, SAME_LENGTH_DAMAGE);
+    assert_eq!(s.put_file(&file).unwrap(), hash);
+    s.verify(&hash).unwrap();
+
+    damaged(&s, &hash, SAME_LENGTH_DAMAGE);
+    s.put_verified(hash, GOOD).unwrap();
+    s.verify(&hash).unwrap();
+    assert_eq!(blob_count(&s), 1);
+}
+
+#[test]
+fn a_repair_from_the_wrong_content_leaves_the_damaged_blob_and_no_leftovers() {
+    let dir = fresh("bad-repair");
+    let s = store(&dir);
+    let hash = s.put_bytes(GOOD).unwrap();
+    damaged(&s, &hash, SAME_LENGTH_DAMAGE);
+
+    assert!(matches!(
+        s.put_verified(hash, b"not the content"),
+        Err(StoreError::HashMismatch { .. })
+    ));
+    assert_eq!(fs::read(s.blob_path(&hash)).unwrap(), SAME_LENGTH_DAMAGE);
+    assert_eq!(blob_count(&s), 1);
+
+    // A source that changes while it is read does not replace the damaged blob either.
+    let opens = Cell::new(0);
+    let result = s.put_with(|| {
+        opens.set(opens.get() + 1);
+        Ok(Cursor::new(if opens.get() == 1 {
+            GOOD.to_vec()
+        } else {
+            b"changed".to_vec()
+        }))
+    });
+    assert!(matches!(result, Err(StoreError::ChangedWhileStoring)));
+    assert_eq!(fs::read(s.blob_path(&hash)).unwrap(), SAME_LENGTH_DAMAGE);
     assert_eq!(blob_count(&s), 1);
 }

@@ -1,6 +1,7 @@
 //! The one structured result every operation returns, and the exit class derived from it.
 
 use crate::ghia::GateReport;
+use crate::repro::Repro;
 use cfdcraft_model::{Diagnostic, MigrationNote, Severity, render_text};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -134,6 +135,9 @@ pub struct Report {
     pub gate: Option<GateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infra: Option<InfraReport>,
+    /// What a solve did with the stored mesh and result of a document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repro: Option<Repro>,
 }
 
 impl Report {
@@ -161,6 +165,7 @@ impl Report {
             evidence: None,
             gate: None,
             infra: None,
+            repro: None,
         };
         report.set_class(ExitClass::of_findings(&report.diagnostics));
         report
@@ -199,6 +204,12 @@ impl Report {
             kind: kind.to_owned(),
             name: name.into(),
         });
+        self
+    }
+
+    #[must_use]
+    pub fn with_repro(mut self, repro: Repro) -> Self {
+        self.repro = Some(repro);
         self
     }
 

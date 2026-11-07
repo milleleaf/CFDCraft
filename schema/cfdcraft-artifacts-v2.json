@@ -1,0 +1,956 @@
+{
+  "$defs": {
+    "BlobKind": {
+      "description": "What kind of result a stored blob is.",
+      "oneOf": [
+        {
+          "const": "surface",
+          "description": "Prepared geometry.",
+          "type": "string"
+        },
+        {
+          "const": "mesh",
+          "description": "A generated mesh.",
+          "type": "string"
+        },
+        {
+          "const": "result",
+          "description": "A solver result.",
+          "type": "string"
+        }
+      ]
+    },
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A result kept in the content-addressed store beside the file.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the content."
+        },
+        "kind": {
+          "$ref": "#/$defs/BlobKind",
+          "description": "What the content is."
+        },
+        "size": {
+          "description": "Size of the content in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hash",
+        "size",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoundaryCondition": {
+      "additionalProperties": false,
+      "description": "One named boundary: the box faces it covers, its kind, and a speed where the kind needs one.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for a velocity inlet and a moving wall; absent for every other kind."
+        }
+      },
+      "required": [
+        "faces",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoundaryKind": {
+      "description": "What a boundary does to the flow.",
+      "oneOf": [
+        {
+          "const": "VelocityInlet",
+          "description": "Fixed inflow velocity. `velocity` is the speed into the domain, along the inward normal.",
+          "type": "string"
+        },
+        {
+          "const": "PressureOutlet",
+          "description": "Outflow at gauge pressure zero in kinematic units. It has no value field.",
+          "type": "string"
+        },
+        {
+          "const": "NoSlipWall",
+          "description": "Wall with zero velocity at the wall.",
+          "type": "string"
+        },
+        {
+          "const": "SlipWall",
+          "description": "Wall without friction.",
+          "type": "string"
+        },
+        {
+          "const": "MovingWall",
+          "description": "Wall that moves in its own plane. `velocity` is the tangential speed along +x (bottom\nand top faces) or +y (left and right faces).",
+          "type": "string"
+        },
+        {
+          "const": "Symmetry",
+          "description": "Mirror plane.",
+          "type": "string"
+        }
+      ]
+    },
+    "BoundaryRecipe": {
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "velocity": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "CellsRecipe": {
+      "properties": {
+        "x": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "y": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "z": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Check": {
+      "additionalProperties": false,
+      "description": "One named check a run was held to.",
+      "properties": {
+        "detail": {
+          "description": "A short statement of what was found.",
+          "type": "string"
+        },
+        "name": {
+          "description": "What was checked.",
+          "type": "string"
+        },
+        "passed": {
+          "description": "Whether it held.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "Comparison": {
+      "properties": {
+        "compared": {
+          "description": "How many names were compared: the union of both sides.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "differing": {
+          "description": "Every quantity that is not identical (including those within tolerance), sorted by name.",
+          "items": {
+            "$ref": "#/$defs/QuantityDiff"
+          },
+          "type": "array"
+        },
+        "max_abs_diff": {
+          "description": "The largest difference over the names present on both sides, 0 when there are none.",
+          "format": "double",
+          "type": "number"
+        },
+        "tolerance": {
+          "$ref": "#/$defs/Tolerance"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        }
+      },
+      "required": [
+        "verdict",
+        "tolerance",
+        "compared",
+        "max_abs_diff",
+        "differing"
+      ],
+      "type": "object"
+    },
+    "ContentHash": {
+      "description": "BLAKE3 hash of a stored result, as 64 lower-case hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Convergence": {
+      "additionalProperties": false,
+      "properties": {
+        "U": {
+          "format": "double",
+          "type": "number"
+        },
+        "p": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "p",
+        "U"
+      ],
+      "type": "object"
+    },
+    "Domain": {
+      "additionalProperties": false,
+      "properties": {
+        "length_x": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_y": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_z": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "open": {
+          "default": false,
+          "description": "True when the box has open (inlet or outlet) faces. A closed domain has only walls.\nClosed unless stated.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "length_x",
+        "length_y",
+        "length_z"
+      ],
+      "type": "object"
+    },
+    "Face": {
+      "description": "A face of the box domain: left (x min), right (x max), bottom (y min) or top (y max).\nThe front and back faces are always empty (two-dimensional case).",
+      "enum": [
+        "XMin",
+        "XMax",
+        "YMin",
+        "YMax"
+      ],
+      "type": "string"
+    },
+    "Fluid": {
+      "additionalProperties": false,
+      "properties": {
+        "kinematic_viscosity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "kinematic_viscosity"
+      ],
+      "type": "object"
+    },
+    "FluidRecipe": {
+      "properties": {
+        "kinematic_viscosity": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kinematic_viscosity"
+      ],
+      "type": "object"
+    },
+    "GeometryRecipe": {
+      "description": "The size and openness of the domain, in metres.",
+      "properties": {
+        "length_x": {
+          "format": "double",
+          "type": "number"
+        },
+        "length_y": {
+          "format": "double",
+          "type": "number"
+        },
+        "length_z": {
+          "format": "double",
+          "type": "number"
+        },
+        "open": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "length_x",
+        "length_y",
+        "length_z",
+        "open"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A file the study refers to but does not contain: where it was, and what it held.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the file content as recorded when the link was made."
+        },
+        "id": {
+          "description": "Name the study uses for this link: 1 to 40 lower-case letters, digits or hyphens, starting with a letter or digit.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "File name as recorded when the link was made.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path of the file, relative to the folder of the study file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "name",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "MeshRecipe": {
+      "description": "What made a mesh.",
+      "properties": {
+        "cells": {
+          "$ref": "#/$defs/CellsRecipe"
+        },
+        "geometry": {
+          "$ref": "#/$defs/GeometryRecipe"
+        },
+        "patches": {
+          "description": "Sorted by their JSON text, so the order never depends on boundary labels.",
+          "items": {
+            "$ref": "#/$defs/PatchRecipe"
+          },
+          "type": "array"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity"
+        }
+      },
+      "required": [
+        "tool",
+        "geometry",
+        "patches",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "MeshSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "cells_x": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_y": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_z": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cells_x",
+        "cells_y",
+        "cells_z"
+      ],
+      "type": "object"
+    },
+    "Monitors": {
+      "additionalProperties": false,
+      "properties": {
+        "centreline_u_sample_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "MonitorsRecipe": {
+      "properties": {
+        "centreline_u_sample_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "Output": {
+      "additionalProperties": false,
+      "description": "One stage output a run recorded: its key, the recipe the key comes from, and the stored blob.",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the stored blob."
+        },
+        "key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of `recipe`."
+        },
+        "recipe": {
+          "$ref": "#/$defs/MeshRecipe",
+          "description": "What made the output."
+        },
+        "size": {
+          "description": "The size of the stored blob in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "blob",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Output2": {
+      "additionalProperties": false,
+      "description": "One stage output a run recorded: its key, the recipe the key comes from, and the stored blob.",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the stored blob."
+        },
+        "key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of `recipe`."
+        },
+        "recipe": {
+          "$ref": "#/$defs/ResultRecipe",
+          "description": "What made the output."
+        },
+        "size": {
+          "description": "The size of the stored blob in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "blob",
+        "size"
+      ],
+      "type": "object"
+    },
+    "PatchRecipe": {
+      "description": "The patch layout of one boundary: what it is and where, never what the user called it.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        }
+      },
+      "required": [
+        "kind",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "What a run stood on, so it can be repeated without anything else.",
+      "properties": {
+        "geometry_hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the geometry recipe."
+        },
+        "host": {
+          "description": "A label for the machine it ran on; sharing may clear it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mesh_hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "The hash of the mesh blob the run stands on."
+        },
+        "mesh_key": {
+          "$ref": "#/$defs/StageKey",
+          "description": "The key of the mesh the run stands on."
+        },
+        "result_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The key of the result the run recorded, if it recorded one."
+        },
+        "settings": {
+          "$ref": "#/$defs/Study",
+          "description": "The authored study as it was when the case ran."
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity",
+          "description": "The tools that made the outputs."
+        }
+      },
+      "required": [
+        "geometry_hash",
+        "mesh_key",
+        "mesh_hash",
+        "settings",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "Quantity": {
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "QuantityDiff": {
+      "description": "One quantity that is not identical on both sides. A side that lacks the name is `None`.",
+      "properties": {
+        "abs_diff": {
+          "description": "`None` when a side is missing or a value is not finite.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "original": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rerun": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "within": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "within"
+      ],
+      "type": "object"
+    },
+    "ResultRecipe": {
+      "description": "What made a result: the mesh by key, and everything the solver was given.",
+      "properties": {
+        "boundaries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BoundaryRecipe"
+          },
+          "description": "By the user's label, so a rename changes this recipe and never the mesh recipe.",
+          "type": "object"
+        },
+        "fluid": {
+          "$ref": "#/$defs/FluidRecipe"
+        },
+        "mesh_key": {
+          "$ref": "#/$defs/StageKey"
+        },
+        "monitors": {
+          "$ref": "#/$defs/MonitorsRecipe"
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverRecipe"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity"
+        }
+      },
+      "required": [
+        "tool",
+        "mesh_key",
+        "fluid",
+        "boundaries",
+        "solver",
+        "monitors"
+      ],
+      "type": "object"
+    },
+    "RunRecord": {
+      "additionalProperties": false,
+      "description": "One run. A record is never edited after it is appended to the log.",
+      "properties": {
+        "checks": {
+          "default": [],
+          "description": "The checks the run was held to.",
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a rerun, how it compares with the run it repeats."
+        },
+        "id": {
+          "description": "`run-<n>`, counted from the number of records before it.",
+          "type": "string"
+        },
+        "key_numbers": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "default": {},
+          "description": "The numbers a rerun is compared on.",
+          "type": "object"
+        },
+        "mesh": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Output"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The mesh this run recorded; absent when it did not record one."
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance",
+          "description": "What the run stood on."
+        },
+        "rerun_of": {
+          "description": "The run this one repeats, if it is a rerun.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Output2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The result this run recorded; absent when it did not record one."
+        }
+      },
+      "required": [
+        "id",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "SolverControl": {
+      "additionalProperties": false,
+      "properties": {
+        "convergence": {
+          "$ref": "#/$defs/Convergence",
+          "default": {
+            "U": 1e-6,
+            "p": 1e-6
+          }
+        },
+        "end_time": {
+          "$ref": "#/$defs/Quantity",
+          "description": "Steady SIMPLE iteration count, represented as solver pseudo-time in seconds."
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverKind"
+        },
+        "write_interval": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "solver",
+        "end_time",
+        "write_interval"
+      ],
+      "type": "object"
+    },
+    "SolverKind": {
+      "enum": [
+        "SimpleLaminar"
+      ],
+      "type": "string"
+    },
+    "SolverRecipe": {
+      "properties": {
+        "convergence_p": {
+          "format": "double",
+          "type": "number"
+        },
+        "convergence_u": {
+          "format": "double",
+          "type": "number"
+        },
+        "end_time": {
+          "format": "double",
+          "type": "number"
+        },
+        "write_interval": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "end_time",
+        "write_interval",
+        "convergence_p",
+        "convergence_u"
+      ],
+      "type": "object"
+    },
+    "StageKey": {
+      "$ref": "#/$defs/ContentHash",
+      "description": "The key of one stage output: 64 lower-case hexadecimal characters."
+    },
+    "Study": {
+      "additionalProperties": false,
+      "description": "A unit-carrying study, schema version 1.",
+      "properties": {
+        "boundary_conditions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BoundaryCondition"
+          },
+          "description": "Boundaries keyed by the user's own label. The label appears in diagnostics only and\nnever in the written case. Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`.",
+          "type": "object"
+        },
+        "domain": {
+          "$ref": "#/$defs/Domain"
+        },
+        "fluid": {
+          "$ref": "#/$defs/Fluid"
+        },
+        "mesh": {
+          "$ref": "#/$defs/MeshSpec"
+        },
+        "monitors": {
+          "$ref": "#/$defs/Monitors"
+        },
+        "schema_version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverControl"
+        }
+      },
+      "required": [
+        "schema_version",
+        "domain",
+        "fluid",
+        "boundary_conditions",
+        "mesh",
+        "solver",
+        "monitors"
+      ],
+      "type": "object"
+    },
+    "Tolerance": {
+      "description": "How far two numbers may differ and still count as the same: an absolute part plus a part relative to their size.",
+      "properties": {
+        "abs": {
+          "format": "double",
+          "type": "number"
+        },
+        "rel": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "abs",
+        "rel"
+      ],
+      "type": "object"
+    },
+    "ToolIdentity": {
+      "description": "Everything about the tools that can change an output without the study changing.",
+      "properties": {
+        "dialect": {
+          "description": "The solver dialect the case is written in, for example `esi-v2512`.",
+          "type": "string"
+        },
+        "image_digest": {
+          "description": "The part of the image reference after `@`, for example `sha256:...`.",
+          "type": "string"
+        },
+        "sidecar_lock": {
+          "description": "The hash of the geometry sidecar's lock, or `null` when no sidecar was used. An absent\nlock is written as `null`, never skipped, so absent and present keys differ.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writer_version": {
+          "description": "The version of this program that wrote the case.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_digest",
+        "dialect",
+        "writer_version"
+      ],
+      "type": "object"
+    },
+    "Unit": {
+      "enum": [
+        "m",
+        "mm",
+        "m/s",
+        "m2/s",
+        "Pa",
+        "K",
+        "s",
+        "1",
+        "rpm"
+      ],
+      "type": "string"
+    },
+    "Verdict": {
+      "enum": [
+        "reproduced",
+        "within_tolerance",
+        "differs"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:artifacts:2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Everything the file refers to outside itself.",
+  "properties": {
+    "blobs": {
+      "default": [],
+      "description": "Stored results.",
+      "items": {
+        "$ref": "#/$defs/BlobRef"
+      },
+      "type": "array"
+    },
+    "links": {
+      "default": [],
+      "description": "Linked files.",
+      "items": {
+        "$ref": "#/$defs/Link"
+      },
+      "type": "array"
+    },
+    "runs": {
+      "default": [],
+      "description": "The runs recorded for this study, oldest first; the list only grows.",
+      "items": {
+        "$ref": "#/$defs/RunRecord"
+      },
+      "type": "array"
+    }
+  },
+  "title": "CFDCraft artifacts.json, schema 2",
+  "type": "object"
+}

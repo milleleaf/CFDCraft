@@ -14,7 +14,7 @@ pub struct RunArgs {
 }
 
 /// The study file's name as a run label: every character outside `[A-Za-z0-9-]` becomes `-`.
-fn label(study: &Path) -> String {
+pub(super) fn label(study: &Path) -> String {
     let stem: String = study
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

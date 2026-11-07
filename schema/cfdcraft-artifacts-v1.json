@@ -60,7 +60,8 @@
           "description": "BLAKE3 hash of the file content as recorded when the link was made."
         },
         "id": {
-          "description": "Name the study uses for this link.",
+          "description": "Name the study uses for this link: 1 to 40 lower-case letters, digits or hyphens, starting with a letter or digit.",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
           "type": "string"
         },
         "name": {

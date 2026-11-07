@@ -9,11 +9,106 @@ on:
 permissions:
   contents: read
 
+# A superseded pull request run is cancelled. A push to main is never
+# cancelled, because the revert job depends on its result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  gates:
+  # Fast merge gate: pull requests, and pushes that are not to main.
+  plan:
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      crates: ${{ steps.crates.outputs.crates }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.0
+      - name: workspace crate list
+        id: crates
+        run: |
+          list=$(cargo metadata --no-deps --format-version 1 --locked | jq -c '[.packages[].name] | sort')
+          echo "crates=$list" >> "$GITHUB_OUTPUT"
+
+  governance:
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: xtask pins
+        run: cargo run -p xtask -- pins
+      - name: xtask layers
+        run: cargo run -p xtask -- layers
+      - name: xtask sources
+        run: cargo run -p xtask -- sources
+      - name: xtask equivalents
+        run: cargo run -p xtask -- equivalents
+      - name: lockfile matches the manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: WASM model
+        run: cargo check -p cfdcraft-model --target wasm32-unknown-unknown --locked
+      - name: WASM migrate
+        run: cargo check -p cfdcraft-migrate --target wasm32-unknown-unknown --locked
+      - name: cargo deny
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check licenses bans sources advisories
+
+  crate:
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.plan.outputs.crates) }}
+    env:
+      CRATE: ${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.98.0
+          components: clippy
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          key: ${{ matrix.crate }}
+      - name: clippy
+        run: cargo clippy -p "$CRATE" --all-targets --locked -- -D warnings
+      - name: test (nextest)
+        run: |
+          cargo install cargo-nextest --version 0.9.150 --locked
+          cargo nextest run -p "$CRATE" --locked --no-fail-fast --no-tests=pass
+
+  # Full suite: after the merge, on ci/** branches and on manual dispatch.
+  full:
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -45,12 +140,78 @@ jobs:
         run: cargo run -p xtask -- layers
       - name: xtask sources
         run: cargo run -p xtask -- sources
+      - name: xtask equivalents
+        run: cargo run -p xtask -- equivalents
       - name: lockfile matches the manifests
         shell: bash
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: WASM model
         run: cargo check -p cfdcraft-model --target wasm32-unknown-unknown --locked
+      - name: WASM migrate
+        run: cargo check -p cfdcraft-migrate --target wasm32-unknown-unknown --locked
       - name: cargo deny
         run: |
           cargo install cargo-deny --version 0.20.2 --locked
           cargo deny check licenses bans sources advisories
+
+  # A red full suite on main reverts the commit. It never reverts a revert and
+  # never acts when main has moved on. The commit message appears only in this
+  # condition, never in a script.
+  revert:
+    needs: full
+    if: always() && needs.full.result == 'failure' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'Revert ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.AUTO_REVERT_TOKEN || github.token }}
+      - name: committer identity
+        run: |
+          git config user.name "ci-revert"
+          git config user.email "ci-revert@users.noreply.github.com"
+      - name: revert the failing commit
+        env:
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.AUTO_REVERT_TOKEN || github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          note() {
+            gh issue create --repo "$REPO" --title "$1" --body "$2" || echo "::warning::could not open an issue"
+          }
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$SHA" ]; then
+            note "Full suite failed at ${SHA:0:12}; main has moved on" "The full suite failed for commit $SHA ($RUN_URL). Main has newer commits, so no automatic revert was made. Fix forward, or revert by hand."
+            echo "::error::main has moved on from $SHA; not reverting"
+            exit 1
+          fi
+          git checkout -B main origin/main
+          # Squash and rebase merges have one parent; merge commits have two.
+          mainline=""
+          if [ "$(git rev-list --parents -n 1 "$SHA" | wc -w)" -gt 2 ]; then
+            mainline="-m 1"
+          fi
+          # Git's default message starts with "Revert ", which the condition above relies on.
+          if ! git revert --no-edit $mainline "$SHA"; then
+            git revert --abort || true
+            note "Automatic revert of ${SHA:0:12} failed" "The full suite failed for commit $SHA ($RUN_URL) and the revert did not apply cleanly. Revert by hand."
+            echo "::error::revert of $SHA did not apply"
+            exit 1
+          fi
+          if git push origin HEAD:main; then
+            echo "reverted $SHA on main"
+            exit 0
+          fi
+          # Main refuses direct pushes from this token: leave a revert pull request instead.
+          branch="revert/$SHA"
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --repo "$REPO" --base main --head "$branch" --title "Revert ${SHA:0:12}" --body "The full suite failed for commit $SHA ($RUN_URL). This reverts it." || echo "::warning::could not open the revert pull request"
+          echo "::error::could not push the revert to main; revert branch $branch pushed"
+          exit 1

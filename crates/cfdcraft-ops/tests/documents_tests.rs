@@ -154,18 +154,21 @@ fn an_older_file_opens_with_its_migration_note() {
     passed(&opened.report);
     assert_eq!(opened.report.study_hash.as_deref(), Some(CAVITY_HASH));
     let note = opened.report.migration.as_ref().unwrap();
-    assert_eq!((note.from, note.to), (0, 1));
-    let model_summary = Study::from_json_with_note(CAVITY_V0)
-        .unwrap()
-        .1
-        .unwrap()
-        .summary;
+    assert_eq!((note.from, note.to), (0, 2));
+    // The report folds the whole chain into one note: the summaries of the steps, one space apart.
+    let steps = open(&path).unwrap().notes;
+    assert_eq!(steps.len(), 2);
+    let joined = steps
+        .iter()
+        .map(|n| n.summary.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert_eq!(
         note.summary,
         say(&Line::Migrated {
             from: 0,
-            to: 1,
-            summary: model_summary
+            to: 2,
+            summary: joined
         })
     );
     assert!(note.summary.contains("older version"));
@@ -194,7 +197,7 @@ fn a_newer_file_is_refused_from_the_manifest_alone() {
         found.message,
         say(&Line::NewerSchema {
             found: 9,
-            supported: 1
+            supported: 2
         })
     );
     assert_eq!(opened.line, None);
@@ -240,9 +243,17 @@ fn saving_never_overwrites_unless_asked_and_a_bad_study_writes_nothing() {
     );
     assert_eq!(fs::read(&out).unwrap(), b"keep these bytes");
 
-    let replaced = save_document(CAVITY_V1, &out, true);
+    // A replace only ever replaces a study file: these bytes are not one, so they stay.
+    let not_a_study = save_document(CAVITY_V1, &out, true);
+    invalid(&not_a_study.report);
+    sole(&not_a_study.report, "CFD-DOC-001");
+    assert_eq!(fs::read(&out).unwrap(), b"keep these bytes");
+
+    let existing = dir.join("b.cfdcraft");
+    passed(&save_document(CAVITY_V1, &existing, false).report);
+    let replaced = save_document(CAVITY_V1, &existing, true);
     passed(&replaced.report);
-    passed(&open_document(&out).report);
+    passed(&open_document(&existing).report);
 
     let broken = dir.join("broken.cfdcraft");
     let bad = save_document("{ not a study", &broken, true);
@@ -318,6 +329,169 @@ fn read_study_returns_the_study_as_pretty_json() {
 }
 
 /// A project folder with `studies/cavity.cfdcraft` (saved) and `geometry/room.step`.
+#[test]
+fn replacing_keeps_the_results_links_and_thumbnail_and_never_overwrites_the_input() {
+    let dir = fresh("replace-keeps");
+    let out = dir.join("a.cfdcraft");
+    let hashes = study_file(&out, &[&result_bytes()]);
+    let mut kept = open(&out).unwrap().document;
+    kept.artifacts.links.push(Link {
+        id: "room".to_owned(),
+        path: "../geometry/room.step".to_owned(),
+        name: "room.step".to_owned(),
+        hash: ContentHash::of(b"room"),
+    });
+    kept.thumbnail = Some(b"a picture of this study".to_vec());
+    save(&kept, &out).unwrap();
+
+    passed(&save_document(CAVITY_V1, &out, true).report);
+    let after = open(&out).unwrap().document;
+    assert_eq!(after.artifacts, kept.artifacts);
+    assert_eq!(after.artifacts.blobs[0].hash, hashes[0]);
+    assert_eq!(after.thumbnail, kept.thumbnail);
+    assert_eq!(after.study, cavity());
+
+    // The study's own JSON is not a study file, so saving onto it is refused and it is untouched.
+    let input = dir.join("study.json");
+    fs::write(&input, CAVITY_V1).unwrap();
+    let refused = save_document(CAVITY_V1, &input, true);
+    invalid(&refused.report);
+    sole(&refused.report, "CFD-DOC-001");
+    assert_eq!(fs::read_to_string(&input).unwrap(), CAVITY_V1);
+}
+
+#[test]
+fn link_and_save_refuse_a_pack_and_leave_its_results_in_it() {
+    let dir = fresh("pack-kept");
+    let doc = dir.join("a.cfdcraft");
+    study_file(&doc, &[&result_bytes()]);
+    let packed = dir.join("a.cfdpack");
+    passed(&pack_document(&doc, &packed).report);
+    let step = dir.join("room.step");
+    fs::write(&step, b"pretend geometry").unwrap();
+    let before = fs::read(&packed).unwrap();
+
+    let by_name = link_file(&packed, &step, "room");
+    invalid(&by_name.report);
+    sole(&by_name.report, "CFD-DOC-009");
+    assert_eq!(fs::read(&packed).unwrap(), before);
+
+    // Renaming the pack does not hide what is in it.
+    let renamed = dir.join("renamed.cfdcraft");
+    fs::copy(&packed, &renamed).unwrap();
+    invalid(&link_file(&renamed, &step, "room").report);
+    let replaced = save_document(CAVITY_V1, &renamed, true);
+    invalid(&replaced.report);
+    sole(&replaced.report, "CFD-DOC-009");
+    assert_eq!(fs::read(&renamed).unwrap(), before);
+
+    let named_pack = dir.join("new.cfdpack");
+    invalid(&save_document(CAVITY_V1, &named_pack, false).report);
+    assert!(!named_pack.exists());
+}
+
+/// A schema 0 file in `dir` called `old.cfdcraft`.
+fn old_file(dir: &Path) -> PathBuf {
+    let path = dir.join("old.cfdcraft");
+    fs::write(
+        &path,
+        archive(&[
+            ("manifest.json", manifest(0)),
+            ("study.json", CAVITY_V0.as_bytes().to_vec()),
+        ]),
+    )
+    .unwrap();
+    path
+}
+
+/// The summaries of the steps joined by a space, the way the report folds a chain of notes.
+fn joined(notes: &[cfdcraft_model::MigrationNote]) -> String {
+    notes
+        .iter()
+        .map(|n| n.summary.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn linking_an_older_file_says_it_was_saved() {
+    let dir = fresh("link-older");
+    let path = old_file(&dir);
+    let step = dir.join("room.step");
+    fs::write(&step, b"pretend geometry").unwrap();
+    let steps = open(&path).unwrap().notes;
+
+    let linked = link_file(&path, &step, "room");
+    passed(&linked.report);
+    let note = linked.report.migration.as_ref().unwrap();
+    assert_eq!((note.from, note.to), (0, 2));
+    assert_eq!(
+        note.summary,
+        say(&Line::MigratedAndSaved {
+            from: steps.first().unwrap().from,
+            to: steps.last().unwrap().to,
+            summary: joined(&steps),
+        })
+    );
+    assert!(note.summary.contains("saved"), "{}", note.summary);
+    assert!(!note.summary.contains("unchanged"), "{}", note.summary);
+    // The saved file carries the number a freshly made file carries.
+    let current = dir.join("current.cfdcraft");
+    save(&Document::new(cavity()), &current).unwrap();
+    assert_eq!(
+        open(&path).unwrap().schema_version,
+        open(&current).unwrap().schema_version
+    );
+}
+
+#[test]
+fn opening_an_older_file_still_says_the_file_is_unchanged() {
+    let dir = fresh("open-older-unchanged");
+    let path = old_file(&dir);
+    let steps = open(&path).unwrap().notes;
+
+    let opened = open_document(&path);
+    passed(&opened.report);
+    let note = opened.report.migration.as_ref().unwrap();
+    assert_eq!(
+        note.summary,
+        say(&Line::Migrated {
+            from: steps.first().unwrap().from,
+            to: steps.last().unwrap().to,
+            summary: joined(&steps),
+        })
+    );
+    assert!(note.summary.contains("unchanged"), "{}", note.summary);
+    assert_eq!(open(&path).unwrap().schema_version, 0);
+}
+
+#[test]
+fn saving_an_older_study_says_it_was_saved() {
+    let dir = fresh("save-older");
+    let out = dir.join("saved.cfdcraft");
+    let (_, note) = Study::from_json_with_note(CAVITY_V0).unwrap();
+    let steps: Vec<_> = note.into_iter().collect();
+    assert_eq!((steps[0].from, steps[0].to), (0, 1));
+
+    let saved = save_document(CAVITY_V0, &out, false);
+    passed(&saved.report);
+    let reported = saved.report.migration.as_ref().unwrap();
+    assert_eq!((reported.from, reported.to), (0, 1));
+    assert_eq!(
+        reported.summary,
+        say(&Line::MigratedAndSaved {
+            from: 0,
+            to: 1,
+            summary: joined(&steps),
+        })
+    );
+    assert!(
+        !reported.summary.contains("unchanged"),
+        "{}",
+        reported.summary
+    );
+}
+
 fn project(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = fresh(name);
     let proj = base.join("proj");

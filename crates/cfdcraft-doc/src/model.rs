@@ -2,6 +2,7 @@
 
 use cfdcraft_migrate::CURRENT_SCHEMA;
 use cfdcraft_model::{MigrationNote, Study};
+use cfdcraft_runs::RunRecord;
 use cfdcraft_store::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -101,7 +102,8 @@ pub struct BlobRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Link {
-    /// Name the study uses for this link.
+    /// Name the study uses for this link: 1 to 40 lower-case letters, digits or hyphens, starting with a letter or digit.
+    #[schemars(regex(pattern = r"^[a-z0-9][a-z0-9-]{0,39}$"))]
     pub id: String,
     /// Path of the file, relative to the folder of the study file.
     pub path: String,
@@ -112,7 +114,7 @@ pub struct Link {
 }
 
 /// Everything the file refers to outside itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIndex {
     /// Stored results.
@@ -121,6 +123,9 @@ pub struct ArtifactIndex {
     /// Linked files.
     #[serde(default)]
     pub links: Vec<Link>,
+    /// The runs recorded for this study, oldest first; the list only grows.
+    #[serde(default)]
+    pub runs: Vec<RunRecord>,
 }
 
 /// A study file held in memory.
@@ -154,4 +159,7 @@ pub struct Opened {
     pub schema_version: u32,
     /// What changed when an older file was brought forward; empty for a current file.
     pub notes: Vec<MigrationNote>,
+    /// How many entries of the file hold stored results (`blobs/...`, the mark of a pack). Opening
+    /// ignores them, so saving the document back to the same file would drop them.
+    pub packed_entries: usize,
 }

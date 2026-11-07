@@ -4,7 +4,7 @@
 
 use crate::{
     report::{HolderInfo, Report},
-    run::{self, RunMode, RunRequest, infra_finished, retry_after},
+    run::{self, Finished, RunMode, RunRequest, infra_finished, retry_after},
 };
 use cfdcraft_executor::{RunError, lock};
 use std::{
@@ -17,6 +17,10 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+
+/// What a job does with the end of its run: it turns the finished run into the report that is kept
+/// for polling. It runs on the job's own thread, after the case has ended.
+pub type FinishStep = Box<dyn FnOnce(Finished) -> Report + Send + 'static>;
 
 /// What `start` answers.
 #[derive(Debug)]
@@ -96,6 +100,18 @@ impl RunRegistry {
     /// Take the in-process guard, run the quick part of the job (seconds: connect, preflight,
     /// lock) and then the long part on a thread. Returns without waiting for the long part.
     pub fn start(&self, study_json: &str, request: RunRequest) -> StartOutcome {
+        self.start_job(study_json, request, Box::new(|done| done.report))
+    }
+
+    /// As [`RunRegistry::start`], and when the case has ended `finish` makes the report that
+    /// polling returns. It is not called when the job is busy or refused. A panic in it gives the
+    /// same fixed report as a panic in the run.
+    pub fn start_job(
+        &self,
+        study_json: &str,
+        request: RunRequest,
+        finish: FinishStep,
+    ) -> StartOutcome {
         {
             let mut g = locked(&self.inner);
             if let Some(active) = &g.active {
@@ -156,8 +172,7 @@ impl RunRegistry {
         let inner = self.inner.clone();
         let id = run_id.clone();
         let handle = std::thread::spawn(move || {
-            let report = catch_unwind(AssertUnwindSafe(|| run::execute(begun)))
-                .map(|done| done.report)
+            let report = catch_unwind(AssertUnwindSafe(|| finish(run::execute(begun))))
                 .unwrap_or_else(|_| {
                     let stopped = RunError::Setup("the run stopped unexpectedly".into());
                     infra_finished(mode.operation(), &stopped, None, Some(&id)).report

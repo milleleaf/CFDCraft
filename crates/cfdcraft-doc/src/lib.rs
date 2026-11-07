@@ -18,23 +18,33 @@
 //! and artifact index 32 MiB each, thumbnail 8 MiB), and a file that lists the same entry name
 //! twice is refused.
 //!
+//! The artifact index also holds the history of runs. A run is added together with the stored
+//! results it names ([`Document::add_run`]), and a file whose history disagrees with its index is
+//! refused on read and on write ([`check_runs`]).
+//!
 //! Linked files are stored as paths relative to the folder of the study file, so they keep
 //! working when the project folder is moved; see [`resolve`], [`verify`] and [`check_links`].
 //!
 //! Saving builds the whole file in memory and replaces the old one through the shared crash-safe
-//! save, so a crash or a failure leaves the previous file as it was. Nothing in this crate writes a
-//! file any other way.
+//! save, so a crash or a failure leaves the previous file as it was. [`save_new`] is the same for a
+//! file that must not exist yet: it never replaces one, even when another caller creates the file
+//! at the same moment. Nothing in this crate writes a file any other way.
 
 mod container;
 mod links;
 mod model;
+mod runlog;
 mod save;
 
 pub use container::{DocError, from_bytes, read_document, to_bytes, write_members};
-pub use links::{LinkCheck, LinkError, check_links, relative_path, resolve, verify};
+pub use links::{
+    LinkCheck, LinkError, check_links, check_links_within, default_link_id, relative_path, resolve,
+    resolve_within, verify,
+};
 pub use model::{
     ARTIFACTS_LIMIT, ARTIFACTS_MEMBER, ArtifactIndex, BlobKind, BlobRef, Document, FORMAT_ID, Link,
     MANIFEST_LIMIT, MANIFEST_MEMBER, Manifest, Opened, PLACEHOLDER_THUMBNAIL, STUDY_LIMIT,
     STUDY_MEMBER, THUMBNAIL_LIMIT, THUMBNAIL_MEMBER, Writer,
 };
-pub use save::{open, save, save_with, store_dir, sweep_stale_staging};
+pub use runlog::{RunLogError, check_runs};
+pub use save::{open, save, save_new, save_with, store_dir, sweep_stale_staging};

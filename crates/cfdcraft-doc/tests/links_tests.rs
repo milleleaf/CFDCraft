@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cfdcraft_doc::{
-    ArtifactIndex, Document, Link, LinkError, check_links, open, relative_path, resolve, save,
-    store_dir, verify,
+    ArtifactIndex, Document, Link, LinkError, check_links, check_links_within, default_link_id,
+    open, relative_path, resolve, resolve_within, save, store_dir, verify,
 };
 use cfdcraft_model::Study;
 use cfdcraft_store::{ContentHash, Store};
@@ -295,4 +295,86 @@ fn a_link_written_with_backslashes_resolves_to_the_same_file() {
     let back = hand_link("back", r"..\geometry\room.step", "room.step");
     assert_eq!(resolve(&doc_path, &slash).unwrap(), step);
     assert_eq!(resolve(&doc_path, &back).unwrap(), step);
+}
+
+fn named(path: &str) -> Link {
+    Link {
+        id: "x".to_owned(),
+        path: path.to_owned(),
+        name: "outside.txt".to_owned(),
+        hash: ContentHash::of(b"x"),
+    }
+}
+
+fn refused_without_saying_where(result: Result<PathBuf, LinkError>, base: &Path) {
+    match result {
+        Err(error @ LinkError::Refused { .. }) => {
+            assert!(
+                !error.to_string().contains(base.to_str().unwrap()),
+                "{error}"
+            );
+        }
+        other => panic!("expected Refused, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_confined_check_refuses_a_link_that_leaves_the_folder() {
+    let base = fresh("confine");
+    let root = base.join("ws");
+    fs::create_dir_all(root.join("documents")).unwrap();
+    fs::write(base.join("outside.txt"), b"outside").unwrap();
+    fs::write(root.join("documents").join("inside.txt"), b"inside").unwrap();
+    let doc_path = root.join("documents").join("a.cfdcraft");
+
+    // Unconfined, the link is followed: that is what a person naming their own files wants.
+    assert!(resolve(&doc_path, &named("../../outside.txt")).is_ok());
+
+    refused_without_saying_where(
+        resolve_within(&doc_path, &named("../../outside.txt"), &root),
+        &base,
+    );
+    assert!(resolve_within(&doc_path, &named("inside.txt"), &root).is_ok());
+    assert!(matches!(
+        resolve_within(&doc_path, &named("none.txt"), &root),
+        Err(LinkError::Missing { .. })
+    ));
+
+    let mut index = ArtifactIndex::default();
+    index.links.push(named("../../outside.txt"));
+    index.links.push(named("inside.txt"));
+    let checks = check_links_within(&doc_path, &index, &root);
+    assert!(matches!(checks[0].result, Err(LinkError::Refused { .. })));
+    assert!(checks[1].result.is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_confined_check_refuses_a_link_through_a_symbolic_link_that_leaves_the_folder() {
+    let base = fresh("confine-symlink");
+    let root = base.join("ws");
+    fs::create_dir_all(root.join("documents")).unwrap();
+    fs::write(base.join("outside.txt"), b"outside").unwrap();
+    std::os::unix::fs::symlink(&base, root.join("documents").join("escape")).unwrap();
+    let doc_path = root.join("documents").join("a.cfdcraft");
+
+    assert!(resolve(&doc_path, &named("escape/outside.txt")).is_ok());
+    refused_without_saying_where(
+        resolve_within(&doc_path, &named("escape/outside.txt"), &root),
+        &base,
+    );
+}
+
+#[test]
+fn the_default_link_id_is_always_one_the_document_accepts() {
+    assert_eq!(
+        default_link_id(Path::new("/x/Room (Final).STEP")),
+        "room--final--step"
+    );
+    assert_eq!(default_link_id(Path::new("/x/---")), "");
+
+    let long = default_link_id(Path::new(&format!("/x/{}.step", "a".repeat(100))));
+    assert_eq!(long.len(), 40);
+    let mut doc = document();
+    doc.add_link(hand_link(&long, "f", "f")).unwrap();
 }

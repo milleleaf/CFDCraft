@@ -2,6 +2,8 @@ pub mod check_case;
 pub mod compile;
 pub mod document;
 pub mod export;
+pub mod keys;
+pub mod repro;
 pub mod run;
 pub type Error = Box<dyn std::error::Error>;
 

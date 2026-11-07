@@ -1,5 +1,8 @@
 //! The published JSON Schema files for the three JSON members of a study file.
 //!
+//! Each file is named after the number of the thing it describes: the manifest and the artifact
+//! index carry the number of the file, the study carries its own.
+//!
 //! The schemas are generated from the Rust types the reader uses, so they cannot drift silently
 //! from what the reader accepts. A test compares the checked-in files in the repository's `schema/`
 //! folder with the generated text; regenerating them is an explicit opt-in.
@@ -25,17 +28,23 @@ fn generated<T: JsonSchema>() -> Value {
 /// schema only says "integer" and "string" for them. A file with schema number 2 would pass the
 /// generated schema and then be refused by the reader. Each pinned field gets a constant instead.
 /// The identity is a URN so that the schema never claims to be hosted anywhere.
-fn overlay(mut schema: Value, name: &str, member: &str, pinned: &[(&str, Value)]) -> Value {
+fn overlay(
+    mut schema: Value,
+    name: &str,
+    member: &str,
+    version: u32,
+    pinned: &[(&str, Value)],
+) -> Value {
     let root = schema
         .as_object_mut()
         .expect("the schema of a record is an object");
     root.insert(
         "$id".to_owned(),
-        format!("urn:cfdcraft:schema:{name}:{CURRENT_SCHEMA}").into(),
+        format!("urn:cfdcraft:schema:{name}:{version}").into(),
     );
     root.insert(
         "title".to_owned(),
-        format!("CFDCraft {member}, schema {CURRENT_SCHEMA}").into(),
+        format!("CFDCraft {member}, schema {version}").into(),
     );
     let properties = root
         .get_mut("properties")
@@ -57,7 +66,8 @@ pub fn study_schema() -> Value {
         generated::<Study>(),
         "study",
         "study.json",
-        &[("schema_version", CURRENT_SCHEMA.into())],
+        Study::SCHEMA_VERSION,
+        &[("schema_version", Study::SCHEMA_VERSION.into())],
     )
 }
 
@@ -67,6 +77,7 @@ pub fn manifest_schema() -> Value {
         generated::<Manifest>(),
         "manifest",
         "manifest.json",
+        CURRENT_SCHEMA,
         &[
             ("schema_version", CURRENT_SCHEMA.into()),
             ("format", FORMAT_ID.into()),
@@ -80,16 +91,18 @@ pub fn artifacts_schema() -> Value {
         generated::<ArtifactIndex>(),
         "artifacts",
         "artifacts.json",
+        CURRENT_SCHEMA,
         &[],
     )
 }
 
 /// The files published in the `schema/` folder: each file name with the function that generates
-/// its content. The names carry the schema number.
+/// its content. A name carries the number of what the file describes: the study's own number for
+/// the study, the number of the whole file for the manifest and the artifact index.
 pub fn published() -> Vec<(String, fn() -> Value)> {
     vec![
         (
-            format!("cfdcraft-study-v{CURRENT_SCHEMA}.json"),
+            format!("cfdcraft-study-v{}.json", Study::SCHEMA_VERSION),
             study_schema as fn() -> Value,
         ),
         (

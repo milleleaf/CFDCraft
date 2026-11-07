@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use cfdcraft_doc::{BlobKind, BlobRef, Document, open, save, store_dir, write_members};
 use cfdcraft_model::Study;
-use cfdcraft_pack::{PackError, pack, unpack};
+use cfdcraft_pack::{MAX_RESULTS, PackError, pack, unpack};
 use cfdcraft_store::{ContentHash, Store};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -356,4 +356,59 @@ fn a_pack_of_an_older_schema_unpacks_as_a_current_file() {
     assert_eq!(opened.schema_version, current);
     assert!(opened.notes.is_empty());
     assert_eq!(opened.document.study, cavity());
+}
+
+/// A document whose index lists `count` distinct results, each of `size` bytes, that are not stored.
+fn listing(count: usize, size: u64) -> Document {
+    let mut doc = Document::new(cavity());
+    for n in 0..count as u32 {
+        doc.artifacts.blobs.push(BlobRef {
+            hash: ContentHash::of(&n.to_le_bytes()),
+            size,
+            kind: BlobKind::Result,
+        });
+    }
+    doc
+}
+
+#[test]
+fn an_index_with_too_many_results_is_refused_before_anything_is_looked_up() {
+    let dir = fresh("too-many");
+    let doc = listing(MAX_RESULTS + 1, 1);
+    let packed = write_pack(&dir, &build(&doc, &[]));
+    let out = dir.join("out");
+    assert!(matches!(
+        unpack(&packed, &out),
+        Err(PackError::OverLimit(_))
+    ));
+    assert!(!out.exists());
+
+    let study = dir.join("y.cfdcraft");
+    save(&doc, &study).unwrap();
+    assert!(matches!(
+        pack(&study, &dir.join("y.cfdpack")),
+        Err(PackError::OverLimit(_))
+    ));
+    assert!(!dir.join("y.cfdpack").exists());
+}
+
+#[test]
+fn results_that_claim_more_bytes_than_the_limit_are_refused_before_anything_is_written() {
+    let dir = fresh("claims");
+    // Two results of 40 GiB each: over the default limit, and no entry exists to stream.
+    let doc = listing(2, 40 * 1024 * 1024 * 1024);
+    let packed = write_pack(&dir, &build(&doc, &[]));
+    let out = dir.join("out");
+    assert!(matches!(
+        unpack(&packed, &out),
+        Err(PackError::OverLimit(_))
+    ));
+    assert!(!out.exists());
+
+    let study = dir.join("y.cfdcraft");
+    save(&doc, &study).unwrap();
+    assert!(matches!(
+        pack(&study, &dir.join("y.cfdpack")),
+        Err(PackError::OverLimit(_))
+    ));
 }

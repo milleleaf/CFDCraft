@@ -12,6 +12,7 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
 const MANIFEST: &[u8] = include_bytes!("fixtures/handwritten/manifest.json");
+const MANIFEST_V1: &[u8] = include_bytes!("fixtures/handwritten-v1/manifest.json");
 const STUDY: &[u8] = include_bytes!("fixtures/handwritten/study.json");
 const ARTIFACTS: &[u8] = include_bytes!("fixtures/handwritten/artifacts.json");
 
@@ -26,17 +27,39 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-/// The published schema file for a member, read from `schema/` as a tool author would get it.
-fn published_schema(member: Member) -> Value {
-    let kind = match member {
+fn kind_of(member: Member) -> &'static str {
+    match member {
         Member::Study => "study",
         Member::Manifest => "manifest",
         Member::Artifacts => "artifacts",
-    };
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schema")
-        .join(format!("cfdcraft-{kind}-v{CURRENT_SCHEMA}.json"));
+    }
+}
+
+fn read_schema(path: PathBuf) -> Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The published schema file for a member, read from `schema/` as a tool author would get it. The
+/// study has its own number; the manifest and the artifact index carry the number of the file.
+fn published_schema(member: Member) -> Value {
+    let version = match member {
+        Member::Study => Study::SCHEMA_VERSION,
+        Member::Manifest | Member::Artifacts => CURRENT_SCHEMA,
+    };
+    read_schema(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schema")
+            .join(format!("cfdcraft-{}-v{version}.json", kind_of(member))),
+    )
+}
+
+/// The frozen copy of an older published file.
+fn frozen_schema(member: Member, version: u32) -> Value {
+    read_schema(
+        fixtures()
+            .join("frozen")
+            .join(format!("cfdcraft-{}-v{version}.json", kind_of(member))),
+    )
 }
 
 /// A file assembled with the ZIP crate alone, so no CFDCraft writer is involved.
@@ -92,9 +115,33 @@ fn a_file_assembled_by_plain_zip_code_opens_with_the_expected_study() {
     assert_eq!(index.links[0].name, "room.step");
 }
 
+#[test]
+fn a_handwritten_schema_1_file_validates_against_the_frozen_files_and_opens_with_one_note() {
+    let manifest: Value = serde_json::from_slice(MANIFEST_V1).unwrap();
+    let study: Value = serde_json::from_slice(STUDY).unwrap();
+    let artifacts: Value = serde_json::from_slice(ARTIFACTS).unwrap();
+    assert_eq!(
+        validate(&frozen_schema(Member::Manifest, 1), &manifest),
+        Ok(())
+    );
+    assert_eq!(validate(&published_schema(Member::Study), &study), Ok(()));
+    assert_eq!(
+        validate(&frozen_schema(Member::Artifacts, 1), &artifacts),
+        Ok(())
+    );
+    // The current manifest file allows its own number only.
+    assert!(validate(&published_schema(Member::Manifest), &manifest).is_err());
+
+    let opened = from_bytes(&archive(MANIFEST_V1, STUDY, ARTIFACTS)).unwrap();
+    assert_eq!(opened.schema_version, 1);
+    assert_eq!(opened.notes.len(), 1);
+    assert_eq!((opened.notes[0].from, opened.notes[0].to), (1, 2));
+    assert!(opened.document.artifacts.runs.is_empty());
+}
+
 /// File (relative to `tests/fixtures`), which member it is, whether the schema accepts it, and
-/// whether the reader accepts the file it makes. The two columns agree on every row except the
-/// unit alias.
+/// whether the reader accepts the file it makes. The two columns agree on every row except three:
+/// the unit alias, the repeated link id and the run record whose keys are not those of its recipes.
 const CASES: &[(&str, Member, bool, bool)] = &[
     ("handwritten/manifest.json", Member::Manifest, true, true),
     ("handwritten/study.json", Member::Study, true, true),
@@ -147,9 +194,39 @@ const CASES: &[(&str, Member, bool, bool)] = &[
         false,
         false,
     ),
+    // A link id outside `[a-z0-9][a-z0-9-]{0,39}` is refused by both: the schema carries the rule.
+    (
+        "invalid/artifacts_bad_link_id.json",
+        Member::Artifacts,
+        false,
+        false,
+    ),
     // The reader accepts the spelling `m²/s` as another way to write the canonical `m2/s`. The
     // schema lists the canonical spellings only, so it is stricter here than the reader.
     ("invalid/study_unit_alias.json", Member::Study, false, true),
+    // Two links with one id: JSON Schema cannot say that a field is unique among array items, so
+    // the schema accepts the file and the reader refuses it. Documented in schema/README.md.
+    (
+        "invalid/artifacts_repeated_link_id.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
+    // A run record is a closed record, so a key it does not define is refused by both.
+    (
+        "invalid/artifacts_run_unknown_key.json",
+        Member::Artifacts,
+        false,
+        false,
+    ),
+    // The keys are well-formed hashes, so the schema accepts the record. A key must be the hash of
+    // the recipe next to it, which only the reader can compute, and it refuses the file.
+    (
+        "invalid/artifacts_run_with_foreign_keys.json",
+        Member::Artifacts,
+        true,
+        false,
+    ),
 ];
 
 /// The schema verdict and the reader verdict for one fixture. The reader verdict is that of the
@@ -167,7 +244,7 @@ fn verdicts(file: &str, member: Member) -> (bool, bool) {
 }
 
 #[test]
-fn schema_and_reader_agree_on_every_fixture_but_the_unit_alias() {
+fn schema_and_reader_agree_on_every_fixture_but_the_three_documented_ones() {
     for (file, member, schema_accepts, reader_accepts) in CASES {
         assert_eq!(
             verdicts(file, *member),
@@ -192,13 +269,20 @@ fn every_invalid_fixture_is_in_the_table() {
 }
 
 #[test]
-fn only_the_unit_alias_is_stricter_in_the_schema() {
+fn only_the_unit_alias_the_repeated_link_id_and_foreign_run_keys_differ() {
     let differ: Vec<&str> = CASES
         .iter()
         .filter(|(_, _, schema_accepts, reader_accepts)| schema_accepts != reader_accepts)
         .map(|(file, ..)| *file)
         .collect();
-    assert_eq!(differ, ["invalid/study_unit_alias.json"]);
+    assert_eq!(
+        differ,
+        [
+            "invalid/study_unit_alias.json",
+            "invalid/artifacts_repeated_link_id.json",
+            "invalid/artifacts_run_with_foreign_keys.json"
+        ]
+    );
 }
 
 #[test]

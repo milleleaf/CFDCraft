@@ -10,9 +10,6 @@ use cfdcraft_text::{Line, Text};
 
 use super::{Error, emit_doc};
 
-/// The longest link id the document format accepts.
-const ID_MAX: usize = 40;
-
 fn finished(operation: &str, found: Diagnostic) -> DocOutcome {
     DocOutcome {
         report: Report::from_diagnostics(operation, vec![found], None),
@@ -75,34 +72,9 @@ fn write_study(file: &Path, out: &Path) -> Option<DocOutcome> {
     ))
 }
 
-/// The id a link gets when none is given: the whole file name, lower-case, every character outside
-/// a to z and 0 to 9 turned into a hyphen, leading hyphens dropped, cut to the longest id allowed.
-fn default_id(target: &Path) -> String {
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let hyphenated: String = name
-        .chars()
-        .map(|c| {
-            let c = c.to_ascii_lowercase();
-            if c.is_ascii_lowercase() || c.is_ascii_digit() {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    hyphenated
-        .trim_start_matches('-')
-        .chars()
-        .take(ID_MAX)
-        .collect()
-}
-
 /// Record a link from the study file `doc` to `target`.
 pub fn link(doc: &Path, target: &Path, id: Option<&str>, json: bool) -> Result<i32, Error> {
-    let id = id.map_or_else(|| default_id(target), str::to_owned);
+    let id = id.map_or_else(|| cfdcraft_ops::default_link_id(target), str::to_owned);
     if id.is_empty() {
         return Err(format!(
             "cannot make a link id from the name of {}; give one with --id",
@@ -121,9 +93,11 @@ pub fn check_links(doc: &Path, verify: bool, json: bool) -> Result<i32, Error> {
     ))
 }
 
-/// Pack the study file `doc` and its stored results into the new file `out`.
-pub fn pack(doc: &Path, out: &Path, json: bool) -> Result<i32, Error> {
-    Ok(emit_doc(&cfdcraft_ops::pack_document(doc, out), json))
+/// Pack the study file `doc` and its stored results into the new file `out`; with `redact_host`
+/// the pack's run records carry no host label.
+pub fn pack(doc: &Path, out: &Path, redact_host: bool, json: bool) -> Result<i32, Error> {
+    let outcome = cfdcraft_ops::documents::pack_document_with(doc, out, redact_host);
+    Ok(emit_doc(&outcome, json))
 }
 
 /// Unpack `packed` into the folder `dir`.

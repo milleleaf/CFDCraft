@@ -76,6 +76,13 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Print the mesh key and the result key of a study.
+    Keys {
+        study: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Save a study as a `.cfdcraft` file.
     Save {
         study: PathBuf,
@@ -122,6 +129,9 @@ enum Commands {
     Pack {
         doc: PathBuf,
         out: PathBuf,
+        /// Remove the host label from every run record in the pack; the source file keeps its labels.
+        #[arg(long)]
+        redact_host: bool,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -130,6 +140,126 @@ enum Commands {
     Unpack {
         packed: PathBuf,
         dir: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Say whether a study file's mesh and result are up to date, and if not why.
+    Status {
+        doc: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the runs a study file holds, as JSON data.
+    Runs {
+        doc: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the check verdicts and key numbers of a run, as JSON data.
+    #[command(name = "result")]
+    ShowResult {
+        doc: PathBuf,
+        /// The run to show; by default the newest that recorded a result and is not a rerun.
+        #[arg(long)]
+        run: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print what a run was made from, as JSON data.
+    Provenance {
+        doc: PathBuf,
+        /// The run to show; by default the newest.
+        #[arg(long)]
+        run: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare the key numbers of two runs; exits 1 when they differ beyond the tolerance.
+    Compare {
+        doc: PathBuf,
+        /// The run to compare against.
+        a: String,
+        /// The run to compare.
+        b: String,
+        /// The absolute tolerance (default 1e-12).
+        #[arg(long, allow_negative_numbers = true)]
+        abs_tol: Option<f64>,
+        /// The relative tolerance (default 1e-9).
+        #[arg(long, allow_negative_numbers = true)]
+        rel_tol: Option<f64>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the study file's case on the compute host for whatever is out of date, and record the run.
+    Solve {
+        doc: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long, default_value = "box")]
+        profile: String,
+        #[arg(long, default_value = "hosts.toml")]
+        hosts: PathBuf,
+        /// Run the Re=100 cavity and compare it with the reference; refused for any other study.
+        #[arg(long)]
+        validate: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the settings a recorded run was made from again, and compare with that run.
+    Rerun {
+        doc: PathBuf,
+        /// The run to repeat.
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long, default_value = "box")]
+        profile: String,
+        #[arg(long, default_value = "hosts.toml")]
+        hosts: PathBuf,
+        /// The absolute tolerance of the comparison (default 1e-12).
+        #[arg(long, allow_negative_numbers = true)]
+        abs_tol: Option<f64>,
+        /// The relative tolerance of the comparison (default 1e-9).
+        #[arg(long, allow_negative_numbers = true)]
+        rel_tol: Option<f64>,
+        /// Run with this build's tools even when the run was made with others.
+        #[arg(long)]
+        allow_tool_change: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bring out-of-date items of one or more study files up to date, mesh before result.
+    Update {
+        #[arg(required = true)]
+        docs: Vec<PathBuf>,
+        /// Update only this item, written name:mesh or name:result; repeat for several.
+        #[arg(long = "item")]
+        items: Vec<String>,
+        /// Update the chosen items in this order, one --order for each; a result stays after its mesh.
+        #[arg(long = "order")]
+        order: Vec<String>,
+        /// Show what would be done and start nothing; needs no compute host.
+        #[arg(long)]
+        plan: bool,
+        /// The ssh key file; needed unless --plan is given.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        #[arg(long, default_value = "box")]
+        profile: String,
+        #[arg(long, default_value = "hosts.toml")]
+        hosts: PathBuf,
+        /// Run the Re=100 cavity and compare it with the reference; refused for any other study.
+        #[arg(long)]
+        validate: bool,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -198,6 +328,7 @@ fn main() {
             tolerance_override,
             json,
         }),
+        Commands::Keys { study, json } => cmd::keys::execute(&study, json),
         Commands::Save {
             study,
             out,
@@ -218,8 +349,89 @@ fn main() {
         Commands::CheckLinks { doc, verify, json } => {
             cmd::document::check_links(&doc, verify, json)
         }
-        Commands::Pack { doc, out, json } => cmd::document::pack(&doc, &out, json),
+        Commands::Pack {
+            doc,
+            out,
+            redact_host,
+            json,
+        } => cmd::document::pack(&doc, &out, redact_host, json),
         Commands::Unpack { packed, dir, json } => cmd::document::unpack(&packed, &dir, json),
+        Commands::Status { doc, json } => cmd::repro::status(&doc, json),
+        Commands::Runs { doc, json } => cmd::repro::runs(&doc, json),
+        Commands::ShowResult { doc, run, json } => cmd::repro::result(&doc, run.as_deref(), json),
+        Commands::Provenance { doc, run, json } => {
+            cmd::repro::provenance(&doc, run.as_deref(), json)
+        }
+        Commands::Compare {
+            doc,
+            a,
+            b,
+            abs_tol,
+            rel_tol,
+            json,
+        } => cmd::repro::compare(&doc, &a, &b, abs_tol, rel_tol, json),
+        Commands::Solve {
+            doc,
+            key,
+            profile,
+            hosts,
+            validate,
+            json,
+        } => cmd::repro::solve(
+            &doc,
+            &cmd::repro::Host {
+                key,
+                profile,
+                hosts,
+                validate,
+            },
+            json,
+        ),
+        Commands::Rerun {
+            doc,
+            run,
+            key,
+            profile,
+            hosts,
+            abs_tol,
+            rel_tol,
+            allow_tool_change,
+            json,
+        } => cmd::repro::rerun(&cmd::repro::RerunArgs {
+            doc,
+            run,
+            host: cmd::repro::Host {
+                key,
+                profile,
+                hosts,
+                validate: false,
+            },
+            abs_tol,
+            rel_tol,
+            allow_tool_change,
+            json,
+        }),
+        Commands::Update {
+            docs,
+            items,
+            order,
+            plan,
+            key,
+            profile,
+            hosts,
+            validate,
+            json,
+        } => cmd::repro::update(&cmd::repro::UpdateArgs {
+            docs,
+            items,
+            order,
+            plan,
+            key,
+            profile,
+            hosts,
+            validate,
+            json,
+        }),
         Commands::Mcp {
             workspace,
             key,

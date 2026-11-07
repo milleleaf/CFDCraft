@@ -14,7 +14,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// The schema version this build writes and fully understands.
-pub const CURRENT_SCHEMA: u32 = 1;
+pub const CURRENT_SCHEMA: u32 = 2;
 
 /// The members of a document that a migration step may change.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,10 +49,16 @@ pub struct Step {
 }
 
 /// Every real step, in order, starting at schema 0.
-pub const STEPS: &[Step] = &[Step {
-    from: 0,
-    apply: v0_to_v1,
-}];
+pub const STEPS: &[Step] = &[
+    Step {
+        from: 0,
+        apply: v0_to_v1,
+    },
+    Step {
+        from: 1,
+        apply: v1_to_v2,
+    },
+];
 
 fn v0_to_v1(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
     let fail = |reason: String| MigrateError::Step {
@@ -69,6 +75,29 @@ fn v0_to_v1(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
             artifacts: parts.artifacts,
         },
         note,
+    ))
+}
+
+/// Schema 2 adds the history of runs to the artifact index. The study is untouched; an index
+/// that lacks the entry gets an empty one, and anything else is returned as it came.
+fn v1_to_v2(parts: Parts) -> Result<(Parts, MigrationNote), MigrateError> {
+    let mut artifacts = parts.artifacts;
+    if let Some(Value::Object(map)) = &mut artifacts {
+        map.entry("runs")
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    Ok((
+        Parts {
+            study: parts.study,
+            artifacts,
+        },
+        MigrationNote {
+            from: 1,
+            to: 2,
+            summary: "This file now keeps a history of runs: what ran, from which settings, \
+                      and what it made. This file has none yet. Nothing else changed."
+                .to_owned(),
+        },
     ))
 }
 

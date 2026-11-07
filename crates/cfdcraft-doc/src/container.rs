@@ -9,6 +9,7 @@
 //! its size cannot exhaust memory.
 
 use std::io::{self, Cursor, Read, Seek, Write};
+use std::path::PathBuf;
 
 use cfdcraft_migrate::{MigrateError, Parts, check_readable};
 use cfdcraft_model::Study;
@@ -19,11 +20,13 @@ use zip::{
     CompressionMethod, DateTime, ZipArchive, ZipWriter, result::ZipError, write::SimpleFileOptions,
 };
 
+use crate::links::check_ids;
 use crate::model::{
     ARTIFACTS_LIMIT, ARTIFACTS_MEMBER, ArtifactIndex, Document, FORMAT_ID, MANIFEST_LIMIT,
     MANIFEST_MEMBER, Manifest, Opened, STUDY_LIMIT, STUDY_MEMBER, THUMBNAIL_LIMIT,
     THUMBNAIL_MEMBER,
 };
+use crate::runlog::check_runs;
 
 /// Why a study file could not be written or read.
 #[derive(Debug, Error)]
@@ -73,6 +76,9 @@ pub enum DocError {
         /// What went wrong.
         reason: String,
     },
+    /// The file to create already exists. Nothing was written and the file is as it was.
+    #[error("{} already exists; nothing was written", .0.display())]
+    TargetExists(PathBuf),
     /// The disk refused a read or a write.
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -97,12 +103,21 @@ fn pretty<T: Serialize>(member: &str, value: &T) -> Result<Vec<u8>, DocError> {
     Ok(bytes)
 }
 
+/// Write one member, refusing bytes the reader would refuse: a file this program saves must be a
+/// file it can open again.
 fn put<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     name: &str,
+    limit: u64,
     options: SimpleFileOptions,
     bytes: &[u8],
 ) -> Result<(), DocError> {
+    if bytes.len() as u64 > limit {
+        return Err(DocError::TooLarge {
+            name: name.to_owned(),
+            limit,
+        });
+    }
     zip.start_file(name, options).map_err(zip_error)?;
     zip.write_all(bytes)?;
     Ok(())
@@ -112,7 +127,8 @@ fn put<W: Write + Seek>(
 /// reading anything else, then the study, the artifact index and the thumbnail when there is one.
 ///
 /// JSON is ordinary pretty text with a trailing newline. Every entry has the same fixed time and
-/// permissions. The caller may add more entries afterwards, and finishes the archive.
+/// permissions. A member over the size the reader accepts is refused with [`DocError::TooLarge`]
+/// before it is written. The caller may add more entries afterwards, and finishes the archive.
 pub fn write_members<W: Write + Seek>(
     doc: &Document,
     zip: &mut ZipWriter<W>,
@@ -127,18 +143,32 @@ pub fn write_members<W: Write + Seek>(
     put(
         zip,
         MANIFEST_MEMBER,
+        MANIFEST_LIMIT,
         text,
         &pretty(MANIFEST_MEMBER, &Manifest::current())?,
     )?;
-    put(zip, STUDY_MEMBER, text, &pretty(STUDY_MEMBER, &doc.study)?)?;
+    put(
+        zip,
+        STUDY_MEMBER,
+        STUDY_LIMIT,
+        text,
+        &pretty(STUDY_MEMBER, &doc.study)?,
+    )?;
+    // A file this program saves must be a file it can open: the run history and the list of
+    // stored results have to agree before anything is written.
+    check_runs(&doc.artifacts).map_err(|reason| DocError::BadJson {
+        member: ARTIFACTS_MEMBER.to_owned(),
+        reason,
+    })?;
     put(
         zip,
         ARTIFACTS_MEMBER,
+        ARTIFACTS_LIMIT,
         text,
         &pretty(ARTIFACTS_MEMBER, &doc.artifacts)?,
     )?;
     if let Some(thumbnail) = &doc.thumbnail {
-        put(zip, THUMBNAIL_MEMBER, picture, thumbnail)?;
+        put(zip, THUMBNAIL_MEMBER, THUMBNAIL_LIMIT, picture, thumbnail)?;
     }
     Ok(())
 }
@@ -241,6 +271,10 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Opened, DocError> {
     if zip.has_duplicate_names() {
         return Err(DocError::DuplicateMember);
     }
+    let packed_entries = zip
+        .file_names_raw()
+        .filter(|name| name.starts_with(b"blobs/"))
+        .count();
 
     let manifest_bytes = required(
         read_member(&mut zip, MANIFEST_MEMBER, MANIFEST_LIMIT)?,
@@ -271,6 +305,14 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Opened, DocError> {
             .map_err(|e| bad_json(ARTIFACTS_MEMBER, e))?,
         None => ArtifactIndex::default(),
     };
+    check_ids(&artifacts).map_err(|reason| DocError::BadJson {
+        member: ARTIFACTS_MEMBER.to_owned(),
+        reason,
+    })?;
+    check_runs(&artifacts).map_err(|reason| DocError::BadJson {
+        member: ARTIFACTS_MEMBER.to_owned(),
+        reason,
+    })?;
     let thumbnail = read_member(&mut zip, THUMBNAIL_MEMBER, THUMBNAIL_LIMIT)?;
 
     Ok(Opened {
@@ -281,6 +323,7 @@ pub fn read_document<R: Read + Seek>(reader: R) -> Result<Opened, DocError> {
         },
         schema_version: found,
         notes,
+        packed_entries,
     })
 }
 

@@ -1,0 +1,11 @@
+{
+  "links": [
+    {
+      "hash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "name": "room.step",
+      "path": "../geometry/room.step",
+      "id": "My Link"
+    }
+  ],
+  "blobs": []
+}

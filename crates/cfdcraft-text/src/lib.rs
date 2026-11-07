@@ -79,7 +79,7 @@ impl Text {
             _ => self.i18n.t(self.lang, line.source()).to_string(),
         };
         let mut args: Vec<(&str, String)> = line.args();
-        if let Line::Migrated { summary, .. } = line {
+        if let Line::Migrated { summary, .. } | Line::MigratedAndSaved { summary, .. } = line {
             // The model's summary is itself a sentence a catalog may translate.
             let translated = self.i18n.t(self.lang, summary).to_string();
             args.retain(|(k, _)| *k != "summary");
@@ -91,13 +91,15 @@ impl Text {
     }
 }
 
-/// `value` without direction marks and embeddings, so a hostile name cannot reorder the words
-/// around it in a terminal or log.
+/// `value` without direction marks, embeddings and control characters (escape, carriage return,
+/// bell and the rest of the C0 and C1 controls), so a hostile name cannot reorder the words around
+/// it, rewrite the screen or forge a line in a terminal or log.
 fn plain(value: &str) -> String {
     value
         .chars()
         .filter(|c| {
-            !matches!(*c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+            !c.is_control()
+                && !matches!(*c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
         })
         .collect()
 }

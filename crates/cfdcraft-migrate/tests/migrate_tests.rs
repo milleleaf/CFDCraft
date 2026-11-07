@@ -12,7 +12,7 @@ fn json_of(text: &str) -> Value {
 }
 
 #[test]
-fn cavity_v0_migrates_to_cavity_v1_with_one_note() {
+fn cavity_v0_migrates_to_the_current_schema_with_two_notes() {
     let parts = Parts {
         study: json_of(V0),
         artifacts: None,
@@ -24,9 +24,61 @@ fn cavity_v0_migrates_to_cavity_v1_with_one_note() {
     let expected: Study = serde_json::from_str(V1).unwrap();
     assert_eq!(migrated, expected);
     assert_eq!(out.artifacts, None);
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 2);
     assert_eq!((notes[0].from, notes[0].to), (0, 1));
     assert!(notes[0].summary.contains("lid") && notes[0].summary.contains("walls"));
+    assert_eq!((notes[1].from, notes[1].to), (1, 2));
+}
+
+#[test]
+fn a_schema_1_file_gets_an_empty_runs_list_and_one_note() {
+    let parts = Parts {
+        study: json_of(V1),
+        artifacts: Some(json!({"blobs": [], "links": []})),
+    };
+    let (out, notes) = migrate(parts.clone(), 1).unwrap();
+    assert_eq!(out.study, parts.study);
+    assert_eq!(
+        out.artifacts,
+        Some(json!({"blobs": [], "links": [], "runs": []}))
+    );
+    assert_eq!(notes.len(), 1);
+    assert_eq!((notes[0].from, notes[0].to), (1, 2));
+    assert!(notes[0].summary.contains("runs"));
+}
+
+#[test]
+fn a_schema_1_file_without_an_artifact_index_stays_without_one() {
+    let parts = Parts {
+        study: json_of(V1),
+        artifacts: None,
+    };
+    let (out, notes) = migrate(parts, 1).unwrap();
+    assert_eq!(out.artifacts, None);
+    assert_eq!(notes.len(), 1);
+    assert_eq!((notes[0].from, notes[0].to), (1, 2));
+}
+
+#[test]
+fn an_index_that_already_has_runs_is_left_alone() {
+    let artifacts = json!({"blobs": [], "links": [], "runs": [{"id": "run-1"}]});
+    let parts = Parts {
+        study: json_of(V1),
+        artifacts: Some(artifacts.clone()),
+    };
+    let (out, _) = migrate(parts, 1).unwrap();
+    assert_eq!(out.artifacts, Some(artifacts));
+}
+
+#[test]
+fn an_index_that_is_not_an_object_is_left_for_the_typed_read_to_refuse() {
+    let parts = Parts {
+        study: json_of(V1),
+        artifacts: Some(json!(7)),
+    };
+    let (out, notes) = migrate(parts, 1).unwrap();
+    assert_eq!(out.artifacts, Some(json!(7)));
+    assert_eq!(notes.len(), 1);
 }
 
 #[test]
@@ -41,9 +93,11 @@ fn current_schema_is_left_alone() {
 }
 
 #[test]
-fn current_schema_matches_the_model() {
+fn a_current_study_keeps_its_own_number() {
     let study = Study::from_json_with_note(V1).unwrap().0;
-    assert_eq!(study.schema_version, CURRENT_SCHEMA);
+    assert_eq!(study.schema_version, Study::SCHEMA_VERSION);
+    assert_eq!(Study::SCHEMA_VERSION, 1);
+    assert_eq!(CURRENT_SCHEMA, 2);
 }
 
 #[test]

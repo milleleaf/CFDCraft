@@ -28,6 +28,11 @@ pub enum StoreError {
 }
 
 /// The folder `<name>.cfdstore`, holding `blobs/<hash>`.
+///
+/// A blob appears under its final name in one step when the volume supports hard links. On a
+/// volume without them (some network shares) the shared create falls back to a copy, and a crash
+/// in the middle can leave a partial file under the final name. Storing the same content again
+/// finds it (every put hashes an existing blob, it does not trust its length) and replaces it.
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
@@ -88,10 +93,11 @@ impl Store {
         self.blob_path(hash).is_file()
     }
 
-    /// Store `bytes` under their hash. Storing the same bytes again changes nothing.
+    /// Store `bytes` under their hash. Storing the same bytes again changes nothing, unless the
+    /// blob already there is damaged: it is then replaced (see [`Store`]).
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<ContentHash, StoreError> {
         let hash = ContentHash::of(bytes);
-        self.create_blob(hash, bytes.len() as u64, |f| f.write_all(bytes))?;
+        self.create_blob(hash, |f| f.write_all(bytes))?;
         Ok(hash)
     }
 
@@ -101,12 +107,9 @@ impl Store {
         &self,
         open: impl Fn() -> io::Result<R>,
     ) -> Result<ContentHash, StoreError> {
-        let (hash, len) = hash_reader(open()?)?;
-        if self.contains(&hash) {
-            return self.same_length(hash, len).map(|()| hash);
-        }
+        let (hash, _) = hash_reader(open()?)?;
         let changed = Cell::new(false);
-        let placed = self.create_blob(hash, len, |f| {
+        let placed = self.create_blob(hash, |f| {
             let (again, _) = copy_hashing(&mut open()?, f)?;
             if again != hash {
                 changed.set(true);
@@ -127,29 +130,40 @@ impl Store {
     }
 
     /// Stream `reader` into the blob `expected` in one pass. Nothing is stored when the
-    /// hash of what was read is different.
+    /// hash of what was read is different. A blob already there is hashed again: a whole one is
+    /// kept, a damaged one is replaced by the verified content.
     pub fn put_reader_verified(
         &self,
         expected: ContentHash,
         mut reader: impl Read,
     ) -> Result<(), StoreError> {
-        if self.contains(&expected) {
-            return self.verify(&expected);
-        }
+        let path = self.blob_path(&expected);
         let actual = Cell::new(None);
-        let placed = write_new(&self.blob_path(&expected), |f| {
+        let mut fill = |f: &mut File| {
             let (got, _) = copy_hashing(&mut reader, f)?;
             if got != expected {
                 actual.set(Some(got));
                 return Err(io::Error::other("hash mismatch"));
             }
             Ok(())
-        });
-        match (placed, actual.get()) {
+        };
+        let outcome = |placed: io::Result<()>| match (placed, actual.get()) {
             (Err(_), Some(actual)) => Err(StoreError::HashMismatch { expected, actual }),
-            (Err(e), None) if e.kind() == io::ErrorKind::AlreadyExists => self.verify(&expected),
             (Err(e), None) => Err(e.into()),
             (Ok(()), _) => Ok(()),
+        };
+        if self.contains(&expected) {
+            return match self.verify(&expected) {
+                Err(StoreError::Corrupt(_)) => outcome(replace_blob(&path, &mut fill)),
+                settled => settled,
+            };
+        }
+        match write_new(&path, &mut fill) {
+            // Someone else stored it while this was being read; judge what they left.
+            Err(e) if actual.get().is_none() && e.kind() == io::ErrorKind::AlreadyExists => {
+                self.verify(&expected)
+            }
+            placed => outcome(placed),
         }
     }
 
@@ -184,32 +198,35 @@ impl Store {
         }
     }
 
-    /// Create the blob; an existing one is success when it has the same length.
+    /// Create the blob. One that is already there is kept when its content is whole (it is hashed,
+    /// not just measured) and replaced by `fill`'s content when it is damaged or has vanished.
     fn create_blob(
         &self,
         hash: ContentHash,
-        len: u64,
-        fill: impl FnOnce(&mut File) -> io::Result<()>,
+        fill: impl Fn(&mut File) -> io::Result<()>,
     ) -> Result<(), StoreError> {
-        match write_new(&self.blob_path(&hash), fill) {
+        let path = self.blob_path(&hash);
+        match write_new(&path, &fill) {
             Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => self.same_length(hash, len),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => match self.verify(&hash) {
+                Err(StoreError::Corrupt(_) | StoreError::Missing(_)) => {
+                    replace_blob(&path, &fill).map_err(Into::into)
+                }
+                settled => settled,
+            },
             Err(e) => Err(e.into()),
-        }
-    }
-
-    fn same_length(&self, hash: ContentHash, len: u64) -> Result<(), StoreError> {
-        let have = std::fs::metadata(self.blob_path(&hash))?.len();
-        if have == len {
-            Ok(())
-        } else {
-            Err(StoreError::Corrupt(hash))
         }
     }
 }
 
 fn write_new(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     craft_atomic::write_new_with(path, fill)
+}
+
+/// Put new content at the blob's name in one step: staged beside it and renamed over it, so a
+/// failure leaves whatever was there.
+fn replace_blob(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+    craft_atomic::atomic_write_with(path, fill)
 }
 
 fn missing_or_io(e: io::Error, hash: ContentHash) -> StoreError {

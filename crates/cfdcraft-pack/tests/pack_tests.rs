@@ -3,10 +3,12 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Barrier;
+use std::thread;
 
-use cfdcraft_doc::{BlobKind, BlobRef, Document, Link, open, save, store_dir};
+use cfdcraft_doc::{BlobKind, BlobRef, DocError, Document, Link, open, save, store_dir};
 use cfdcraft_model::{Study, canonical_hash, resolve};
-use cfdcraft_pack::{pack, unpack};
+use cfdcraft_pack::{PackError, pack, unpack, unpack_limited};
 use cfdcraft_store::{ContentHash, Store};
 use zip::{CompressionMethod, ZipArchive};
 
@@ -218,4 +220,70 @@ fn a_study_with_no_results_needs_no_store() {
     if store.exists() {
         assert_eq!(fs::read_dir(store.join("blobs")).unwrap().count(), 0);
     }
+}
+
+/// Run `job` on 6 threads released together; every result comes back.
+fn together<T: Send>(job: impl Fn() -> T + Sync) -> Vec<T> {
+    let start = Barrier::new(6);
+    thread::scope(|scope| {
+        let runners: Vec<_> = (0..6)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    job()
+                })
+            })
+            .collect();
+        runners.into_iter().map(|r| r.join().unwrap()).collect()
+    })
+}
+
+#[test]
+fn racing_packs_never_replace_each_other() {
+    let dir = fresh("pack-race");
+    let doc = two_results(&dir);
+    let out = dir.join("cavity.cfdpack");
+    let results = together(|| pack(&doc, &out));
+    assert_eq!(results.iter().flatten().count(), 1);
+    for refused in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert!(matches!(refused, PackError::TargetExists(p) if *p == out));
+    }
+}
+
+#[test]
+fn racing_unpacks_never_replace_the_study_file() {
+    let dir = fresh("unpack-race");
+    let packed = dir.join("cavity.cfdpack");
+    pack(&two_results(&dir), &packed).unwrap();
+    let into = dir.join("into");
+    let results = together(|| unpack(&packed, &into));
+    assert_eq!(results.iter().flatten().count(), 1);
+    for refused in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert!(
+            matches!(
+                refused,
+                PackError::TargetExists(_) | PackError::Doc(DocError::TargetExists(_))
+            ),
+            "{refused}"
+        );
+    }
+    open(&into.join("cavity.cfdcraft")).unwrap();
+}
+
+#[test]
+fn unpack_limited_refuses_results_over_the_limit_and_accepts_them_at_it() {
+    let dir = fresh("limit");
+    let packed = dir.join("cavity.cfdpack");
+    pack(&two_results(&dir), &packed).unwrap();
+    let total = (big().len() + small().len()) as u64;
+    let into = dir.join("into");
+
+    assert!(matches!(
+        unpack_limited(&packed, &into, total - 1),
+        Err(PackError::OverLimit(_))
+    ));
+    assert!(!into.exists());
+
+    let done = unpack_limited(&packed, &into, total).unwrap();
+    assert_eq!(done.blobs, 2);
 }

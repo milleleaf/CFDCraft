@@ -51,6 +51,14 @@ fn english_text_is_english() {
     assert_eq!(out, "Saved a.");
 }
 
+#[test]
+fn control_characters_in_a_value_never_reach_the_sentence() {
+    let out = Text::english().render(&Line::Saved {
+        path: "a\u{1b}[2J\r\u{7}\u{85}b".to_string(),
+    });
+    assert_eq!(out, "Saved a[2Jb.");
+}
+
 fn texts(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
@@ -78,6 +86,51 @@ fn every_variant_renders_to_its_english_sentence() {
         "The pack is missing stored result ab12. No study file was written.",
         "a.cfdcraft could not be written: the disk is full",
         "part.step could not be linked: a link named part already exists",
+        "result stale because lid velocity 0.1 → 0.2 m/s",
+        "domain length in x 1 → 2 m",
+        "the domain was opened",
+        "the domain was closed",
+        "cells in y 64 → 128",
+        "the boundary layout changed",
+        "viscosity 0.01 → 0.02 m²/s",
+        "lid velocity 1 → 2 m/s",
+        "lid kind wall → inlet",
+        "lid faces top → top, left",
+        "boundary lid was added",
+        "boundary lid was removed",
+        "end time 10 → 20 s",
+        "write interval 1 → 2 s",
+        "pressure residual limit 0.001 → 0.0001",
+        "velocity residual limit 0.001 → 0.0001",
+        "centreline samples 17 → 33",
+        "solver image sha256:aa → sha256:bb",
+        "solver dialect esi-v2512 → esi-v2606",
+        "geometry sidecar lock none → lock-1",
+        "CFDCraft version 0.1.0 → 0.2.0",
+        "its mesh changed",
+        "The mesh is up to date (made by run-1).",
+        "No result has been made yet.",
+        "The stored mesh (ab12) is missing from the store, so it counts as out of date.",
+        "Recorded run-2: mesh, result.",
+        "Nothing to run: the mesh and the result are up to date.",
+        "run-3 reproduced run-1: every checked quantity is identical.",
+        "run-3 is within tolerance of run-1; the largest difference is 1e-10.",
+        "run-3 differs from run-1; quantities outside the tolerance: 2.",
+        "This result was made with a different tool (solver image sha256:aa → sha256:bb), so it cannot be rerun as recorded.",
+        "There is no run run-9 in this file.",
+        "This file has no runs yet.",
+        "run-1 recorded no result, so there is nothing to rerun or compare.",
+        "The record of run-2 is inconsistent: its result key does not match its recipe",
+        "cavity:mesh is up to date, so there is nothing to update.",
+        "There is no item cavity; an item is written name:mesh or name:result.",
+        "cavity:result is made from cavity:mesh, which is also out of date; update cavity:mesh too, and first.",
+        "The order must list each selected item exactly once.",
+        "cavity:result cannot come before cavity:mesh, which it is made from.",
+        "Updated cavity:mesh in run-4.",
+        "Nothing is out of date.",
+        "This file was written by an older version (schema 1) and was saved at schema 2. Added runs.",
+        "The output of the run could not be recorded: a result file is a link",
+        "Two documents are called cavity; give them different file names.",
     ]);
     let samples = Line::samples();
     assert_eq!(samples.len(), expected.len());
@@ -231,4 +284,98 @@ fn a_row_with_a_missing_placeholder_is_reported_and_skipped() {
 fn a_language_that_is_not_offered_gives_no_text() {
     assert!(Text::with_catalogs(GOOD, &[], "de").is_none());
     assert!(Text::with_catalogs(GOOD, &["de"], "fr").is_none());
+}
+
+#[test]
+fn a_stale_result_reads_with_its_reason() {
+    let english = Text::english();
+    let reason = english.render(&Line::ReasonBoundaryVelocity {
+        boundary: "lid".to_string(),
+        from: "0.1".to_string(),
+        to: "0.2".to_string(),
+    });
+    assert_eq!(reason, "lid velocity 0.1 → 0.2 m/s");
+    let sentence = english.render(&Line::StaleBecause {
+        stage: "result".to_string(),
+        reason,
+    });
+    assert_eq!(sentence, "result stale because lid velocity 0.1 → 0.2 m/s");
+}
+
+#[test]
+fn a_stale_mesh_reads_with_its_cell_change() {
+    let english = Text::english();
+    let reason = english.render(&Line::ReasonCells {
+        axis: "x".to_string(),
+        from: "128".to_string(),
+        to: "256".to_string(),
+    });
+    assert_eq!(reason, "cells in x 128 → 256");
+    let sentence = english.render(&Line::StaleBecause {
+        stage: "mesh".to_string(),
+        reason,
+    });
+    assert_eq!(sentence, "mesh stale because cells in x 128 → 256");
+}
+
+#[test]
+fn a_reason_value_that_looks_like_a_placeholder_is_inserted_as_written() {
+    let out = Text::english().render(&Line::ReasonBoundaryVelocity {
+        boundary: "{from}".to_string(),
+        from: "1".to_string(),
+        to: "2".to_string(),
+    });
+    assert_eq!(out, "{from} velocity 1 → 2 m/s");
+}
+
+#[test]
+fn a_saved_migration_says_it_was_saved() {
+    let out = Text::english().render(&Line::MigratedAndSaved {
+        from: 1,
+        to: 2,
+        summary: "Added runs.".to_string(),
+    });
+    assert_eq!(
+        out,
+        "This file was written by an older version (schema 1) and was saved at schema 2. Added runs."
+    );
+    assert!(!out.contains("unchanged"));
+}
+
+#[test]
+fn the_summary_of_a_saved_migration_is_looked_up_like_the_other() {
+    let pseudo = Text::pseudo();
+    let line = Line::MigratedAndSaved {
+        from: 1,
+        to: 2,
+        summary: "Added runs.".to_string(),
+    };
+    let out = pseudo.render(&line);
+    assert!(out.contains("Added runs."), "{out}");
+    assert!(pseudo.looked_up().contains("Added runs."));
+    assert!(pseudo.looked_up().contains(line.source()));
+}
+
+#[test]
+fn a_rerun_verdict_names_both_runs() {
+    let out = Text::english().render(&Line::RerunReproduced {
+        run: "run-3".to_string(),
+        of: "run-1".to_string(),
+    });
+    assert_eq!(
+        out,
+        "run-3 reproduced run-1: every checked quantity is identical."
+    );
+}
+
+#[test]
+fn an_update_refusal_names_the_item_and_what_it_needs() {
+    let out = Text::english().render(&Line::NeedsUpstream {
+        item: "cavity:result".to_string(),
+        needs: "cavity:mesh".to_string(),
+    });
+    assert_eq!(
+        out,
+        "cavity:result is made from cavity:mesh, which is also out of date; update cavity:mesh too, and first."
+    );
 }

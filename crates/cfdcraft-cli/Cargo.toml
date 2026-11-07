@@ -9,15 +9,18 @@ name = "cfdcraft"
 path = "src/main.rs"
 
 [dependencies]
+cfdcraft-compare = { path = "../cfdcraft-compare", version = "=0.1.0" }
 cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
 cfdcraft-mcp = { path = "../cfdcraft-mcp", version = "=0.1.0" }
 cfdcraft-ops = { path = "../cfdcraft-ops", version = "=0.1.0" }
 cfdcraft-text = { path = "../cfdcraft-text", version = "=0.1.0" }
 clap = { version = "=4.6.7", features = ["derive"] }
 craft-atomic = { workspace = true }
+serde_json = "=1.0.154"
 
 [dev-dependencies]
+cfdcraft-capture = { path = "../cfdcraft-capture", version = "=0.1.0" }
 cfdcraft-doc = { path = "../cfdcraft-doc", version = "=0.1.0" }
+cfdcraft-runs = { path = "../cfdcraft-runs", version = "=0.1.0" }
 cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
-serde_json = "=1.0.154"
 zip = { workspace = true }

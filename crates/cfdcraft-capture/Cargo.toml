@@ -1,0 +1,11 @@
+[package]
+name = "cfdcraft-capture"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-compare = { path = "../cfdcraft-compare", version = "=0.1.0" }
+cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+thiserror = "=2.0.21"
+zip = { workspace = true }

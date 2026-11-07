@@ -6,6 +6,20 @@ pub enum Dialect {
 }
 
 impl Dialect {
+    /// The stable identifier of this dialect, as recorded in a stage key.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::EsiV2512 => "esi-v2512",
+        }
+    }
+
+    /// The image reference this dialect runs in, pinned by digest.
+    pub fn image(self) -> &'static str {
+        match self {
+            Self::EsiV2512 => IMAGE,
+        }
+    }
+
     /// What this dialect's writer can run: every boundary kind, one cell through z (the front
     /// and back patches are empty), and one velocity per boundary kind (patch names come from a
     /// fixed table).
@@ -29,3 +43,15 @@ impl Dialect {
 
 pub const IMAGE: &str = "opencfd/openfoam-default@sha256:33fb575aa9980d2bc42fd58c75ae698c489293ba30c991380fe3f899c622f319";
 pub const IMAGE_ENV: &str = "bash -lc";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dialect_states_its_identifier_and_image() {
+        assert_eq!(Dialect::EsiV2512.id(), "esi-v2512");
+        assert_eq!(Dialect::EsiV2512.image(), IMAGE);
+        assert!(Dialect::EsiV2512.image().contains("@sha256:"));
+    }
+}

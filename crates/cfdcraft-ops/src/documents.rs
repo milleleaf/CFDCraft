@@ -24,13 +24,13 @@ use std::io;
 use std::path::Path;
 
 use cfdcraft_doc::{
-    DocError, Document, Link, LinkError, check_links, open, resolve as follow_link, save,
-    store_dir, verify,
+    DocError, Document, Link, LinkError, check_links, check_links_within, open,
+    resolve as follow_link, save, save_new, store_dir, verify,
 };
 use cfdcraft_model::{
     Diagnostic, MigrationNote, Severity, Study, canonical_hash, resolve as resolve_study,
 };
-use cfdcraft_pack::{PackError, pack, unpack};
+use cfdcraft_pack::{PackError, PackOptions, pack_with, unpack};
 use cfdcraft_store::{ContentHash, Store, StoreError};
 use cfdcraft_text::{Line, Text};
 
@@ -55,32 +55,32 @@ enum Side {
 }
 
 /// A finding's code and the sentence data it is rendered from.
-type Finding = (&'static str, Line);
+pub(crate) type Finding = (&'static str, Line);
 
-fn say(line: &Line) -> String {
+pub(crate) fn say(line: &Line) -> String {
     Text::english().render(line)
 }
 
-fn shown(path: &Path) -> String {
+pub(crate) fn shown(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn finding(severity: Severity, setting: &str, (code, line): Finding) -> Diagnostic {
+pub(crate) fn finding(severity: Severity, setting: &str, (code, line): Finding) -> Diagnostic {
     Diagnostic::new(severity, code, setting, "", say(&line))
 }
 
-fn problem(found: Finding) -> Diagnostic {
+pub(crate) fn problem(found: Finding) -> Diagnostic {
     finding(Severity::Error, FILE, found)
 }
 
-fn refused(operation: &str, diagnostic: Diagnostic) -> DocOutcome {
+pub(crate) fn refused(operation: &str, diagnostic: Diagnostic) -> DocOutcome {
     DocOutcome {
         report: Report::from_diagnostics(operation, vec![diagnostic], None),
         line: None,
     }
 }
 
-fn unreadable(path: &Path, reason: impl ToString) -> Finding {
+pub(crate) fn unreadable(path: &Path, reason: impl ToString) -> Finding {
     (
         "CFD-DOC-001",
         Line::NotAStudyFile {
@@ -90,7 +90,7 @@ fn unreadable(path: &Path, reason: impl ToString) -> Finding {
     )
 }
 
-fn not_written(path: &Path, reason: impl ToString) -> Finding {
+pub(crate) fn not_written(path: &Path, reason: impl ToString) -> Finding {
     (
         "CFD-DOC-009",
         Line::NotWritten {
@@ -100,12 +100,26 @@ fn not_written(path: &Path, reason: impl ToString) -> Finding {
     )
 }
 
-fn taken(path: &Path) -> Finding {
+/// Saving a document back into a pack would drop the results the pack carries, so the operations
+/// that rewrite a file refuse one, by its name or by the results found in it.
+pub(crate) fn is_pack_name(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cfdpack"))
+}
+
+pub(crate) fn pack_kept(path: &Path) -> Finding {
+    not_written(
+        path,
+        "it is a pack with its stored results, and saving would drop them; unpack it and change the unpacked study",
+    )
+}
+
+pub(crate) fn taken(path: &Path) -> Finding {
     ("CFD-DOC-008", Line::TargetExists { path: shown(path) })
 }
 
 /// Why a study file could not be read.
-fn read_failure(error: &DocError, path: &Path) -> Finding {
+pub(crate) fn read_failure(error: &DocError, path: &Path) -> Finding {
     match error {
         DocError::NewerSchema { found, supported } => (
             "CFD-DOC-002",
@@ -129,6 +143,7 @@ fn pack_failure(error: &PackError, side: Side, read: &Path, write: &Path) -> Fin
                 supported: *supported,
             },
         ),
+        (PackError::Doc(DocError::TargetExists(path)), _) => taken(path),
         (PackError::Doc(DocError::Io(e)) | PackError::Io(e), Side::Unpack)
             if e.kind() == io::ErrorKind::NotFound =>
         {
@@ -157,6 +172,8 @@ fn pack_failure(error: &PackError, side: Side, read: &Path, write: &Path) -> Fin
         }
         (PackError::TargetExists(path), _) => taken(path),
         (PackError::Store(other), _) => not_written(write, other),
+        (PackError::OverLimit(reason), Side::Unpack) => unreadable(read, reason),
+        (PackError::OverLimit(reason), Side::Pack) => not_written(write, reason),
         (PackError::Zip(reason), Side::Unpack) => unreadable(read, reason),
         (PackError::Zip(reason), Side::Pack) => not_written(write, reason),
     }
@@ -206,7 +223,7 @@ fn link_finding(error: &LinkError, severe: bool) -> Diagnostic {
     finding(severity, "linked file", found)
 }
 
-fn study_hash(study: &Study) -> Option<String> {
+pub(crate) fn study_hash(study: &Study) -> Option<String> {
     resolve_study(study)
         .ok()
         .map(|resolved| canonical_hash(&resolved))
@@ -224,9 +241,14 @@ fn result_hashes(document: &Document) -> Vec<ContentHash> {
         .collect()
 }
 
-/// One note for the whole chain of steps an older file went through, with the sentence the text
-/// crate makes of it.
+/// One note for the whole chain of steps an older file went through, worded for a file that was
+/// only read.
 fn migration(notes: &[MigrationNote]) -> Option<MigrationNote> {
+    migration_with(notes, false)
+}
+
+/// The same note, worded for a file that was written back at the current schema when `saved`.
+fn migration_with(notes: &[MigrationNote], saved: bool) -> Option<MigrationNote> {
     let (first, last) = (notes.first()?, notes.last()?);
     let summary = notes
         .iter()
@@ -234,10 +256,15 @@ fn migration(notes: &[MigrationNote]) -> Option<MigrationNote> {
         .collect::<Vec<_>>()
         .join(" ");
     let (from, to) = (first.from, last.to);
+    let line = if saved {
+        Line::MigratedAndSaved { from, to, summary }
+    } else {
+        Line::Migrated { from, to, summary }
+    };
     Some(MigrationNote {
         from,
         to,
-        summary: say(&Line::Migrated { from, to, summary }),
+        summary: say(&line),
     })
 }
 
@@ -259,28 +286,58 @@ fn links_left_out(count: usize) -> Option<Diagnostic> {
 
 /// Save the study written as `study_json` to the file `out`.
 ///
-/// An existing `out` is refused unless `replace` is set; a replace goes through the document
-/// crate's crash-safe save, so a failed save leaves the previous file as it was. A study that
-/// cannot be read writes nothing.
+/// An existing `out` is refused unless `replace` is set. A replace keeps the results index, the
+/// links and the thumbnail of the study file it replaces and changes only the study; a target that
+/// is not a study file (the study's own JSON, say) or is a pack is refused and left alone. Both
+/// ways go through the document crate's crash-safe writes, so a failed save leaves the previous
+/// file as it was, and a new file never replaces one that appeared meanwhile. A study that cannot
+/// be read writes nothing.
 pub fn save_document(study_json: &str, out: &Path, replace: bool) -> DocOutcome {
     const OP: &str = "save";
     let (study, note) = match Study::from_json_with_note(study_json) {
         Ok(read) => read,
         Err(e) => return refused(OP, Diagnostic::from_study_error(&e)),
     };
-    if !replace && fs::symlink_metadata(out).is_ok() {
+    if is_pack_name(out) {
+        return refused(OP, problem(pack_kept(out)));
+    }
+    let exists = fs::symlink_metadata(out).is_ok();
+    if exists && !replace {
         return refused(OP, problem(taken(out)));
     }
     let hash = study_hash(&study);
-    if let Err(e) = save(&Document::new(study), out) {
-        return refused(OP, problem(not_written(out, e)));
+    let saved = if exists {
+        match replacement(study, out) {
+            Ok(document) => save(&document, out),
+            Err(found) => return refused(OP, problem(found)),
+        }
+    } else {
+        // Created exclusively, so a file that appears between the check above and the write is
+        // not replaced either.
+        save_new(&Document::new(study), out)
+    };
+    match saved {
+        Ok(()) => {}
+        Err(DocError::TargetExists(path)) => return refused(OP, problem(taken(&path))),
+        Err(e) => return refused(OP, problem(not_written(out, e))),
     }
     DocOutcome {
         report: Report::from_diagnostics(OP, Vec::new(), hash)
-            .with_migration(migration(note.as_slice()))
+            .with_migration(migration_with(note.as_slice(), true))
             .with_artifact("document", shown(out)),
         line: Some(Line::Saved { path: shown(out) }),
     }
+}
+
+/// The document that replaces the study file `out`: the one in it, with only the study changed.
+fn replacement(study: Study, out: &Path) -> Result<Document, Finding> {
+    let opened = open(out).map_err(|e| read_failure(&e, out))?;
+    if opened.packed_entries > 0 {
+        return Err(pack_kept(out));
+    }
+    let mut document = opened.document;
+    document.study = study;
+    Ok(document)
 }
 
 /// Open the study file at `path`.
@@ -288,6 +345,12 @@ pub fn save_document(study_json: &str, out: &Path, replace: bool) -> DocOutcome 
 /// Opening never fails over a missing result or a link that cannot be followed: both are warnings.
 /// Only the existence of results and linked files is looked at; no linked file is read.
 pub fn open_document(path: &Path) -> DocOutcome {
+    open_document_in(path, None)
+}
+
+/// [`open_document`] for a server: with `confine` set, a link that leads outside that folder is
+/// not followed, and the file system is never asked about what lies there.
+pub fn open_document_in(path: &Path, confine: Option<&Path>) -> DocOutcome {
     const OP: &str = "open";
     let opened = match open(path) {
         Ok(opened) => opened,
@@ -311,7 +374,11 @@ pub fn open_document(path: &Path) -> DocOutcome {
             ));
         }
     }
-    for check in check_links(path, &document.artifacts) {
+    let checks = match confine {
+        Some(root) => check_links_within(path, &document.artifacts, root),
+        None => check_links(path, &document.artifacts),
+    };
+    for check in checks {
         if let Err(e) = &check.result {
             found.push(link_finding(e, false));
         }
@@ -354,13 +421,24 @@ pub fn read_study(path: &Path) -> Result<String, Report> {
 /// Link the file `target` to the study file at `doc_path` under `id`.
 ///
 /// The link is stored relative to the study file's folder. The file is read once, to record its
-/// fingerprint. A bad or repeated id, or a target that is not a file, changes nothing.
+/// fingerprint. A bad or repeated id, or a target that is not a file, changes nothing, and neither
+/// does a pack, which saving would strip of its results. An older file is saved back at the
+/// current schema, and the report carries the migration note to say so.
 pub fn link_file(doc_path: &Path, target: &Path, id: &str) -> DocOutcome {
     const OP: &str = "link";
-    let mut document = match open(doc_path) {
-        Ok(opened) => opened.document,
+    if is_pack_name(doc_path) {
+        return refused(OP, problem(pack_kept(doc_path)));
+    }
+    let opened = match open(doc_path) {
+        Ok(opened) => opened,
         Err(e) => return refused(OP, problem(read_failure(&e, doc_path))),
     };
+    if opened.packed_entries > 0 {
+        return refused(OP, problem(pack_kept(doc_path)));
+    }
+    // An older file is saved back at the current schema, so the report says it was saved.
+    let migrated = migration_with(&opened.notes, true);
+    let mut document = opened.document;
     let not_added = |e: LinkError| {
         problem((
             "CFD-DOC-005",
@@ -387,6 +465,7 @@ pub fn link_file(doc_path: &Path, target: &Path, id: &str) -> DocOutcome {
     }
     DocOutcome {
         report: Report::from_diagnostics(OP, Vec::new(), study_hash(&document.study))
+            .with_migration(migrated)
             .with_artifact("linked_file", artifact),
         line: Some(added),
     }
@@ -426,6 +505,12 @@ pub fn check_document_links(doc_path: &Path, verify_content: bool) -> DocOutcome
 /// An existing `out` is never replaced. Linked files are not carried; a warning says how many were
 /// left out.
 pub fn pack_document(doc_path: &Path, out: &Path) -> DocOutcome {
+    pack_document_with(doc_path, out, false)
+}
+
+/// [`pack_document`], and with `redact_host` set the pack's copy of every run record has no host
+/// label. The study file keeps its labels.
+pub fn pack_document_with(doc_path: &Path, out: &Path, redact_host: bool) -> DocOutcome {
     const OP: &str = "pack";
     let document = match open(doc_path) {
         Ok(opened) => opened.document,
@@ -448,7 +533,8 @@ pub fn pack_document(doc_path: &Path, out: &Path) -> DocOutcome {
         );
         return refused(OP, problem(found));
     }
-    let packed = match pack(doc_path, out) {
+    let options = PackOptions { redact_host };
+    let packed = match pack_with(doc_path, out, &options) {
         Ok(packed) => packed,
         Err(e) => return refused(OP, problem(pack_failure(&e, Side::Pack, doc_path, out))),
     };

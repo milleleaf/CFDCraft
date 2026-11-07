@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
-use cfdcraft_doc::{BlobKind, BlobRef, Document, save, store_dir, write_members};
+use cfdcraft_doc::{BlobKind, BlobRef, Document, Link, save, store_dir, write_members};
 use cfdcraft_model::Study;
 use cfdcraft_ops::{ExitClass, Report, Workspace};
 use cfdcraft_store::{ContentHash, Store};
@@ -105,6 +105,40 @@ fn hand_pack(path: &Path, document: &Document, entries: &[(String, Vec<u8>)]) {
         zip.write_all(bytes).unwrap();
     }
     fs::write(path, zip.finish().unwrap().into_inner()).unwrap();
+}
+
+#[test]
+fn a_link_that_leaves_the_workspace_is_neither_followed_nor_shown() {
+    let (ws, dir) = open("link-escape");
+    let outside = dir.parent().unwrap();
+    fs::write(outside.join("outside.txt"), b"outside").unwrap();
+    let mut document = Document::new(Study::from_json(CAVITY).unwrap());
+    for (path, name) in [
+        ("../../outside.txt", "outside.txt"),
+        ("../studies/none.json", "none.json"),
+    ] {
+        document.artifacts.links.push(Link {
+            id: name.replace('.', "-"),
+            path: path.to_owned(),
+            name: name.to_owned(),
+            hash: ContentHash::of(b"x"),
+        });
+    }
+    save(&document, &dir.join("documents").join("a.cfdcraft")).unwrap();
+
+    let report = ws.open_document("a");
+    passed(&report);
+    let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        ["CFD-DOC-005", "CFD-DOC-003"],
+        "{}",
+        report.render_text()
+    );
+    let outside = outside.display().to_string();
+    for text in texts(&report) {
+        assert!(!text.contains(&outside), "{text}");
+    }
 }
 
 fn names_in(dir: &Path) -> Vec<String> {

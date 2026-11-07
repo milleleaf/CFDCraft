@@ -36,6 +36,10 @@ pub enum StudyError {
 }
 
 impl Study {
+    /// The number a study of this shape carries in its own `schema_version`; it is separate from
+    /// the number of the file the study is saved in.
+    pub const SCHEMA_VERSION: u32 = 1;
+
     /// Read a study of any supported version, dropping the migration note.
     pub fn from_json(json: &str) -> Result<Self, StudyError> {
         Ok(Self::from_json_with_note(json)?.0)

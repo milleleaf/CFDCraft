@@ -5,6 +5,8 @@
 #[path = "../../cfdcraft-ops/tests/support/mod.rs"]
 mod support;
 
+use cfdcraft_capture::fixture::{FixtureSpec, write_results};
+use cfdcraft_ops::{CaseRun, CaseRunner, Report, save_document, solve_document};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -222,14 +224,21 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
     assert_eq!(
         s.tool_names(),
         [
+            "compare_runs",
             "compile",
             "create_study",
+            "document_status",
             "export",
+            "get_provenance",
             "get_result",
+            "get_run_result",
+            "list_runs",
             "open_document",
             "pack_document",
+            "plan_update",
             "run_status",
             "save_document",
+            "start_document_job",
             "start_run",
             "unpack_document",
             "validate_study"
@@ -910,17 +919,19 @@ fn surface_problems(tools: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_advertised_surface_is_closed() {
+fn the_surface_is_still_closed_with_eighteen_tools() {
     let root = fresh("closed");
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 11);
+    assert_eq!(tools.as_array().unwrap().len(), 18);
     for name in [
         "save_document",
         "open_document",
         "pack_document",
         "unpack_document",
+        "document_status",
+        "list_runs",
     ] {
         let tool = tools
             .as_array()
@@ -935,6 +946,41 @@ fn the_advertised_surface_is_closed() {
             .map(String::as_str)
             .collect();
         assert_eq!(inputs, ["name"], "{name} takes a name and nothing else");
+    }
+    for (name, expected) in [
+        ("get_run_result", &["name", "run"][..]),
+        ("get_provenance", &["name", "run"][..]),
+        (
+            "compare_runs",
+            &["a", "abs_tolerance", "b", "name", "rel_tolerance"][..],
+        ),
+        ("plan_update", &["items", "names", "order"][..]),
+        ("start_document_job", &["job", "name", "run"][..]),
+    ] {
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is advertised"));
+        let mut inputs: Vec<&str> = tool["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        inputs.sort_unstable();
+        assert_eq!(
+            inputs, expected,
+            "{name} takes names, runs, tolerances or items only"
+        );
+    }
+    for tool in tools.as_array().unwrap() {
+        assert_eq!(
+            tool["inputSchema"]["additionalProperties"], false,
+            "{}: unknown arguments must be refused",
+            tool["name"]
+        );
     }
     assert_eq!(surface_problems(tools), Vec::<String>::new());
     let create = tools
@@ -988,7 +1034,7 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
     let mut s = Server::start(&root, "ok");
     store_cavity(&mut s);
     let before = files_under(&root.join("ws"));
-    let valid: [(&str, Value); 11] = [
+    let valid: [(&str, Value); 12] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -1001,6 +1047,10 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
         ("pack_document", json!({"name": "cavity"})),
         ("unpack_document", json!({"name": "cavity"})),
         ("start_run", json!({"name": "cavity", "mode": "run"})),
+        (
+            "start_document_job",
+            json!({"name": "cavity", "job": "solve"}),
+        ),
         ("run_status", json!({"run_id": "cfdcraft-nothing-1"})),
         ("get_result", json!({"run_id": "cfdcraft-nothing-1"})),
     ];
@@ -1048,7 +1098,8 @@ fn configured_private_values(root: &Path) -> Vec<String> {
 }
 
 fn assert_nothing_private(root: &Path, s: &Server) {
-    assert!(s.raw.len() > 5, "the session produced output");
+    // the handshake alone is one line; a session that answered a call has at least two
+    assert!(s.raw.len() >= 2, "the session produced output");
     let out = s.raw.join("\n");
     for private in configured_private_values(root) {
         assert!(!private.is_empty());
@@ -1090,5 +1141,589 @@ fn a_full_session_with_an_ssh_failure_prints_nothing_private() {
     assert_eq!(r["status"], "refused", "{r}");
     assert_eq!(r["report"]["exit_class"], 4, "{r}");
     assert!(!ssh_log(&root).is_empty(), "the failing ssh was reached");
+    assert_nothing_private(&root, &s);
+}
+
+// ---- reading what a document records ----
+
+/// A runner that writes a folder like the one a good run leaves instead of running a case. The
+/// samples of each call are moved by the next shift in the list, the last one repeating.
+struct FixtureRunner {
+    dir: PathBuf,
+    calls: usize,
+    shifts: Vec<f64>,
+}
+
+impl CaseRunner for FixtureRunner {
+    fn run_case(&mut self, _study_json: &str) -> Result<CaseRun, Box<Report>> {
+        let shift = self.shifts[self.calls.min(self.shifts.len() - 1)];
+        self.calls += 1;
+        let dir = self.dir.join(format!("call-{}", self.calls));
+        let spec = FixtureSpec {
+            end_time: 5000,
+            cells: 16384,
+            samples: 64,
+            shift,
+        };
+        write_results(&dir, &spec).unwrap();
+        let checks = json!([{"name": "evidence", "passed": true, "detail": "passed"}]);
+        Ok(CaseRun {
+            results_dir: dir,
+            checks: serde_json::from_value(checks).unwrap(),
+            host: Some("box".to_owned()),
+        })
+    }
+}
+
+/// The cavity with another speed for the lid.
+fn lid_study(speed: f64) -> String {
+    let mut study = value(CAVITY);
+    study["boundary_conditions"]["lid"]["velocity"]["value"] = json!(speed);
+    study.to_string()
+}
+
+/// The cavity with another number of cells in x.
+fn finer_study() -> String {
+    let mut study = value(CAVITY);
+    study["mesh"]["cells_x"] = json!(256);
+    study.to_string()
+}
+
+fn document_file(root: &Path, name: &str) -> PathBuf {
+    root.join("ws/documents").join(format!("{name}.cfdcraft"))
+}
+
+/// Save the document `name` in the workspace folder the server will use, replacing what was there.
+fn put_document(root: &Path, name: &str, study: &str, replace: bool) -> PathBuf {
+    let path = document_file(root, name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = save_document(study, &path, replace);
+    assert_eq!(saved.report.exit_class, 0, "{}", saved.report.render_text());
+    path
+}
+
+/// The document `name`, solved once for each pair of lid speed and sample shift in turn, before the
+/// server starts. Each solve after the first follows a change of the lid speed.
+fn solve_named(root: &Path, name: &str, solves: &[(f64, f64)]) -> PathBuf {
+    let mut runner = FixtureRunner {
+        dir: root.join("fixture").join(name),
+        calls: 0,
+        shifts: solves.iter().map(|(_, shift)| *shift).collect(),
+    };
+    let mut path = PathBuf::new();
+    for (at, (speed, _)) in solves.iter().enumerate() {
+        path = put_document(root, name, &lid_study(*speed), at > 0);
+        let solved = solve_document(&path, &mut runner);
+        assert_eq!(
+            solved.report.exit_class,
+            0,
+            "{}",
+            solved.report.render_text()
+        );
+    }
+    path
+}
+
+fn solve_cavity(root: &Path, solves: &[(f64, f64)]) -> PathBuf {
+    solve_named(root, "cavity", solves)
+}
+
+/// Two documents solved once and then given a finer mesh, so both stages of both are out of date.
+fn stale_pair(root: &Path) {
+    for name in ["a", "b"] {
+        solve_named(root, name, &[(0.1, 0.0)]);
+        put_document(root, name, &finer_study(), true);
+    }
+}
+
+fn refused(r: &Value) -> bool {
+    r.get("error").is_some() || r["result"]["isError"] == true
+}
+
+#[test]
+fn document_status_over_the_protocol_names_the_stale_result() {
+    let root = fresh("st");
+    let path = solve_cavity(&root, &[(0.1, 0.0)]);
+    let saved = save_document(&lid_study(0.2), &path, true);
+    assert_eq!(saved.report.exit_class, 0);
+    let mut s = Server::start(&root, "ok");
+
+    let r = s.tool("document_status", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["operation"], "document_status");
+    assert_eq!(r["repro"]["kind"], "status", "{r}");
+    assert_eq!(r["repro"]["mesh"]["state"], "fresh", "{r}");
+    assert_eq!(r["repro"]["result"]["state"], "stale", "{r}");
+    let stale: Vec<&Value> = r["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["code"] == "CFD-REPRO-001")
+        .collect();
+    assert_eq!(stale.len(), 1, "{r}");
+    assert_eq!(
+        stale[0]["message"],
+        "result stale because lid velocity 0.1 → 0.2 m/s"
+    );
+    assert!(
+        !r.to_string().contains(&root.to_string_lossy().into_owned()),
+        "{r}"
+    );
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn an_unknown_document_is_a_report_not_a_protocol_error() {
+    let root = fresh("unk");
+    let mut s = Server::start(&root, "ok");
+    for tool in ["document_status", "list_runs"] {
+        let r = s.tool(tool, json!({"name": "nothing"}));
+        assert_eq!(r["exit_class"], 2, "{tool}: {r}");
+        assert_eq!(codes_of(&r), ["CFD-DOC-001"], "{tool}: {r}");
+        let r = s.tool(tool, json!({"name": "../x"}));
+        assert_eq!(r["exit_class"], 2, "{tool}: {r}");
+        assert_eq!(codes_of(&r), ["CFD-WS-001"], "{tool}: {r}");
+    }
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn list_runs_returns_the_recorded_runs() {
+    let root = fresh("lr");
+    solve_cavity(&root, &[(0.1, 0.0)]);
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool("list_runs", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["kind"], "runs", "{r}");
+    let runs = r["repro"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{r}");
+    assert_eq!(runs[0]["id"], "run-1");
+    assert_eq!(runs[0]["recorded"], json!(["mesh", "result"]));
+    assert_eq!(runs[0]["checks"][0]["name"], "evidence");
+}
+
+#[test]
+fn get_run_result_returns_the_checks_and_key_numbers() {
+    let root = fresh("rr");
+    solve_cavity(&root, &[(0.1, 0.0)]);
+    let mut s = Server::start(&root, "ok");
+
+    let r = s.tool("get_run_result", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["kind"], "result", "{r}");
+    assert_eq!(r["repro"]["run"], "run-1");
+    assert_eq!(r["repro"]["checks"][0]["name"], "evidence");
+    assert!(r["repro"]["key_numbers"].is_object(), "{r}");
+    assert!(
+        r["repro"]["key_numbers"]["solver.iterations"].is_number(),
+        "{r}"
+    );
+    let named = s.tool("get_run_result", json!({"name": "cavity", "run": "run-1"}));
+    assert_eq!(named["repro"], r["repro"]);
+
+    let missing = s.tool("get_run_result", json!({"name": "cavity", "run": "run-9"}));
+    assert_eq!(missing["exit_class"], 2, "{missing}");
+    assert_eq!(codes_of(&missing), ["CFD-REPRO-004"], "{missing}");
+}
+
+#[test]
+fn get_provenance_returns_the_provenance() {
+    let root = fresh("pv");
+    solve_cavity(&root, &[(0.1, 0.0)]);
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool("get_provenance", json!({"name": "cavity"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["kind"], "provenance", "{r}");
+    let provenance = &r["repro"]["provenance"];
+    assert!(
+        provenance["tool"]["image_digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:")),
+        "{r}"
+    );
+    assert_eq!(provenance["host"], "box", "{r}");
+    for key in ["mesh_key", "result_key"] {
+        assert!(
+            is_hex64(provenance[key].as_str().unwrap_or("")),
+            "{key}: {r}"
+        );
+    }
+    let named = s.tool("get_provenance", json!({"name": "cavity", "run": "run-1"}));
+    assert_eq!(named["repro"], r["repro"]);
+}
+
+#[test]
+fn compare_runs_returns_a_comparison_and_class_1_for_a_difference() {
+    let root = fresh("cr");
+    solve_cavity(&root, &[(0.1, 0.0), (0.2, 0.1)]);
+    let mut s = Server::start(&root, "ok");
+
+    let r = s.tool(
+        "compare_runs",
+        json!({"name": "cavity", "a": "run-1", "b": "run-2"}),
+    );
+    assert_eq!(r["exit_class"], 1, "{r}");
+    assert_eq!(r["repro"]["kind"], "comparison", "{r}");
+    assert_eq!(r["repro"]["comparison"]["verdict"], "differs", "{r}");
+
+    let loose = s.tool(
+        "compare_runs",
+        json!({
+            "name": "cavity", "a": "run-1", "b": "run-2",
+            "abs_tolerance": 1, "rel_tolerance": 1
+        }),
+    );
+    assert_eq!(loose["exit_class"], 0, "{loose}");
+    assert_eq!(loose["repro"]["comparison"]["verdict"], "within_tolerance");
+
+    let negative = s.tool(
+        "compare_runs",
+        json!({"name": "cavity", "a": "run-1", "b": "run-2", "abs_tolerance": -1}),
+    );
+    assert_eq!(negative["exit_class"], 2, "{negative}");
+    assert!(negative["repro"].is_null(), "{negative}");
+}
+
+#[test]
+fn plan_update_returns_the_plan_and_refuses_what_an_update_would() {
+    let root = fresh("pu");
+    stale_pair(&root);
+    let mut s = Server::start(&root, "ok");
+    let before = files_under(&root.join("ws"));
+
+    let r = s.tool("plan_update", json!({"names": ["a", "b"]}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["kind"], "plan", "{r}");
+    let all = json!(["a:mesh", "a:result", "b:mesh", "b:result"]);
+    assert_eq!(r["repro"]["pending"], all, "{r}");
+    assert_eq!(r["repro"]["order"], all, "{r}");
+
+    let reordered = s.tool(
+        "plan_update",
+        json!({
+            "names": ["a", "b"],
+            "order": ["b:mesh", "b:result", "a:mesh", "a:result"]
+        }),
+    );
+    assert_eq!(reordered["exit_class"], 0, "{reordered}");
+    assert_eq!(
+        reordered["repro"]["order"],
+        json!(["b:mesh", "b:result", "a:mesh", "a:result"])
+    );
+
+    let refused_item = s.tool(
+        "plan_update",
+        json!({"names": ["a"], "items": ["a:result"]}),
+    );
+    assert_eq!(refused_item["exit_class"], 2, "{refused_item}");
+    assert_eq!(codes_of(&refused_item), ["CFD-REPRO-008"], "{refused_item}");
+
+    let many: Vec<String> = (0..17).map(|n| format!("d{n}")).collect();
+    for names in [json!(many), json!(["a", "../x"])] {
+        let bad = s.tool("plan_update", json!({"names": names}));
+        assert_eq!(bad["exit_class"], 2, "{bad}");
+        assert_eq!(codes_of(&bad), ["CFD-WS-001"], "{bad}");
+    }
+    assert_eq!(files_under(&root.join("ws")), before, "nothing was written");
+}
+
+#[test]
+fn these_tools_never_write_and_never_start_a_run() {
+    let root = fresh("nw");
+    solve_cavity(&root, &[(0.1, 0.0), (0.2, 0.1)]);
+    put_document(&root, "cavity", &lid_study(0.3), true);
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+    let log = events(&root);
+    let ssh = ssh_log(&root);
+
+    let calls: [(&str, Value); 8] = [
+        ("document_status", json!({"name": "cavity"})),
+        ("list_runs", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity"})),
+        ("get_provenance", json!({"name": "cavity", "run": "run-2"})),
+        (
+            "compare_runs",
+            json!({"name": "cavity", "a": "run-1", "b": "run-2"}),
+        ),
+        ("plan_update", json!({"names": ["cavity"]})),
+        ("document_status", json!({"name": "absent"})),
+        ("get_run_result", json!({"name": "cavity", "run": "run-9"})),
+    ];
+    for (tool, arguments) in calls {
+        s.tool(tool, arguments);
+    }
+    assert_eq!(files_under(&root.join("ws")), files);
+    assert_eq!(events(&root), log, "the fake host saw nothing");
+    assert_eq!(ssh_log(&root), ssh, "nothing reached the host");
+    assert_eq!(run_count(&root), 0);
+}
+
+// ---- the new tools stay inside the closed surface ----
+
+#[test]
+fn an_argument_that_names_a_path_is_refused_by_every_new_tool() {
+    let root = fresh("np");
+    solve_cavity(&root, &[(0.1, 0.0), (0.2, 0.1)]);
+    let mut s = Server::start(&root, "ok");
+    let files = files_under(&root.join("ws"));
+    let valid: [(&str, Value); 6] = [
+        ("document_status", json!({"name": "cavity"})),
+        ("list_runs", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity"})),
+        ("get_provenance", json!({"name": "cavity"})),
+        (
+            "compare_runs",
+            json!({"name": "cavity", "a": "run-1", "b": "run-2"}),
+        ),
+        ("plan_update", json!({"names": ["cavity"]})),
+    ];
+    for (tool, arguments) in valid {
+        for extra in ["path", "dictionary", "key", "host", "command"] {
+            let mut a = arguments.clone();
+            a[extra] = json!("x");
+            let r = s.raw_tool(tool, a);
+            assert!(refused(&r), "{tool} accepted `{extra}`: {r}");
+            assert!(r.to_string().contains(extra), "{tool}: {r}");
+        }
+    }
+    assert_eq!(files_under(&root.join("ws")), files);
+}
+
+#[test]
+fn a_full_session_with_the_new_tools_prints_nothing_private() {
+    let root = fresh("nps");
+    solve_cavity(&root, &[(0.1, 0.0), (0.2, 0.1)]);
+    put_document(&root, "cavity", &lid_study(0.3), true);
+    stale_pair(&root);
+    let mut s = Server::start(&root, "ok");
+    for (tool, arguments) in [
+        ("document_status", json!({"name": "cavity"})),
+        ("document_status", json!({"name": "absent"})),
+        ("document_status", json!({"name": "../x"})),
+        ("list_runs", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity"})),
+        ("get_run_result", json!({"name": "cavity", "run": "run-9"})),
+        ("get_provenance", json!({"name": "cavity", "run": "run-2"})),
+        (
+            "compare_runs",
+            json!({"name": "cavity", "a": "run-1", "b": "run-2"}),
+        ),
+        (
+            "compare_runs",
+            json!({"name": "cavity", "a": "run-1", "b": "run-2", "rel_tolerance": -1}),
+        ),
+        ("plan_update", json!({"names": ["a", "b", "cavity"]})),
+        (
+            "plan_update",
+            json!({"names": ["a"], "items": ["a:result"]}),
+        ),
+        (
+            "plan_update",
+            json!({"names": ["a"], "items": ["../x:mesh"]}),
+        ),
+    ] {
+        s.tool(tool, arguments);
+    }
+    let r = s.raw_tool("list_runs", json!({"name": "cavity", "path": "/x"}));
+    assert!(refused(&r), "{r}");
+    assert_nothing_private(&root, &s);
+}
+
+// ---- jobs on a document, started by name ----
+
+/// The fake box's results download for these tests: a good run of the cavity, as the tar the fake
+/// ssh sends. Returns the tar's path.
+fn results_tar(root: &Path) -> String {
+    let src = root.join("results-src");
+    let spec = FixtureSpec {
+        end_time: 5000,
+        cells: 16384,
+        samples: 64,
+        shift: 0.0,
+    };
+    write_results(&src, &spec).unwrap();
+    let tar = root.join("results.tar");
+    let made = Command::new("tar")
+        .arg("-C")
+        .arg(&src)
+        .arg("-cf")
+        .arg(&tar)
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(made.success());
+    tar.to_string_lossy().into_owned()
+}
+
+/// A server on a fake box that serves a good run, with the cavity saved as a document.
+fn job_server(tag: &str) -> (PathBuf, Server) {
+    let root = fresh(tag);
+    let tar = results_tar(&root);
+    put_document(&root, "cavity", CAVITY, false);
+    let s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
+    (root, s)
+}
+
+/// The cavity with another mesh of the same number of cells, so the served results still pass.
+fn remeshed_study() -> String {
+    let mut study = value(CAVITY);
+    study["mesh"]["cells_x"] = json!(64);
+    study["mesh"]["cells_y"] = json!(256);
+    study.to_string()
+}
+
+/// Start a job that must be accepted, wait for it, and return the report it finished with.
+fn run_job(s: &mut Server, arguments: Value) -> Value {
+    let r = s.tool("start_document_job", arguments);
+    assert_eq!(r["status"], "started", "{r}");
+    let id = r["run_id"].as_str().unwrap().to_owned();
+    wait_until("the job to finish", || {
+        s.tool("run_status", json!({"run_id": id}))["status"] == "finished"
+    });
+    let g = s.tool("get_result", json!({"run_id": id}));
+    assert_eq!(g["status"], "finished", "{g}");
+    g["report"].clone()
+}
+
+#[test]
+fn start_document_job_solves_over_the_protocol() {
+    let (root, mut s) = job_server("jsolve");
+    let report = run_job(&mut s, json!({"name": "cavity", "job": "solve"}));
+    assert_eq!(report["exit_class"], 0, "{report}");
+    assert_eq!(report["operation"], "solve", "{report}");
+    assert_eq!(report["repro"]["kind"], "run", "{report}");
+    assert_eq!(report["repro"]["run"], "run-1", "{report}");
+
+    let listed = s.tool("list_runs", json!({"name": "cavity"}));
+    let runs = listed["repro"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{listed}");
+    assert_eq!(runs[0]["id"], "run-1");
+    assert_eq!(run_count(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn a_second_start_says_nothing_to_run() {
+    let (root, mut s) = job_server("jagain");
+    run_job(&mut s, json!({"name": "cavity", "job": "solve"}));
+
+    let r = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve"}),
+    );
+    assert_eq!(r["status"], "nothing_to_run", "{r}");
+    assert!(r.get("run_id").is_none(), "nothing started: {r}");
+    assert_eq!(r["report"]["exit_class"], 0, "{r}");
+    assert_eq!(r["report"]["repro"]["recorded"], json!([]), "{r}");
+    assert_eq!(r["report"]["repro"]["reused"], json!(["mesh", "result"]));
+    assert_eq!(run_count(&root), 1, "{:?}", events(&root));
+}
+
+#[test]
+fn a_rerun_and_an_update_item_over_the_protocol() {
+    let (root, mut s) = job_server("jrerun");
+    run_job(&mut s, json!({"name": "cavity", "job": "solve"}));
+
+    let report = run_job(
+        &mut s,
+        json!({"name": "cavity", "job": "rerun", "run": "run-1"}),
+    );
+    assert_eq!(report["exit_class"], 0, "{report}");
+    assert_eq!(report["operation"], "rerun", "{report}");
+    assert_eq!(report["repro"]["kind"], "comparison", "{report}");
+    assert_eq!(
+        report["repro"]["comparison"]["verdict"], "reproduced",
+        "{report}"
+    );
+
+    put_document(&root, "cavity", &remeshed_study(), true);
+    let r = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "update_result"}),
+    );
+    assert_eq!(r["status"], "refused", "{r}");
+    assert_eq!(r["report"]["exit_class"], 2, "{r}");
+    assert!(codes_of(&r["report"]).contains(&"CFD-REPRO-008"), "{r}");
+    assert_eq!(run_count(&root), 2, "{:?}", events(&root));
+
+    let report = run_job(&mut s, json!({"name": "cavity", "job": "update_mesh"}));
+    assert_eq!(report["exit_class"], 0, "{report}");
+    assert_eq!(report["operation"], "update", "{report}");
+    let report = run_job(&mut s, json!({"name": "cavity", "job": "update_result"}));
+    assert_eq!(report["exit_class"], 0, "{report}");
+    assert_eq!(run_count(&root), 4, "{:?}", events(&root));
+}
+
+#[test]
+fn a_wrong_combination_is_a_refused_report() {
+    let (root, mut s) = job_server("jwrong");
+    for arguments in [
+        json!({"name": "cavity", "job": "rerun"}),
+        json!({"name": "cavity", "job": "solve", "run": "run-1"}),
+        json!({"name": "cavity", "job": "update_mesh", "run": "run-1"}),
+    ] {
+        let r = s.tool("start_document_job", arguments.clone());
+        assert_eq!(r["status"], "refused", "{arguments}: {r}");
+        assert_eq!(r["report"]["exit_class"], 2, "{arguments}: {r}");
+        assert_eq!(codes_of(&r["report"]), ["CFD-CLI-001"], "{r}");
+    }
+    let r = s.raw_tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "frobnicate"}),
+    );
+    assert!(refused(&r), "an unknown job word is refused: {r}");
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+}
+
+#[test]
+fn a_busy_host_is_busy_over_the_protocol() {
+    let (root, mut s) = job_server("jbusy");
+    hold_lock(&root, now_epoch(), 3600);
+    let r = s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve"}),
+    );
+    assert_eq!(r["status"], "busy", "{r}");
+    assert_eq!(r["holder"]["run_id"], "other-run-1", "{r}");
+    assert!(r["retry_after_seconds"].as_u64().is_some(), "{r}");
+    assert!(r.get("run_id").is_none(), "nothing was queued: {r}");
+    assert!(
+        lock_dir(&root).is_dir(),
+        "somebody else's lock is never removed"
+    );
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+}
+
+#[test]
+fn a_full_session_with_document_jobs_prints_nothing_private() {
+    let (root, mut s) = job_server("jpriv");
+    run_job(&mut s, json!({"name": "cavity", "job": "solve"}));
+    s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve"}),
+    );
+    s.tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "rerun"}),
+    );
+    s.tool(
+        "start_document_job",
+        json!({"name": "absent", "job": "solve"}),
+    );
+    s.tool(
+        "start_document_job",
+        json!({"name": "../x", "job": "solve"}),
+    );
+    run_job(
+        &mut s,
+        json!({"name": "cavity", "job": "rerun", "run": "run-1"}),
+    );
+    let r = s.raw_tool(
+        "start_document_job",
+        json!({"name": "cavity", "job": "solve", "path": "/x"}),
+    );
+    assert!(refused(&r), "{r}");
     assert_nothing_private(&root, &s);
 }

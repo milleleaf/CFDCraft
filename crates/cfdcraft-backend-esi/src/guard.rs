@@ -16,6 +16,8 @@ const ENTRY_MAX: usize = 80;
 const FILE_MAX: usize = 16 * 1024 * 1024;
 /// Deepest directory nesting `scan_dir` walks.
 const DEPTH_MAX: usize = 16;
+/// Most refusals returned for one file; a final refusal says the list was cut.
+pub const REFUSALS_MAX: usize = 1000;
 /// Library names a case may load, bare. Extending this list is a reviewed change to this constant.
 const ALLOWED_LIBS: [&str; 2] = ["sampling", "libsampling.so"];
 
@@ -38,6 +40,8 @@ pub enum Rule {
     Tree,
     /// A string, comment or verbatim block that never ends.
     Unterminated,
+    /// Variable expansion other than a plain whole-token `$name`.
+    Expansion,
 }
 
 impl Rule {
@@ -51,6 +55,7 @@ impl Rule {
             Rule::Include => "CFD-GUARD-006",
             Rule::Tree => "CFD-GUARD-007",
             Rule::Unterminated => "CFD-GUARD-008",
+            Rule::Expansion => "CFD-GUARD-009",
         }
     }
 
@@ -64,6 +69,9 @@ impl Rule {
             Rule::Include => "an include must be a literal relative path inside the case",
             Rule::Tree => "this file or path is not allowed in a case",
             Rule::Unterminated => "unterminated construct, the file cannot be checked",
+            Rule::Expansion => {
+                "only a plain $name may be used; other expansion can build forbidden words"
+            }
         }
     }
 }
@@ -228,10 +236,18 @@ fn tokenize<'a>(file: &str, src: &'a str, out: &mut Vec<Refusal>) -> Vec<Token<'
             while i < b.len() && !is_word_end(b[i]) {
                 i += 1;
             }
-            tokens.push(Token {
-                kind: Kind::Word(&src[from..i]),
-                line,
-            });
+            // `{` is a word end, so adjacency to a `$` is only visible here, in the bytes.
+            let mut to = i;
+            if to > from && b[to - 1] == b'$' && b.get(i) == Some(&b'{') {
+                refuse(out, file, line, "${", Rule::Expansion);
+                to -= 1;
+            }
+            if to > from {
+                tokens.push(Token {
+                    kind: Kind::Word(&src[from..to]),
+                    line,
+                });
+            }
         }
     }
     tokens
@@ -289,35 +305,77 @@ fn scan_content(file: &str, bytes: &[u8], out: &mut Vec<Refusal>) {
         }
     };
     let tokens = tokenize(file, src, out);
+    let (start, mut libs_done, mut cut) = (out.len(), 0, None);
     for i in 0..tokens.len() {
-        check_token(file, &tokens, i, out);
+        if out.len() - start >= REFUSALS_MAX {
+            cut = Some(tokens[i].line);
+            break;
+        }
+        check_token(file, &tokens, i, &mut libs_done, out);
+    }
+    if let Some(line) = cut {
+        out.truncate(start + REFUSALS_MAX);
+        refuse(out, file, line, "refusal list cut", Rule::Tree);
     }
 }
 
 /// Per-token rules. Further rules plug in here.
-fn check_token(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>) {
+/// `libs_done` is the first token not yet covered by a `libs` scan, so no span is scanned twice.
+fn check_token(
+    file: &str,
+    tokens: &[Token],
+    i: usize,
+    libs_done: &mut usize,
+    out: &mut Vec<Refusal>,
+) {
     let t = tokens[i];
     match t.kind {
         Kind::Verbatim => refuse(out, file, t.line, "#{", Rule::Directive),
         Kind::Word("#include") => check_include(file, tokens, i, out),
-        Kind::Word(w) if w.starts_with('#') => refuse(out, file, t.line, w, Rule::Directive),
+        // OpenFOAM starts a directive at a `#` that follows a number or a one-character
+        // punctuation token without a space (`1#calc`, `-#calc`), so any other `#` in a word is
+        // refused, not just a leading one.
+        Kind::Word(w) if w.contains('#') => refuse(out, file, t.line, w, Rule::Directive),
         Kind::Word(w) => {
+            if !dollar_ok(w) {
+                refuse(out, file, t.line, w, Rule::Expansion);
+            }
             if let Some(rule) = keyword_rule(w) {
                 refuse(out, file, t.line, w, rule);
             }
             if matches!(
                 w.to_ascii_lowercase().as_str(),
                 "libs" | "functionobjectlibs"
-            ) {
-                check_libs(file, tokens, i, out);
+            ) && i >= *libs_done
+            {
+                *libs_done = check_libs(file, tokens, i, out);
             }
         }
         Kind::Str(s) => {
+            if !dollar_ok(s) {
+                refuse(out, file, t.line, s, Rule::Expansion);
+            }
             if let Some(rule) = keyword_rule(&as_word(s)) {
                 refuse(out, file, t.line, s, rule);
             }
         }
         Kind::Punct(_) => {}
+    }
+}
+
+/// A `$` is allowed only as the first character of a whole-token plain name (`$internalField`,
+/// `$:scope.name`). Anything else (`co$x`, `$a$b`, a lone `$`, `"a $x"`) can expand to a word the
+/// other rules would have refused, so it is refused here.
+fn dollar_ok(s: &str) -> bool {
+    match s.strip_prefix('$') {
+        _ if !s.contains('$') => true,
+        Some(name) => {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+        }
+        None => false,
     }
 }
 
@@ -345,12 +403,14 @@ fn check_include(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>)
     }
 }
 
-/// The value of `libs` runs up to the next `;`. Every item must be on the allowlist.
-fn check_libs(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>) {
-    let mut depth = 0usize;
-    for t in &tokens[i + 1..] {
+/// The value of `libs` runs up to the next `;`. Every item must be on the allowlist. Returns the
+/// index of the token the scan stopped at. A value that reaches the end of the file still open
+/// (no `;` at depth 0) is refused once, at the keyword, whatever its items were.
+fn check_libs(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>) -> usize {
+    let (mut depth, start) = (0usize, out.len());
+    for (k, t) in tokens.iter().enumerate().skip(i + 1) {
         match t.kind {
-            Kind::Punct(b';') if depth == 0 => return,
+            Kind::Punct(b';') if depth == 0 => return k,
             Kind::Punct(b'(' | b'[') => depth += 1,
             Kind::Punct(b')' | b']') => depth = depth.saturating_sub(1),
             Kind::Punct(b'{' | b'}') => {
@@ -359,15 +419,23 @@ fn check_libs(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>) {
                 } else {
                     "}"
                 };
-                return refuse(out, file, t.line, text, Rule::Library);
+                refuse(out, file, t.line, text, Rule::Library);
+                return k;
             }
             Kind::Word(w) | Kind::Str(w) if !ALLOWED_LIBS.contains(&w) => {
                 refuse(out, file, t.line, w, Rule::Library)
             }
-            Kind::Verbatim => return,
+            Kind::Verbatim => return k,
             _ => {}
         }
     }
+    out.truncate(start);
+    let keyword = match tokens[i].kind {
+        Kind::Word(w) => w,
+        _ => "libs",
+    };
+    refuse(out, file, tokens[i].line, keyword, Rule::Library);
+    tokens.len()
 }
 
 /// Path rules: no parent, absolute, drive or backslash paths, no compressed or shared-object

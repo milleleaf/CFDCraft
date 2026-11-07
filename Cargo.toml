@@ -1,15 +1,13 @@
 [workspace]
 resolver = "3"
-members = [
-    "xtask",
-    "crates/cfdcraft-model",
-    "crates/cfdcraft-backend-esi",
-    "crates/cfdcraft-executor",
-    "crates/cfdcraft-ops",
-    "crates/cfdcraft-mcp",
-    "crates/cfdcraft-bench-ghia",
-    "crates/cfdcraft-cli",
-]
+members = ["xtask", "crates/*"]
+
+[workspace.dependencies]
+craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae", version = "=0.1.0" }
+craft-docpath = { git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae", version = "=0.1.0" }
+craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "6e7f28518dd1cb57e1624bdc269c3c14316b13ae", version = "=0.1.0" }
+jsonschema = { version = "=0.60.2", default-features = false }
+zip = { version = "=9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [workspace.package]
 edition = "2024"

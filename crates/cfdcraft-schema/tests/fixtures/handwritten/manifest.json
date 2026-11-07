@@ -1,0 +1,5 @@
+{
+  "writer": { "version": "0.0.1", "name": "example-authoring-tool" },
+  "schema_version": 1,
+  "format": "cfdcraft-study"
+}

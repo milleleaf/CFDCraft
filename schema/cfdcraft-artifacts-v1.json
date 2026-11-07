@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "BlobKind": {
+      "description": "What kind of result a stored blob is.",
+      "oneOf": [
+        {
+          "const": "surface",
+          "description": "Prepared geometry.",
+          "type": "string"
+        },
+        {
+          "const": "mesh",
+          "description": "A generated mesh.",
+          "type": "string"
+        },
+        {
+          "const": "result",
+          "description": "A solver result.",
+          "type": "string"
+        }
+      ]
+    },
+    "BlobRef": {
+      "additionalProperties": false,
+      "description": "A result kept in the content-addressed store beside the file.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the content."
+        },
+        "kind": {
+          "$ref": "#/$defs/BlobKind",
+          "description": "What the content is."
+        },
+        "size": {
+          "description": "Size of the content in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hash",
+        "size",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ContentHash": {
+      "description": "BLAKE3 hash of a stored result, as 64 lower-case hexadecimal characters.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A file the study refers to but does not contain: where it was, and what it held.",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/ContentHash",
+          "description": "BLAKE3 hash of the file content as recorded when the link was made."
+        },
+        "id": {
+          "description": "Name the study uses for this link.",
+          "type": "string"
+        },
+        "name": {
+          "description": "File name as recorded when the link was made.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path of the file, relative to the folder of the study file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "name",
+        "hash"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:artifacts:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Everything the file refers to outside itself.",
+  "properties": {
+    "blobs": {
+      "default": [],
+      "description": "Stored results.",
+      "items": {
+        "$ref": "#/$defs/BlobRef"
+      },
+      "type": "array"
+    },
+    "links": {
+      "default": [],
+      "description": "Linked files.",
+      "items": {
+        "$ref": "#/$defs/Link"
+      },
+      "type": "array"
+    }
+  },
+  "title": "CFDCraft artifacts.json, schema 1",
+  "type": "object"
+}

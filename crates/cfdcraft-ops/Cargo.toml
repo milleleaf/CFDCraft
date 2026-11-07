@@ -9,6 +9,14 @@ cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
 cfdcraft-backend-esi = { path = "../cfdcraft-backend-esi", version = "=0.1.0" }
 cfdcraft-executor = { path = "../cfdcraft-executor", version = "=0.1.0" }
 cfdcraft-bench-ghia = { path = "../cfdcraft-bench-ghia", version = "=0.1.0" }
+cfdcraft-doc = { path = "../cfdcraft-doc", version = "=0.1.0" }
+cfdcraft-pack = { path = "../cfdcraft-pack", version = "=0.1.0" }
+cfdcraft-store = { path = "../cfdcraft-store", version = "=0.1.0" }
+cfdcraft-text = { path = "../cfdcraft-text", version = "=0.1.0" }
+craft-atomic = { workspace = true }
 schemars = "=1.2.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+
+[dev-dependencies]
+zip = { workspace = true }

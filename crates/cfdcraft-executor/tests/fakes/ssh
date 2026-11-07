@@ -7,6 +7,10 @@
 #   - The results download sends $CFC_TEST_RESULTS_TAR when set, else an empty archive.
 #   - $CFC_TEST_FAIL_255, when set, makes any command containing that text
 #     exit 255 like a failed ssh connection.
+#   - $CFC_TEST_SSH_NONBLOCK, when set to a number of seconds, makes the results download do what
+#     OpenSSH does with standard input, output and error that are not terminals: mark them
+#     non-blocking for the whole session and put them back at the end. They are shared with the
+#     process that started ssh, so a caller that lets ssh inherit its own pipes sees them change.
 for arg do
     if [ "$arg" = -N ]; then tunnel=1; fi
     case "$arg" in *:/var/run/docker.sock) socket=${arg%:/var/run/docker.sock};; esac
@@ -35,6 +39,21 @@ case "$last" in
     'id -u') printf '1000\n';;
     mkdir*) :;;
     'tar -xf'*) cat > /dev/null;;
-    'tar -C'*) cat "${CFC_TEST_RESULTS_TAR:-$CFC_TEST_ROOT/empty.tar}";;
+    'tar -C'*)
+        if [ -n "${CFC_TEST_SSH_NONBLOCK:-}" ]; then
+            perl -MFcntl -e '
+                my @held;
+                for my $fd (0, 1, 2) {
+                    open(my $f, "+<&=", $fd) or next;
+                    my $flags = fcntl($f, F_GETFL, 0);
+                    next if $flags & O_NONBLOCK;
+                    fcntl($f, F_SETFL, $flags | O_NONBLOCK);
+                    push @held, [$f, $flags];
+                }
+                select(undef, undef, undef, $ARGV[0]);
+                fcntl($_->[0], F_SETFL, $_->[1]) for @held;
+            ' "$CFC_TEST_SSH_NONBLOCK"
+        fi
+        cat "${CFC_TEST_RESULTS_TAR:-$CFC_TEST_ROOT/empty.tar}";;
     *) printf 'unexpected ssh command: %s\n' "$last" >&2; exit 90;;
 esac

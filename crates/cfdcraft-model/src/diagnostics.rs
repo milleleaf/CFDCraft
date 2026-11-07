@@ -113,6 +113,10 @@ pub const CODES: &[(&str, &str)] = &[
     ("CFD-GUARD-007", "a file or path the case tree rules forbid"),
     ("CFD-GUARD-008", "an unterminated construct in a case file"),
     (
+        "CFD-GUARD-009",
+        "variable expansion other than a plain name in a case file",
+    ),
+    (
         "CFD-RT-001",
         "a value read back from the case differs from the study",
     ),

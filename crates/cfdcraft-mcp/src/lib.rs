@@ -1,5 +1,6 @@
-//! An MCP server over stdio that offers seven typed operations and nothing else: create and
-//! validate a study, compile and export it, and start, poll and collect a run. There is no shell
+//! An MCP server over stdio that offers eleven typed operations and nothing else: create and
+//! validate a study, compile and export it, save, open, pack and unpack a document, and start,
+//! poll and collect a run. There is no shell
 //! and no free-form dictionary access. Every argument is a name, a mode, a flag or a study;
 //! none is a path, a host, a key or a command. Those are settings of the server itself, given
 //! once on the command line.
@@ -17,10 +18,45 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    io,
+    path::PathBuf,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+    task::{Context, Poll},
+    time::Duration,
+};
+use tokio::io::{AsyncRead, ReadBuf};
 
 /// How long shutdown waits for the server's own job to stop its container and give up the lock.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(60);
+
+/// The process exit status when the server stopped because standard input could not be read. It is
+/// apart from the operation exit classes 0 to 4 and from the status 2 that any other server error
+/// ends with.
+pub const INPUT_FAILURE_EXIT: i32 = 5;
+
+/// Standard input that remembers whether a read failed. The protocol library reports a failed read
+/// and a clean end of file the same way (the input just ends), so this is the one place to tell
+/// them apart.
+struct WatchedInput {
+    inner: tokio::io::Stdin,
+    failed: Arc<OnceLock<io::ErrorKind>>,
+}
+
+impl AsyncRead for WatchedInput {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let r = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Err(e)) = &r {
+            let _ = self.failed.set(e.kind());
+        }
+        r
+    }
+}
 
 /// A unix socket path must stay under this many bytes (the same bound the tunnel enforces).
 const SOCKET_PATH_LIMIT: usize = 100;
@@ -93,7 +129,8 @@ struct CreateStudyArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct NameArgs {
-    /// The name of a study in the workspace.
+    /// The name of a study in the workspace. For `open_document`, `pack_document` and
+    /// `unpack_document` it is the name of a document or pack held by the server.
     name: String,
 }
 
@@ -254,6 +291,54 @@ impl CfdServer {
     }
 
     #[tool(
+        name = "save_document",
+        description = "Save a stored study as a document held by the server. Returns the findings."
+    )]
+    async fn save_document(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.save_document(&a.name)).await
+    }
+
+    #[tool(
+        name = "open_document",
+        description = "Open a stored document and report its study hash, any migration note and any missing results or links. Writes nothing."
+    )]
+    async fn open_document(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.open_document(&a.name)).await
+    }
+
+    #[tool(
+        name = "pack_document",
+        description = "Pack a stored document and its stored results into one file held by the server."
+    )]
+    async fn pack_document(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.pack_document(&a.name)).await
+    }
+
+    #[tool(
+        name = "unpack_document",
+        description = "Unpack a pack that the operator placed in the server's pack folder into a document, checking every stored result. Never overwrites."
+    )]
+    async fn unpack_document(
+        &self,
+        Parameters(a): Parameters<NameArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.unpack_document(&a.name)).await
+    }
+
+    #[tool(
         name = "start_run",
         description = "Start a run of a stored study on the compute host and return at once with a run id; poll run_status and get_result. If the host is busy the answer is busy with a retry time; starts are never queued."
     )]
@@ -368,7 +453,7 @@ impl CfdServer {
 #[tool_handler(
     router = self.tool_router,
     name = "cfdcraft",
-    instructions = "Create, check, export and run CFD studies by name. Judge a run by evidence.verdict in its report."
+    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Judge a run by evidence.verdict in its report."
 )]
 impl ServerHandler for CfdServer {}
 
@@ -389,27 +474,32 @@ fn stop_signal() -> impl std::future::Future<Output = ()> {
 }
 
 #[cfg(not(unix))]
-fn stop_signal() -> impl std::future::Future<Output = ()> {
-    async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
-        }
+async fn stop_signal() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
-/// Serve the seven operations on standard input and output until the client closes the pipe or the
+/// Serve the eleven operations on standard input and output until the client closes the pipe or the
 /// process is asked to stop. Then the server's own job, if any, is cancelled through the
 /// executor's stop-and-remove path, and the lock is released only when removal is confirmed.
-pub fn serve_stdio_blocking(config: McpConfig) -> Result<(), String> {
+/// Returns the exit status: 0, or `INPUT_FAILURE_EXIT` after one line on standard error when
+/// standard input failed to read rather than ending.
+pub fn serve_stdio_blocking(config: McpConfig) -> Result<i32, String> {
     let state = Arc::new(State::open(&config)?);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("the server cannot start: {e}"))?;
+    let failed = Arc::new(OnceLock::new());
+    let input = WatchedInput {
+        inner: tokio::io::stdin(),
+        failed: failed.clone(),
+    };
     let served = rt.block_on(async {
         let stop = stop_signal();
         let service = CfdServer::new(state.clone())
-            .serve(rmcp::transport::stdio())
+            .serve((input, tokio::io::stdout()))
             .await
             .map_err(|e| format!("the protocol handshake failed: {e}"))?;
         let token = service.cancellation_token();
@@ -427,8 +517,16 @@ pub fn serve_stdio_blocking(config: McpConfig) -> Result<(), String> {
     // A blocked read of standard input must not hold the process open.
     rt.shutdown_background();
     served?;
+    if let Some(kind) = failed.get() {
+        eprintln!("error: the server stopped because standard input could not be read ({kind})");
+        return if confirmed {
+            Ok(INPUT_FAILURE_EXIT)
+        } else {
+            Err("a running job did not confirm its cleanup in time".into())
+        };
+    }
     if confirmed {
-        Ok(())
+        Ok(0)
     } else {
         Err("a running job did not confirm its cleanup in time".into())
     }

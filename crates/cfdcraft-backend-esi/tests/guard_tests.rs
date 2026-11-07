@@ -1,6 +1,6 @@
 use cfdcraft_backend_esi::{
     CaseFile, CaseTree, Dialect, compile,
-    guard::{GuardFile, Refusal, Rule, scan_dir, scan_files, scan_tree},
+    guard::{GuardFile, REFUSALS_MAX, Refusal, Rule, scan_dir, scan_files, scan_tree},
 };
 use cfdcraft_model::{Study, resolve};
 use std::path::{Path, PathBuf};
@@ -113,6 +113,28 @@ fn every_refused_construct_has_the_right_code_and_line() {
         ("#includeFunc streamlines", "#includeFunc", "CFD-GUARD-001"),
         ("v #eval{1+1};", "#eval", "CFD-GUARD-001"),
         ("# calc", "#", "CFD-GUARD-001"),
+        ("v 1#calc \"1+1\";", "1#calc", "CFD-GUARD-001"),
+        ("v -#calc \"1+1\";", "-#calc", "CFD-GUARD-001"),
+        ("v +#calc \"1+1\";", "+#calc", "CFD-GUARD-001"),
+        ("v *#calc \"1+1\";", "*#calc", "CFD-GUARD-001"),
+        ("v =#calc \"1+1\";", "=#calc", "CFD-GUARD-001"),
+        ("v :#calc \"1+1\";", ":#calc", "CFD-GUARD-001"),
+        ("v 1/#calc \"1+1\";", "1/#calc", "CFD-GUARD-001"),
+        ("v 1#includeEtc \"x\";", "1#includeEtc", "CFD-GUARD-001"),
+        ("v 1#neg 3;", "1#neg", "CFD-GUARD-001"),
+        (
+            "v 1#include \"/etc/hostname\";",
+            "1#include",
+            "CFD-GUARD-001",
+        ),
+        ("v 1#include \"../x\";", "1#include", "CFD-GUARD-001"),
+        ("a#b 1;", "a#b", "CFD-GUARD-001"),
+        ("k a#b;", "a#b", "CFD-GUARD-001"),
+        ("k (1 2)#calc;", "#calc", "CFD-GUARD-001"),
+        ("k (1 2)a#b;", "a#b", "CFD-GUARD-001"),
+        ("k (1 2 3#calc);", "3#calc", "CFD-GUARD-001"),
+        ("k (1 2#calc 3);", "2#calc", "CFD-GUARD-001"),
+        ("k #include#calc;", "#include#calc", "CFD-GUARD-001"),
         ("v #{ anything\nat all #};", "#{", "CFD-GUARD-001"),
         ("type codedFixedValue;", "codedFixedValue", "CFD-GUARD-002"),
         ("type codedMixed;", "codedMixed", "CFD-GUARD-002"),
@@ -490,4 +512,150 @@ fn the_directory_scanner_passes_both_golden_trees() {
         assert_eq!(s.scanned.len(), 8, "{dir}");
         assert_eq!(s.skipped, Vec::<String>::new(), "{dir}");
     }
+}
+
+/// Refused with the expansion rule on line 3 of a three-line file.
+fn expansion_refused(text: &str) -> Vec<Refusal> {
+    let r = one("system/x", &format!("a 1;\nb 2;\n{text}\n"));
+    assert!(
+        r.iter()
+            .any(|r| r.line == 3 && r.rule.code() == "CFD-GUARD-009"),
+        "{text}: {r:?}"
+    );
+    r
+}
+
+#[test]
+fn the_brace_form_of_expansion_is_refused_everywhere() {
+    for text in [
+        "v ${x};",
+        "${x} 1;",
+        "v ${nope:-ok};",
+        "v ${nope:+ok};",
+        "v ${nope:-co$x};",
+        "v ${${x}};",
+        "v ${x:-y} ${z};",
+        "functions { f ${x}; }",
+        "v pre${x};",
+    ] {
+        let r = expansion_refused(text);
+        assert!(r.iter().any(|r| r.entry.contains('$')), "{text}: {r:?}");
+        assert!(r.iter().all(|r| r.file == "system/x"), "{text}");
+    }
+}
+
+#[test]
+fn a_dollar_fused_with_other_characters_is_refused() {
+    for text in [
+        "v co$x;",
+        "v $a$b;",
+        "v \"$a$b\";",
+        "v \"co$x\";",
+        "v \"a $x\";",
+        "v x$;",
+        "v $;",
+        "v \"$\";",
+        "v \"\\$x\";",
+        "v \"$a;b\";",
+        "v $a-$b;",
+    ] {
+        expansion_refused(text);
+    }
+}
+
+#[test]
+fn plain_whole_token_references_and_hidden_dollars_stay_allowed() {
+    for text in [
+        "value $internalField;",
+        "v $:scope.name;",
+        "v $..U;",
+        "v ($a $b);",
+        "libs (sampling);",
+        "v \"$x\";",
+        "// v ${x} co$x",
+        "/* v ${x} $a$b */",
+        "v 1; // ${nope:-co$x}",
+    ] {
+        assert_eq!(
+            one("system/x", &format!("a 1;\n{text}\n")),
+            vec![],
+            "{text}"
+        );
+    }
+    // The refusal is located on the right line after a comment.
+    let r = one("system/x", "/* ${x}\n*/\nv ${y};\n");
+    assert_eq!(
+        r.iter().map(|r| r.line).collect::<Vec<_>>(),
+        vec![3],
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_directive_fused_after_another_character_is_still_refused_but_quiet_hashes_pass() {
+    for text in [
+        "#include \"literal/relative\"",
+        "#include defs",
+        "v \"a#b 1#calc\";",
+        "v 1; // 1#calc",
+        "/* 1#calc */ v 1;",
+    ] {
+        assert_eq!(
+            one("system/x", &format!("a 1;\n{text}\n")),
+            vec![],
+            "{text}"
+        );
+    }
+    // The operand rules of a standalone include are unchanged.
+    let r = one("system/x", "a 1;\n#include \"../x\"\n");
+    assert_eq!(codes(&r), vec![(2, "../x", "CFD-GUARD-006")]);
+}
+
+#[test]
+fn an_unterminated_libs_value_gives_one_refusal_not_a_quadratic_pile() {
+    let src = "libs ".to_string() + &"libs ".repeat(4999);
+    let r = one("system/controlDict", &src);
+    assert_eq!(codes(&r), vec![(1, "libs", "CFD-GUARD-004")]);
+    // A later terminated libs after an unterminated one is inside the scanned span.
+    let r = one("system/controlDict", "libs (foo bar\nlibs (baz);\n");
+    assert_eq!(codes(&r).len(), 1, "{r:?}");
+}
+
+#[test]
+fn a_libs_value_that_never_closes_is_refused_even_when_every_item_is_allowed() {
+    libs_rows(&[
+        ("libs (sampling", Some("libs")),
+        ("libs (sampling;", Some("libs")),
+        ("libs (sampling libsampling.so", Some("libs")),
+        ("functionObjectLibs (sampling", Some("functionObjectLibs")),
+        // Controls: closed values stay clean.
+        ("libs (sampling);", None),
+        ("libs (\"libsampling.so\");", None),
+    ]);
+    // The same at the very end of a file with no newline, and as one refusal only.
+    for text in [
+        "libs (sampling",
+        "libs (sampling;",
+        "libs (sampling libsampling.so",
+    ] {
+        let r = one("system/controlDict", text);
+        assert_eq!(codes(&r), vec![(1, "libs", "CFD-GUARD-004")], "{text}");
+    }
+}
+
+#[test]
+fn the_refusals_from_one_file_are_capped() {
+    let src = "#x ".repeat(5000);
+    let r = one("system/x", &src);
+    assert_eq!(r.len(), REFUSALS_MAX + 1);
+    assert_eq!(r[REFUSALS_MAX].entry, "refusal list cut");
+    assert!(r[..REFUSALS_MAX].iter().all(|r| r.entry == "#x"));
+    // Many files each keep their own cap.
+    let files: Vec<GuardFile> = (0..3)
+        .map(|n| GuardFile {
+            path: format!("system/f{n}"),
+            bytes: src.clone().into_bytes(),
+        })
+        .collect();
+    assert_eq!(scan_files(&files).len(), 3 * (REFUSALS_MAX + 1));
 }

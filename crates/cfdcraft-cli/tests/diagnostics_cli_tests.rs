@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CAVITY: &str = include_str!("../../cfdcraft-model/tests/fixtures/cavity_v1.json");
+#[cfg(unix)]
 const HOSTS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../cfdcraft-executor/tests/hosts.example.toml"

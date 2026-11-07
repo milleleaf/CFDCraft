@@ -210,7 +210,7 @@ fn an_authored_outlet_pressure_names_the_unknown_field() {
 
 #[test]
 fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
-    assert_eq!(CODES.len(), 48);
+    assert_eq!(CODES.len(), 49);
     let mut seen = std::collections::BTreeSet::new();
     for (code, meaning) in CODES {
         let parts: Vec<_> = code.split('-').collect();

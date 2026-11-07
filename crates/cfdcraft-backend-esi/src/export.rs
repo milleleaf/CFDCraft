@@ -6,7 +6,7 @@
 use crate::{CaseFile, CaseTree, dialect::IMAGE};
 
 /// Shown verbatim in public solver-related documentation.
-const ACKNOWLEDGEMENT: &str = "cfdcraft is not approved or endorsed by OpenCFD Limited. OPENFOAM® and OpenCFD® are registered trade marks of OpenCFD Limited.";
+const ACKNOWLEDGEMENT: &str = "CFDCraft is not approved or endorsed by OpenCFD Limited. OPENFOAM® and OpenCFD® are registered trade marks of OpenCFD Limited.";
 
 /// The three fixed steps, each writing its own log. Plain commands on purpose: the tutorial
 /// helper functions skip a step whose log already exists, and a stale log would be judged as new.
@@ -41,7 +41,7 @@ pub fn readme_text(study_hash: &str) -> String {
             "```\ndocker run --rm --user \"$(id -u):$(id -g)\" --network none -v \"$PWD\":/w {IMAGE} bash -lc 'cd /w && sh ./Allrun'\n```"
         ),
         "The `cd /w` is required: the image entrypoint resets the working directory, so without it the commands run somewhere else.".into(),
-        "cfdcraft's own runs add `--cpus 2 --memory 8g --memory-swap 8g --pids-limit 256`; similar limits are sensible on a shared machine.".into(),
+        "CFDCraft's own runs add `--cpus 2 --memory 8g --memory-swap 8g --pids-limit 256`; similar limits are sensible on a shared machine.".into(),
         "## Judge the result by the logs, not the exit status".into(),
         "A run is good only when each of the three logs (`log.blockMesh`, `log.checkMesh`, `log.simpleFoam`) ends with `End`, `log.checkMesh` contains `Mesh OK`, no log reports a fatal error or a floating-point exception, and the directory named for the end time in `system/controlDict` holds non-empty `U` and `p`. The start-up banner that says floating-point trapping is enabled is normal.".into(),
         "The exit status of `Allrun` is a convenience only.".into(),

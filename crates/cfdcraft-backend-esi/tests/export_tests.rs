@@ -94,7 +94,7 @@ fn the_readme_says_what_a_reader_needs_to_run_and_judge_the_case() {
     let (tree, hash) = cavity();
     let readme = text(&export_tree(&tree, &hash), "README.md");
     for needle in [
-        "cfdcraft is not approved or endorsed by OpenCFD Limited. OPENFOAM® and OpenCFD® are registered trade marks of OpenCFD Limited.",
+        "CFDCraft is not approved or endorsed by OpenCFD Limited. OPENFOAM® and OpenCFD® are registered trade marks of OpenCFD Limited.",
         "Judge the result by the logs, not the exit status",
         "--network none",
         "cd /w && sh ./Allrun",

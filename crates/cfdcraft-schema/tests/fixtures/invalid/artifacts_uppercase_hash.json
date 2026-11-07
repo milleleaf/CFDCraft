@@ -1,0 +1,17 @@
+{
+  "links": [
+    {
+      "hash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "name": "room.step",
+      "path": "../geometry/room.step",
+      "id": "geometry-1"
+    }
+  ],
+  "blobs": [
+    {
+      "kind": "result",
+      "size": 1024,
+      "hash": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+    }
+  ]
+}

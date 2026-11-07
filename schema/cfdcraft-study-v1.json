@@ -1,0 +1,285 @@
+{
+  "$defs": {
+    "BoundaryCondition": {
+      "additionalProperties": false,
+      "description": "One named boundary: the box faces it covers, its kind, and a speed where the kind needs one.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/Face"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/BoundaryKind"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for a velocity inlet and a moving wall; absent for every other kind."
+        }
+      },
+      "required": [
+        "faces",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "BoundaryKind": {
+      "description": "What a boundary does to the flow.",
+      "oneOf": [
+        {
+          "const": "VelocityInlet",
+          "description": "Fixed inflow velocity. `velocity` is the speed into the domain, along the inward normal.",
+          "type": "string"
+        },
+        {
+          "const": "PressureOutlet",
+          "description": "Outflow at gauge pressure zero in kinematic units. It has no value field.",
+          "type": "string"
+        },
+        {
+          "const": "NoSlipWall",
+          "description": "Wall with zero velocity at the wall.",
+          "type": "string"
+        },
+        {
+          "const": "SlipWall",
+          "description": "Wall without friction.",
+          "type": "string"
+        },
+        {
+          "const": "MovingWall",
+          "description": "Wall that moves in its own plane. `velocity` is the tangential speed along +x (bottom\nand top faces) or +y (left and right faces).",
+          "type": "string"
+        },
+        {
+          "const": "Symmetry",
+          "description": "Mirror plane.",
+          "type": "string"
+        }
+      ]
+    },
+    "Convergence": {
+      "additionalProperties": false,
+      "properties": {
+        "U": {
+          "format": "double",
+          "type": "number"
+        },
+        "p": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "p",
+        "U"
+      ],
+      "type": "object"
+    },
+    "Domain": {
+      "additionalProperties": false,
+      "properties": {
+        "length_x": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_y": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "length_z": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "open": {
+          "default": false,
+          "description": "True when the box has open (inlet or outlet) faces. A closed domain has only walls.\nClosed unless stated.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "length_x",
+        "length_y",
+        "length_z"
+      ],
+      "type": "object"
+    },
+    "Face": {
+      "description": "A face of the box domain: left (x min), right (x max), bottom (y min) or top (y max).\nThe front and back faces are always empty (two-dimensional case).",
+      "enum": [
+        "XMin",
+        "XMax",
+        "YMin",
+        "YMax"
+      ],
+      "type": "string"
+    },
+    "Fluid": {
+      "additionalProperties": false,
+      "properties": {
+        "kinematic_viscosity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "kinematic_viscosity"
+      ],
+      "type": "object"
+    },
+    "MeshSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "cells_x": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_y": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells_z": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cells_x",
+        "cells_y",
+        "cells_z"
+      ],
+      "type": "object"
+    },
+    "Monitors": {
+      "additionalProperties": false,
+      "properties": {
+        "centreline_u_sample_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "centreline_u_sample_count"
+      ],
+      "type": "object"
+    },
+    "Quantity": {
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "SolverControl": {
+      "additionalProperties": false,
+      "properties": {
+        "convergence": {
+          "$ref": "#/$defs/Convergence",
+          "default": {
+            "U": 1e-6,
+            "p": 1e-6
+          }
+        },
+        "end_time": {
+          "$ref": "#/$defs/Quantity",
+          "description": "Steady SIMPLE iteration count, represented as solver pseudo-time in seconds."
+        },
+        "solver": {
+          "$ref": "#/$defs/SolverKind"
+        },
+        "write_interval": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "solver",
+        "end_time",
+        "write_interval"
+      ],
+      "type": "object"
+    },
+    "SolverKind": {
+      "enum": [
+        "SimpleLaminar"
+      ],
+      "type": "string"
+    },
+    "Unit": {
+      "enum": [
+        "m",
+        "mm",
+        "m/s",
+        "m2/s",
+        "Pa",
+        "K",
+        "s",
+        "1",
+        "rpm"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "urn:cfdcraft:schema:study:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A unit-carrying study, schema version 1.",
+  "properties": {
+    "boundary_conditions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/BoundaryCondition"
+      },
+      "description": "Boundaries keyed by the user's own label. The label appears in diagnostics only and\nnever in the written case. Labels match `[A-Za-z][A-Za-z0-9_-]{0,31}`.",
+      "type": "object"
+    },
+    "domain": {
+      "$ref": "#/$defs/Domain"
+    },
+    "fluid": {
+      "$ref": "#/$defs/Fluid"
+    },
+    "mesh": {
+      "$ref": "#/$defs/MeshSpec"
+    },
+    "monitors": {
+      "$ref": "#/$defs/Monitors"
+    },
+    "schema_version": {
+      "const": 1,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "solver": {
+      "$ref": "#/$defs/SolverControl"
+    }
+  },
+  "required": [
+    "schema_version",
+    "domain",
+    "fluid",
+    "boundary_conditions",
+    "mesh",
+    "solver",
+    "monitors"
+  ],
+  "title": "CFDCraft study.json, schema 1",
+  "type": "object"
+}

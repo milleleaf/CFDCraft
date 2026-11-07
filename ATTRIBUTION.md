@@ -1,6 +1,6 @@
 # Attribution
 
-Every bundled third-party item in this repository, with its author, source and licence. CFDCraft's own code is MIT OR Apache-2.0 (see [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE)). Rust dependencies come from crates.io and keep their own licences; the allowed licences are listed in `deny.toml` and checked in CI.
+Every bundled third-party item in this repository, with its author, source and licence. CFDCraft's own code is MIT OR Apache-2.0 (see [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE)). Rust dependencies come from crates.io, except the Craft libraries (crash-safe saves, document paths, translations), which come from the storytold/craft-libs repository pinned by commit; all keep their own licences; the allowed licences are listed in `deny.toml` and checked in CI.
 
 | Path | What | Author | Source | Licence |
 |---|---|---|---|---|

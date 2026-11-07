@@ -26,6 +26,11 @@ pub fn check_pins(root: &Path) -> Result<(), String> {
     }
 }
 
+/// A full 40-hex commit id.
+pub(crate) fn is_commit(rev: &str) -> bool {
+    rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 pub(crate) fn member_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
     let workspace = parse_manifest(&root.join("Cargo.toml"))?;
     let mut manifests = Vec::new();
@@ -117,9 +122,7 @@ fn check_manifest(path: &Path, workspace: Option<&toml::Table>, violations: &mut
                         violations.push(format!("UNPINNED: {where_at} = \"{version}\""));
                     }
                     if t.contains_key("git")
-                        && !t.get("rev").and_then(Value::as_str).is_some_and(|rev| {
-                            rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
-                        })
+                        && !t.get("rev").and_then(Value::as_str).is_some_and(is_commit)
                     {
                         violations.push(format!(
                             "UNPINNED: {where_at} git dep requires a full commit `rev`"

@@ -76,6 +76,64 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Save a study as a `.cfdcraft` file.
+    Save {
+        study: PathBuf,
+        out: PathBuf,
+        /// Replace the output file if it already exists.
+        #[arg(long)]
+        replace: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open a `.cfdcraft` file and print its study hash; an older file prints its migration note.
+    Open {
+        file: PathBuf,
+        /// Also write the study as JSON to this new file; an existing file is never overwritten.
+        #[arg(long)]
+        study_out: Option<PathBuf>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Link a file to a study file, stored relative to the study file's folder.
+    Link {
+        doc: PathBuf,
+        file: PathBuf,
+        /// Name for the link; by default made from the file name.
+        #[arg(long)]
+        id: Option<String>,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check that the files a study file links to are where the links say.
+    CheckLinks {
+        doc: PathBuf,
+        /// Also read each file and warn when it has changed since it was linked.
+        #[arg(long)]
+        verify: bool,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pack a study file and its stored results into one file; linked files are not included.
+    Pack {
+        doc: PathBuf,
+        out: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unpack a pack into a folder: the study file and its stored results.
+    Unpack {
+        packed: PathBuf,
+        dir: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the typed operations to an agent over MCP on standard input and output.
     Mcp {
         /// The directory that holds studies, cases and runs. Created if it is absent.
@@ -140,6 +198,28 @@ fn main() {
             tolerance_override,
             json,
         }),
+        Commands::Save {
+            study,
+            out,
+            replace,
+            json,
+        } => cmd::document::save(&study, &out, replace, json),
+        Commands::Open {
+            file,
+            study_out,
+            json,
+        } => cmd::document::open(&file, study_out.as_deref(), json),
+        Commands::Link {
+            doc,
+            file,
+            id,
+            json,
+        } => cmd::document::link(&doc, &file, id.as_deref(), json),
+        Commands::CheckLinks { doc, verify, json } => {
+            cmd::document::check_links(&doc, verify, json)
+        }
+        Commands::Pack { doc, out, json } => cmd::document::pack(&doc, &out, json),
+        Commands::Unpack { packed, dir, json } => cmd::document::unpack(&packed, &dir, json),
         Commands::Mcp {
             workspace,
             key,
@@ -151,7 +231,6 @@ fn main() {
             hosts,
             profile,
         })
-        .map(|()| 0)
         .map_err(Into::into),
     };
     match result {

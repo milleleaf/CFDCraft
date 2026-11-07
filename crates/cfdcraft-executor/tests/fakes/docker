@@ -6,6 +6,8 @@
 #   ok                run exits 0 at once
 #   hold              run waits (bounded) until the file `release` exists, then exits 0
 # $CFC_TEST_DOCKER_FAIL, when set to a command name, makes that command fail.
+# $CFC_TEST_DOCKER_STDOUT, when set, is printed to standard output by `run`, as a container's own
+# output would be.
 # Every container name passed to `run` is appended to `names`.
 shift 2
 command=$1
@@ -22,6 +24,7 @@ case "$command" in
             if [ "$1" = --name ]; then shift; printf '%s\n' "$1" > "$CFC_TEST_ROOT/running"; printf '%s\n' "$1" >> "$CFC_TEST_ROOT/names"; break; fi
             shift
         done
+        if [ -n "${CFC_TEST_DOCKER_STDOUT:-}" ]; then printf '%s\n' "$CFC_TEST_DOCKER_STDOUT"; fi
         case "$CFC_TEST_MODE" in
             hold)
                 i=0

@@ -205,7 +205,9 @@ pub(crate) fn infra_finished(
 /// operator; the report itself is still handed to the caller.
 fn persist(run_dir: &Path, report: &Report) -> Option<String> {
     std::fs::create_dir_all(run_dir)
-        .and_then(|()| std::fs::write(run_dir.join("report.json"), report.to_json()))
+        .and_then(|()| {
+            craft_atomic::atomic_write(&run_dir.join("report.json"), report.to_json().as_bytes())
+        })
         .err()
         .map(|e| format!("the report could not be saved: {e}"))
 }
@@ -557,5 +559,44 @@ pub fn run_study(study_json: &str, request: &RunRequest) -> Finished {
     match begin(study_json, request) {
         Ok(begun) => execute(begun),
         Err(done) => done,
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+
+    fn fresh(tag: &str) -> std::path::PathBuf {
+        // Beside the test binary, inside the build folder (a lib test has no CARGO_TARGET_TMPDIR).
+        let dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("persist-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn persist_replaces_the_report_and_leaves_nothing_else() {
+        let dir = fresh("replace");
+        let (a, b) = (Report::new("first"), Report::new("second"));
+        assert_eq!(persist(&dir, &a), None);
+        assert_eq!(persist(&dir, &b), None);
+        let saved = std::fs::read_to_string(dir.join("report.json")).unwrap();
+        assert_eq!(saved, b.to_json());
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["report.json"]);
+    }
+
+    #[test]
+    fn persist_reports_a_run_folder_that_is_a_plain_file() {
+        let dir = fresh("occupied");
+        std::fs::write(&dir, b"x").unwrap();
+        let text = persist(&dir, &Report::new("run")).expect("a failure is reported");
+        assert!(text.starts_with("the report could not be saved"), "{text}");
     }
 }

@@ -27,10 +27,22 @@ pub fn workspace_root() -> PathBuf {
 /// A fresh fake box: `bin/` with the two fakes, a stand-in key, an empty results archive, a hosts
 /// file, and `box/`, the directory that plays the remote work directory.
 pub fn new_root(group: &str, tag: &str) -> PathBuf {
-    let root = workspace_root()
-        .join("target")
-        .join(group)
-        .join(format!("{}-{tag}", std::process::id()));
+    build_root(
+        workspace_root()
+            .join("target")
+            .join(group)
+            .join(format!("{}-{tag}", std::process::id())),
+    )
+}
+
+/// The same fake box under a root named by the tag alone. A server that checks its workspace path
+/// against the unix socket limit needs the shortest root there is, because the checkout path of
+/// a CI runner is longer than a developer's. The tag must be unique within the test group.
+pub fn new_short_root(group: &str, tag: &str) -> PathBuf {
+    build_root(workspace_root().join("target").join(group).join(tag))
+}
+
+fn build_root(root: PathBuf) -> PathBuf {
     let _ = std::fs::remove_dir_all(&root);
     for d in ["bin", "empty", "box", "runs"] {
         std::fs::create_dir_all(root.join(d)).unwrap();

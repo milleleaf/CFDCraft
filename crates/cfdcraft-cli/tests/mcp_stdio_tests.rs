@@ -17,6 +17,7 @@ use std::{
 use support::*;
 
 const GROUP: &str = "mcp";
+const CAVITY_HASH: &str = "ace6717c154b77f06664534043296ec96e001fe8dc0b000b16af327c573bd1c0";
 
 /// A running `cfdcraft mcp` and a client for it. Responses are matched by id because the server
 /// may answer out of order; every line the server wrote is kept so the test can check that
@@ -195,8 +196,15 @@ impl Drop for Server {
     }
 }
 
+/// The server refuses a workspace path whose longest socket would reach 100 bytes. The root here is
+/// `<checkout>/target/mcp/<tag>`, plus `/ws` and 39 bytes of socket path. A CI checkout path is up
+/// to 37 bytes, so a tag over nine bytes would pass on a laptop and fail there.
 fn fresh(tag: &str) -> PathBuf {
-    new_root(GROUP, tag)
+    assert!(
+        tag.len() <= 9,
+        "test tag too long for CI checkout paths: {tag}"
+    );
+    new_short_root(GROUP, tag)
 }
 
 fn value(text: &str) -> Value {
@@ -218,8 +226,12 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
             "create_study",
             "export",
             "get_result",
+            "open_document",
+            "pack_document",
             "run_status",
+            "save_document",
             "start_run",
+            "unpack_document",
             "validate_study"
         ]
     );
@@ -403,6 +415,84 @@ fn compile_and_export_write_the_golden_trees() {
     );
 }
 
+// ---- documents and packs by name ----
+
+fn codes_of(report: &Value) -> Vec<&str> {
+    report["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_study_is_saved_as_a_document_and_opened_by_name() {
+    let root = fresh("doc");
+    let mut s = Server::start(&root, "ok");
+    store_cavity(&mut s);
+
+    let saved = s.tool("save_document", json!({"name": "cavity"}));
+    assert_eq!(saved["exit_class"], 0, "{saved}");
+    assert_eq!(saved["operation"], "save_document");
+    assert!(root.join("ws/documents/cavity.cfdcraft").is_file());
+    let opened = s.tool("open_document", json!({"name": "cavity"}));
+    assert_eq!(opened["exit_class"], 0, "{opened}");
+    assert_eq!(opened["study_hash"], CAVITY_HASH, "{opened}");
+
+    // A second save is refused, shows the document relative to the workspace and changes nothing.
+    let before = files_under(&root.join("ws"));
+    let again = s.tool("save_document", json!({"name": "cavity"}));
+    assert_eq!(again["exit_class"], 2, "{again}");
+    assert_eq!(codes_of(&again), ["CFD-DOC-008"], "{again}");
+    assert!(
+        again.to_string().contains("documents/cavity.cfdcraft"),
+        "{again}"
+    );
+    assert_eq!(files_under(&root.join("ws")), before);
+
+    // A path is not an input.
+    let refused = s.raw_tool("open_document", json!({"name": "cavity", "path": "/x"}));
+    assert!(
+        refused.get("error").is_some() || refused["result"]["isError"] == true,
+        "{refused}"
+    );
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn a_document_is_packed_and_a_pack_the_operator_placed_is_unpacked() {
+    let root = fresh("pack");
+    let mut s = Server::start(&root, "ok");
+    store_cavity(&mut s);
+    s.tool("save_document", json!({"name": "cavity"}));
+
+    let packed = s.tool("pack_document", json!({"name": "cavity"}));
+    assert_eq!(packed["exit_class"], 0, "{packed}");
+    assert!(root.join("ws/packs/cavity.cfdpack").is_file());
+    let again = s.tool("pack_document", json!({"name": "cavity"}));
+    assert_eq!(codes_of(&again), ["CFD-DOC-008"], "{again}");
+
+    // Only a pack already in the folder can be unpacked; the operator puts it there.
+    let none = s.tool("unpack_document", json!({"name": "copy"}));
+    assert_eq!(codes_of(&none), ["CFD-DOC-001"], "{none}");
+    std::fs::copy(
+        root.join("ws/packs/cavity.cfdpack"),
+        root.join("ws/packs/copy.cfdpack"),
+    )
+    .unwrap();
+    let unpacked = s.tool("unpack_document", json!({"name": "copy"}));
+    assert_eq!(unpacked["exit_class"], 0, "{unpacked}");
+    assert!(root.join("ws/documents/copy.cfdcraft").is_file());
+    let opened = s.tool("open_document", json!({"name": "copy"}));
+    assert_eq!(opened["study_hash"], CAVITY_HASH, "{opened}");
+    let twice = s.tool("unpack_document", json!({"name": "copy"}));
+    assert_eq!(codes_of(&twice), ["CFD-DOC-008"], "{twice}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert_nothing_private(&root, &s);
+}
+
 // ---- runs: start returns at once, polling, busy ----
 
 fn run_count(root: &Path) -> usize {
@@ -504,6 +594,47 @@ fn a_second_start_is_busy_with_its_holder_and_is_never_queued() {
 }
 
 #[test]
+fn a_poll_that_arrives_while_ssh_has_the_inherited_pipes_non_blocking_is_still_answered() {
+    let root = fresh("nonblock");
+    let mut s = Server::start_with_env(&root, "hold", &[("CFC_TEST_SSH_NONBLOCK", "3")]);
+    let id = start_held_run(&mut s, &root);
+    release(&root);
+    // The results download now keeps ssh running for three seconds. Polling through that window
+    // must not end the server: every poll is answered and the report is there at the end.
+    wait_until("the run to finish", || {
+        s.tool("run_status", json!({"run_id": id}))["status"] == "finished"
+    });
+    let g = s.tool("get_result", json!({"run_id": id}));
+    assert_eq!(g["status"], "finished", "{g}");
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+}
+
+#[test]
+fn what_a_container_prints_never_reaches_the_protocol_stream() {
+    let root = fresh("noise");
+    let mut s =
+        Server::start_with_env(&root, "hold", &[("CFC_TEST_DOCKER_STDOUT", "not protocol")]);
+    let id = start_held_run(&mut s, &root);
+    // Every line the server writes must be a protocol message: reading one that is not panics.
+    assert_eq!(
+        s.tool("run_status", json!({"run_id": id}))["status"],
+        "running"
+    );
+    release(&root);
+    wait_until("the run to finish", || {
+        s.tool("run_status", json!({"run_id": id}))["status"] == "finished"
+    });
+    assert!(s.close_and_wait(Duration::from_secs(20)).success());
+    assert!(
+        s.raw
+            .iter()
+            .all(|l| serde_json::from_str::<Value>(l).is_ok()),
+        "{:?}",
+        s.raw
+    );
+}
+
+#[test]
 fn a_lock_held_by_another_process_is_busy_with_that_holder() {
     let root = fresh("other");
     let mut s = Server::start(&root, "ok");
@@ -590,6 +721,87 @@ fn sigterm_cancels_the_job_and_cleans_up() {
     let status = s.wait_exit(Duration::from_secs(60));
     assert!(status.success(), "{status:?}");
     assert_cleaned_up(&root);
+}
+
+// ---- how the server's input ends ----
+
+/// Start the server with standard input on one end of a socket pair that already holds the whole
+/// handshake, so the server completes it and then reads again. `nonblocking` makes that second
+/// read fail with an I/O error (nothing to read yet) instead of waiting. Returns the process and
+/// our end of the socket, which stays open so that the server never sees an end of file unless the
+/// caller drops it.
+fn start_on_socket(root: &Path, nonblocking: bool) -> (Child, std::os::unix::net::UnixStream) {
+    use std::os::unix::net::UnixStream;
+    let (mut ours, theirs) = UnixStream::pair().unwrap();
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "0"}
+        }
+    });
+    writeln!(ours, "{init}").unwrap();
+    writeln!(
+        ours,
+        "{}",
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    )
+    .unwrap();
+    theirs.set_nonblocking(nonblocking).unwrap();
+    let a = args(root);
+    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let child = spawn(root, "ok", &a)
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    (child, ours)
+}
+
+/// Wait for the process to exit and return its status and everything it wrote to standard error.
+fn finish(mut child: Child, limit: Duration) -> (std::process::ExitStatus, String) {
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the server did not exit in time");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    (status, err)
+}
+
+#[test]
+fn a_read_failure_on_standard_input_is_said_on_standard_error_and_is_not_success() {
+    let root = fresh("readfail");
+    let (child, _ours) = start_on_socket(&root, true);
+    let (status, err) = finish(child, Duration::from_secs(60));
+    assert_eq!(status.code(), Some(5), "{status:?} {err:?}");
+    assert_eq!(err.lines().count(), 1, "one plain line: {err:?}");
+    assert!(err.starts_with("error: "), "{err:?}");
+    assert!(
+        !err.contains(root.to_string_lossy().as_ref()),
+        "no path in the note: {err:?}"
+    );
+    assert!(!lock_dir(&root).exists(), "the lock is released");
+}
+
+#[test]
+fn a_clean_end_of_input_exits_zero_and_says_nothing() {
+    let root = fresh("eofquiet");
+    let (child, ours) = start_on_socket(&root, false);
+    drop(ours);
+    let (status, err) = finish(child, Duration::from_secs(60));
+    assert!(status.success(), "{status:?} {err:?}");
+    assert_eq!(err, "", "a normal close is not a failure");
 }
 
 // ---- the advertised surface is closed ----
@@ -703,7 +915,27 @@ fn the_advertised_surface_is_closed() {
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 7);
+    assert_eq!(tools.as_array().unwrap().len(), 11);
+    for name in [
+        "save_document",
+        "open_document",
+        "pack_document",
+        "unpack_document",
+    ] {
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is advertised"));
+        let inputs: Vec<&str> = tool["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(inputs, ["name"], "{name} takes a name and nothing else");
+    }
     assert_eq!(surface_problems(tools), Vec::<String>::new());
     let create = tools
         .as_array()
@@ -756,7 +988,7 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
     let mut s = Server::start(&root, "ok");
     store_cavity(&mut s);
     let before = files_under(&root.join("ws"));
-    let valid: [(&str, Value); 7] = [
+    let valid: [(&str, Value); 11] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -764,6 +996,10 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
         ("validate_study", json!({"name": "cavity"})),
         ("compile", json!({"name": "cavity"})),
         ("export", json!({"name": "cavity"})),
+        ("save_document", json!({"name": "cavity"})),
+        ("open_document", json!({"name": "cavity"})),
+        ("pack_document", json!({"name": "cavity"})),
+        ("unpack_document", json!({"name": "cavity"})),
         ("start_run", json!({"name": "cavity", "mode": "run"})),
         ("run_status", json!({"run_id": "cfdcraft-nothing-1"})),
         ("get_result", json!({"run_id": "cfdcraft-nothing-1"})),

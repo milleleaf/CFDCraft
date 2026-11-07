@@ -38,7 +38,7 @@ jobs:
       - name: test (nextest)
         run: |
           cargo install cargo-nextest --version 0.9.150 --locked
-          cargo nextest run --workspace --locked
+          cargo nextest run --workspace --locked --no-fail-fast
       - name: xtask pins
         run: cargo run -p xtask -- pins
       - name: xtask layers

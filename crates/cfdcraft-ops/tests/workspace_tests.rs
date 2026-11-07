@@ -117,10 +117,17 @@ fn a_name_is_taken_once_and_a_missing_study_is_not_found() {
 }
 
 #[test]
-fn opening_creates_four_directories_and_refuses_symbolic_links() {
+fn opening_creates_six_directories_and_refuses_symbolic_links() {
     let root = new_root(GROUP, "open").join("ws");
     Workspace::open(&root).unwrap();
-    for d in ["studies", "compiled", "exports", "runs"] {
+    for d in [
+        "studies",
+        "compiled",
+        "exports",
+        "runs",
+        "documents",
+        "packs",
+    ] {
         assert!(root.join(d).is_dir(), "{d}");
     }
     Workspace::open(&root).unwrap();
@@ -208,8 +215,10 @@ fn assert_relative(r: &Report, ws_dir: &std::path::Path) {
         !json.contains(&ws_dir.to_string_lossy().into_owned()),
         "{json}"
     );
+    // Built in two parts so the source does not itself read as a home path.
+    let home_prefix = format!("/{}/", "Users");
     assert!(
-        !json.contains(concat!("/Us", "ers/")) && !json.contains("target/"),
+        !json.contains(&home_prefix) && !json.contains("target/"),
         "{json}"
     );
     for a in &r.artifacts {

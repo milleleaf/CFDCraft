@@ -1,5 +1,10 @@
 use crate::hosts::HostProfile;
-use std::{collections::HashMap, ffi::OsString, path::Path, process::Command};
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 /// What the container runs. A closed set: no constructor takes a command string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +77,8 @@ pub fn scrubbed_env() -> HashMap<OsString, OsString> {
 
 pub fn docker_cmd(_p: &HostProfile, socket: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("docker");
+    // Shares none of the caller's pipes (see `ssh_command`); a step that needs one sets its own.
+    c.stdin(Stdio::null()).stdout(Stdio::null());
     c.env_clear()
         .envs(scrubbed_env())
         .arg("-H")

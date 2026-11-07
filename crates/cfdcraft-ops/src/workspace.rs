@@ -1,5 +1,5 @@
-//! A server-side workspace: studies, compiled cases, exports and runs addressed by name, never by
-//! path. A name is `[a-z0-9][a-z0-9-]{0,39}`, so no operation can reach outside the workspace.
+//! A server-side workspace: studies, compiled cases, exports, runs, documents and packs addressed by
+//! name, never by path. A name is `[a-z0-9][a-z0-9-]{0,39}`, so no operation can reach outside the workspace.
 //!
 //! Nothing here takes a path, a host or a key from the caller. Whoever hosts the workspace decides
 //! where it lives; the callers only supply names, modes and a study.
@@ -23,6 +23,8 @@ const STUDIES: &str = "studies";
 const COMPILED: &str = "compiled";
 const EXPORTS: &str = "exports";
 const RUNS: &str = "runs";
+const DOCUMENTS: &str = "documents";
+const PACKS: &str = "packs";
 
 /// The directories under a workspace root, each a real directory.
 #[derive(Debug, Clone)]
@@ -39,7 +41,7 @@ fn failed(operation: &str, found: Diagnostic) -> Report {
 }
 
 impl Workspace {
-    /// Open the workspace at `root`, creating it and its four directories if they are absent.
+    /// Open the workspace at `root`, creating it and its six directories if they are absent.
     /// A directory that is a symbolic link, or not a directory, is refused.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, String> {
         let root = root.as_ref();
@@ -48,7 +50,7 @@ impl Workspace {
         let root = root
             .canonicalize()
             .map_err(|e| format!("the workspace cannot be opened: {e}"))?;
-        for sub in [STUDIES, COMPILED, EXPORTS, RUNS] {
+        for sub in [STUDIES, COMPILED, EXPORTS, RUNS, DOCUMENTS, PACKS] {
             let path = root.join(sub);
             match std::fs::symlink_metadata(&path) {
                 Ok(m) if m.is_dir() => {}
@@ -139,7 +141,7 @@ impl Workspace {
         let Ok((parsed, _)) = Study::from_json_with_note(&text) else {
             return report;
         };
-        match store(&self.dir(STUDIES), &path, &parsed) {
+        match store(&path, &parsed) {
             Ok(()) => report,
             Err(e) if e.kind() == ErrorKind::AlreadyExists => failed(
                 OP,
@@ -205,6 +207,86 @@ impl Workspace {
                 operation,
                 cli_problem("The output could not be put in place.".into()),
             );
+        }
+        report
+    }
+}
+
+impl Workspace {
+    /// Save a stored study as the document `documents/<name>.cfdcraft`. An existing document is
+    /// never replaced.
+    pub fn save_document(&self, name: &str) -> Report {
+        const OP: &str = "save_document";
+        self.named(OP, name, || match self.load_study(OP, name) {
+            Ok(text) => {
+                crate::documents::save_document(&text, &self.document_file(name), false).report
+            }
+            Err(report) => report,
+        })
+    }
+
+    /// Open `documents/<name>.cfdcraft` and report on it. Nothing is written.
+    pub fn open_document(&self, name: &str) -> Report {
+        self.named("open_document", name, || {
+            crate::documents::open_document(&self.document_file(name)).report
+        })
+    }
+
+    /// Pack `documents/<name>.cfdcraft` and its stored results into `packs/<name>.cfdpack`. An
+    /// existing pack is never replaced.
+    pub fn pack_document(&self, name: &str) -> Report {
+        self.named("pack_document", name, || {
+            crate::documents::pack_document(&self.document_file(name), &self.pack_file(name)).report
+        })
+    }
+
+    /// Unpack `packs/<name>.cfdpack`, which the operator placed there, into the document
+    /// `documents/<name>.cfdcraft`. An existing document is never replaced.
+    pub fn unpack_document(&self, name: &str) -> Report {
+        self.named("unpack_document", name, || {
+            crate::documents::unpack_document(&self.pack_file(name), &self.dir(DOCUMENTS)).report
+        })
+    }
+
+    fn document_file(&self, name: &str) -> PathBuf {
+        self.dir(DOCUMENTS).join(format!("{name}.cfdcraft"))
+    }
+
+    fn pack_file(&self, name: &str) -> PathBuf {
+        self.dir(PACKS).join(format!("{name}.cfdpack"))
+    }
+
+    /// Run a document operation for a valid name and make its report workspace-relative.
+    fn named(&self, operation: &str, name: &str, run: impl FnOnce() -> Report) -> Report {
+        let report = if Self::valid_name(name) {
+            run().for_operation(operation)
+        } else {
+            Self::bad_name(operation)
+        };
+        self.within(report)
+    }
+
+    /// Show every path in a report relative to the workspace root, so a finding never names the
+    /// server's directories: the root and a separator are removed, a bare root becomes `.`.
+    fn within(&self, mut report: Report) -> Report {
+        let root = self.root.display().to_string();
+        let relative = |text: &str| {
+            let mut out = text.to_owned();
+            for separator in [std::path::MAIN_SEPARATOR, '/'] {
+                out = out.replace(&format!("{root}{separator}"), "");
+            }
+            out.replace(&root, ".")
+        };
+        for found in &mut report.diagnostics {
+            found.message = relative(&found.message);
+            found.setting = relative(&found.setting);
+            found.hint = found.hint.as_deref().map(relative);
+            if let Some(at) = &mut found.location {
+                at.file = relative(&at.file);
+            }
+        }
+        for artifact in &mut report.artifacts {
+            artifact.name = relative(&artifact.name);
         }
         report
     }
@@ -338,13 +420,9 @@ pub(crate) fn temp_in(dir: &Path) -> PathBuf {
     ))
 }
 
-/// Pretty JSON into a temporary file in `dir`, then linked into place so an existing study is
-/// never replaced, and the temporary name removed.
-fn store(dir: &Path, path: &Path, study: &Study) -> std::io::Result<()> {
-    let tmp = temp_in(dir);
+/// Pretty JSON through the shared exclusive create: an existing study is never replaced, and an
+/// interrupted write leaves no partial study.
+fn store(path: &Path, study: &Study) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(study).map_err(std::io::Error::other)?;
-    std::fs::write(&tmp, json + "\n")?;
-    let linked = std::fs::hard_link(&tmp, path);
-    let _ = std::fs::remove_file(&tmp);
-    linked
+    craft_atomic::write_new(path, (json + "\n").as_bytes())
 }

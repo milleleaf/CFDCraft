@@ -3,6 +3,7 @@
 //! order and reports through the same [`Report`].
 
 pub mod cases;
+pub mod documents;
 pub mod ghia;
 pub mod prepare;
 pub mod registry;
@@ -11,6 +12,10 @@ pub mod run;
 pub mod workspace;
 
 pub use cases::{check_case, compile_study, export_study};
+pub use documents::{
+    DocOutcome, check_document_links, link_file, open_document, pack_document, read_study,
+    save_document, unpack_document,
+};
 pub use ghia::{GateMetric, GateReport, GateRow};
 pub use prepare::{Prepared, prepare};
 pub use registry::{ResultOutcome, RunRegistry, StartOutcome, Status};

@@ -5,8 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// An ssh that shares none of the caller's pipes. OpenSSH marks the standard input and output it
+/// inherits non-blocking for as long as it runs and may read from them, and for a server those
+/// are the protocol pipes: its next read fails and it leaves its loop. A step that needs a pipe
+/// sets its own after this.
 pub fn ssh_command(p: &HostProfile, key: &Path) -> Command {
     let mut c = Command::new("ssh");
+    c.stdin(Stdio::null()).stdout(Stdio::null());
     c.arg("-i")
         .arg(key)
         .args([

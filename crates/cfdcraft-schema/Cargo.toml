@@ -1,0 +1,16 @@
+[package]
+name = "cfdcraft-schema"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-doc = { path = "../cfdcraft-doc", version = "=0.1.0" }
+cfdcraft-migrate = { path = "../cfdcraft-migrate", version = "=0.1.0" }
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+jsonschema = { workspace = true }
+schemars = "=1.2.3"
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+zip = { workspace = true }

@@ -65,6 +65,8 @@ jobs:
         run: cargo run -p xtask -- sources
       - name: xtask equivalents
         run: cargo run -p xtask -- equivalents
+      - name: xtask dockerfiles
+        run: cargo run -p xtask -- dockerfiles
       - name: lockfile matches the manifests
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: WASM model

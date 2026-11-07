@@ -31,7 +31,7 @@ pub fn turbulence_properties() -> String {
     )
 }
 /// The gravity file of a buoyant study; gravity acts along -y.
-pub(crate) fn gravity(s: &ResolvedStudy) -> Option<String> {
+pub fn gravity(s: &ResolvedStudy) -> Option<String> {
     let b = s.physics.as_ref()?.buoyancy?;
     Some(dictionary(
         "g",
@@ -43,7 +43,7 @@ pub(crate) fn gravity(s: &ResolvedStudy) -> Option<String> {
     ))
 }
 /// `0` for an exact zero, the shortest round-trip decimal otherwise.
-pub(crate) fn component(value: f64) -> String {
+pub fn component(value: f64) -> String {
     if value == 0.0 {
         "0".into()
     } else {
@@ -52,7 +52,7 @@ pub(crate) fn component(value: f64) -> String {
 }
 
 /// One line per patch, `name { entry }`, in the order of the patch table.
-pub(crate) fn boundary_field(patches: &[Patch], entry: impl Fn(&Patch) -> String) -> String {
+pub fn boundary_field(patches: &[Patch], entry: impl Fn(&Patch) -> String) -> String {
     patches
         .iter()
         .map(|p| format!("    {} {{ {} }}\n", p.name, entry(p)))
@@ -61,7 +61,7 @@ pub(crate) fn boundary_field(patches: &[Patch], entry: impl Fn(&Patch) -> String
 
 /// The extent of the inlet across the flow: where it starts on y and how tall it is. The inlet of
 /// a step is the narrow channel above the step; any other inlet spans the whole height.
-pub(crate) fn inlet_extent(s: &ResolvedStudy) -> (f64, f64) {
+pub fn inlet_extent(s: &ResolvedStudy) -> (f64, f64) {
     match s.domain.shape {
         Some(ResolvedShape::BackwardStep { step_height, .. }) => {
             (step_height, s.domain.length_y - step_height)
@@ -90,7 +90,7 @@ fn parabolic_inlet(s: &ResolvedStudy) -> bool {
     })
 }
 
-pub(crate) fn velocity(s: &ResolvedStudy, patches: &[Patch]) -> String {
+pub fn velocity(s: &ResolvedStudy, patches: &[Patch]) -> String {
     let parabolic = parabolic_inlet(s);
     let entries = boundary_field(patches, |p| match p.kind {
         None => "type empty;".into(),
@@ -119,7 +119,7 @@ pub(crate) fn velocity(s: &ResolvedStudy, patches: &[Patch]) -> String {
         ),
     )
 }
-pub(crate) fn pressure(patches: &[Patch]) -> String {
+pub fn pressure(patches: &[Patch]) -> String {
     let entries = boundary_field(patches, |p| match p.kind {
         None => "type empty;".into(),
         Some(BoundaryKind::PressureOutlet) => "type fixedValue; value uniform 0;".into(),

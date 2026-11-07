@@ -115,6 +115,10 @@ pub struct Job {
     /// The sweep point the job came from, if it came from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// The id of the backend the job runs on; none means the registry default. A file written
+    /// before this member existed has none and reads as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     /// Where the job is in its life.
     pub state: JobState,
     /// How many times a start was retried.
@@ -298,4 +302,7 @@ pub struct NewJob {
     /// The sweep point the job came from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// The id of the backend the job runs on; none means the registry default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
 }

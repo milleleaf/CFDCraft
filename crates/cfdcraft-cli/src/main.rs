@@ -16,10 +16,13 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
-    /// Compile a solver-neutral study into an ESI v2512 case.
+    /// Compile a solver-neutral study into a case for a backend; by default an ESI v2512 case.
     Compile {
         study: PathBuf,
         out_dir: PathBuf,
+        /// Compile for the backend with this id, as `backend list` names it; without it the default one.
+        #[arg(long)]
+        backend: Option<String>,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -39,6 +42,32 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// List the solver backends: id, family, admission state, image and preview label.
+    Backend {
+        #[command(subcommand)]
+        action: BackendAction,
+    },
+    /// Import an existing OpenFOAM case as a read-only copy with an inventory of what it holds.
+    ImportCase {
+        /// The case folder to read.
+        source: PathBuf,
+        /// The new case folder: a name that ends in .cfdcase, made in the folder it is given in.
+        #[arg(long)]
+        out: PathBuf,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the parity table of a benchmark over the runs of a study file, one column for each backend.
+    Parity {
+        doc: PathBuf,
+        /// The benchmark, as `benchmark list` and the parity report name it.
+        #[arg(long)]
+        benchmark: String,
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compile and run a study, then judge solver evidence.
     Run {
         study: PathBuf,
@@ -54,6 +83,9 @@ enum Commands {
         /// Run a few iterations only (at most 60). Shows the case loads and iterates, nothing more.
         #[arg(long)]
         smoke: bool,
+        /// Run on the backend with this id, as `backend list` names it; without it the default one.
+        #[arg(long)]
+        backend: Option<String>,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -455,6 +487,15 @@ enum GciAction {
     },
 }
 #[derive(Subcommand)]
+enum BackendAction {
+    /// Print the registered backends, one line each in registry order, with the notices that apply.
+    List {
+        /// Print one JSON report on stdout instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
 enum BenchmarkAction {
     /// Print the benchmark templates, one line each.
     List {
@@ -558,6 +599,9 @@ enum QueueAction {
         /// Make a result that was pruned again; otherwise a pruned result is left alone.
         #[arg(long)]
         remake_pruned: bool,
+        /// Run the jobs on the backend with this id; without it they run on the default one.
+        #[arg(long)]
+        backend: Option<String>,
         /// Print one JSON report on stdout instead of text.
         #[arg(long)]
         json: bool,
@@ -677,14 +721,24 @@ fn run() {
         Commands::Compile {
             study,
             out_dir,
+            backend,
             json,
-        } => cmd::compile::execute(&study, &out_dir, json),
+        } => cmd::compile::execute(&study, &out_dir, backend.as_deref(), json),
         Commands::Export {
             study,
             out_dir,
             json,
         } => cmd::export::execute(&study, &out_dir, json),
         Commands::CheckCase { dir, json } => cmd::check_case::execute(&dir, json),
+        Commands::Backend { action } => match action {
+            BackendAction::List { json } => cmd::backend::list(json),
+        },
+        Commands::ImportCase { source, out, json } => cmd::import::execute(&source, &out, json),
+        Commands::Parity {
+            doc,
+            benchmark,
+            json,
+        } => cmd::parity::execute(&doc, &benchmark, json),
         Commands::Run {
             study,
             key,
@@ -692,6 +746,7 @@ fn run() {
             hosts,
             case_dir,
             smoke,
+            backend,
             json,
         } => cmd::run::execute(&cmd::run::RunArgs {
             mode: if smoke { RunMode::Smoke } else { RunMode::Run },
@@ -701,6 +756,7 @@ fn run() {
             hosts,
             case_dir,
             tolerance_override: None,
+            backend,
             json,
         }),
         Commands::Validate {
@@ -719,6 +775,7 @@ fn run() {
             hosts,
             case_dir,
             tolerance_override,
+            backend: None,
             json,
         }),
         Commands::Keys { study, json } => cmd::keys::execute(&study, json),
@@ -955,6 +1012,7 @@ fn run() {
                 sweep,
                 continue_run,
                 remake_pruned,
+                backend,
                 json,
             } => cmd::queue::add(&cmd::queue::AddArgs {
                 doc,
@@ -962,6 +1020,7 @@ fn run() {
                 sweep,
                 continue_run,
                 remake_pruned,
+                backend,
                 json,
             }),
             QueueAction::List { doc, json } => cmd::queue::list(&doc, json),

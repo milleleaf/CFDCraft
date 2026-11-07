@@ -26,12 +26,13 @@ use cfdcraft_text::Line;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::backends::{by_id, default_row};
 use crate::benchmarks::{
     BundleFiles, OVERRIDE_NOTE, Rejected, build, ids, not_a_benchmark, select_id,
 };
 use crate::cases::cli_problem;
 use crate::documents::{DocOutcome, Finding, problem, refused, say, shown, study_hash};
-use crate::jobs::{inconsistent, open_refusal};
+use crate::jobs::{comparer_files, inconsistent, open_refusal};
 use crate::report::{ExitClass, Report};
 use crate::repro::{BenchmarkEntry, BenchmarksData, Repro};
 
@@ -300,7 +301,11 @@ fn check(
     })?;
     let (id, chosen) = choose(&resolved, benchmark, tolerance_override)?;
     let files = stored_result(&document, path, record)?;
-    let mut gate = chosen.compare(&files, &resolved);
+    // The stored files are read through the view of the backend that made the run, as the run's
+    // own tool identity names it; the default row when none matches, as the live view does.
+    let row = by_id(&record.provenance.tool.dialect).unwrap_or_else(default_row);
+    let files = comparer_files(&row, Box::new(files), &resolved);
+    let mut gate = chosen.compare(files.as_ref(), &resolved);
     if tolerance_override.is_some() {
         name_override(&mut gate, id);
     }

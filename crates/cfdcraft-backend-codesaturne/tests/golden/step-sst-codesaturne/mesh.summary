@@ -1,0 +1,11 @@
+nodes 42190
+hexahedra 20760
+x 0.000000 2.286000
+y 0.000000 0.114300
+z 0.000000 0.012700
+group x_min 66
+group x_max 114
+group y_min 266
+group y_max 218
+group startup 4
+group z_symmetry 41520

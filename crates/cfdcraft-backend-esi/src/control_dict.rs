@@ -39,9 +39,9 @@ pub fn fv_schemes() -> String {
 }
 
 /// The solver entry of the potential equation, inside the solvers block.
-pub(crate) const PHI_SOLVER: &str = "    Phi\n    {\n        solver GAMG;\n        smoother DIC;\n        tolerance 1e-06;\n        relTol 0.01;\n    }\n";
+pub const PHI_SOLVER: &str = "    Phi\n    {\n        solver GAMG;\n        smoother DIC;\n        tolerance 1e-06;\n        relTol 0.01;\n    }\n";
 /// The controls of the potential-flow step.
-pub(crate) const POTENTIAL_FLOW: &str = "potentialFlow\n{\n    nNonOrthogonalCorrectors 2;\n}\n";
+pub const POTENTIAL_FLOW: &str = "potentialFlow\n{\n    nNonOrthogonalCorrectors 2;\n}\n";
 
 pub fn fv_solution(open: bool) -> String {
     fv_solution_with(open, &SolverPlan::steady_laminar())

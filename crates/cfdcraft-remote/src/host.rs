@@ -82,6 +82,11 @@ pub struct TimeDir {
 
 /// Everything the drain does to the compute host.
 pub trait Host {
+    /// Make the next [`Host::start`] run in `image` (`repository@sha256:...`). A host that has no
+    /// image of its own, as a test double, has nothing to change.
+    fn use_image(&mut self, _image: &str) -> Result<(), HostError> {
+        Ok(())
+    }
     /// Upload `case`, start the labelled container and keep the lock for `run_id`.
     fn start(&mut self, run_id: &str, case: &Path, doc: &str, np: u32) -> Result<(), HostError>;
     fn inspect(&mut self, run_id: &str) -> Result<ContainerState, HostError>;

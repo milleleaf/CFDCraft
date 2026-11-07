@@ -1,0 +1,9 @@
+SU2 8.6.0 image
+
+This image contains the SU2_CFD program from the official SU2 8.6.0 Linux OpenMP release (a statically linked x86-64 executable), on Debian 13 (slim).
+
+Licence: SU2 is licensed under the GNU Lesser General Public License version 2.1 (LGPL-2.1). The licence text is installed at /opt/su2/COPYING.
+
+Source: https://github.com/su2code/SU2/tree/v8.6.0
+
+The image is built by the repository's manual image workflow from docker/su2/Dockerfile and is not published until the maintainers approve it.

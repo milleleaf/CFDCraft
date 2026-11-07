@@ -1,0 +1,18 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object thermophysicalTransport;
+}
+
+laminar
+{
+    model Fourier;
+}
+
+RAS
+{
+    model eddyDiffusivity;
+    Prt 0.85;
+}

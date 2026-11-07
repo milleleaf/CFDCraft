@@ -33,7 +33,7 @@ fn name_of(path: &Path) -> String {
 /// Refused, naming the override: a backend tag other than `esi`, a file the case does not have,
 /// an entry that another override already set, a file that is not text, and any refusal of the
 /// dictionary editor (a block that is not in the file, a value it will not write).
-pub(crate) fn apply(
+pub fn apply(
     files: &mut [CaseFile],
     overrides: &BTreeMap<String, RawOverride>,
 ) -> Result<(), CompileError> {

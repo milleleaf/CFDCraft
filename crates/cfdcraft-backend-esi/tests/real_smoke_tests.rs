@@ -30,6 +30,7 @@ fn transient_plan() -> EvidencePlan {
         solver: "pimpleFoam".into(),
         pressure: "p".into(),
         temperature: false,
+        energy_field: "T".into(),
         residual_limits: false,
         potential_log: None,
     }
@@ -78,6 +79,7 @@ fn a_real_turbulent_step_run_with_a_potential_flow_start_passes() {
         solver: "simpleFoam".into(),
         pressure: "p".into(),
         temperature: false,
+        energy_field: "T".into(),
         residual_limits: true,
         potential_log: Some(STEP_POTENTIAL.to_owned()),
     };

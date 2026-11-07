@@ -1,4 +1,4 @@
-//! An MCP server over stdio that offers forty typed operations and nothing else: create and
+//! An MCP server over stdio that offers forty-three typed operations and nothing else: create and
 //! validate a study, compile and export it, save, open, pack and unpack a document, start, poll
 //! and collect a run, start a job on a document (solve it or one of its variants, rerun a recorded
 //! result, or update its mesh or its result), and read what a document records: whether it is up
@@ -9,7 +9,9 @@
 //! against the published reference of its benchmark, and a mesh independence sweep is stored in a
 //! document and its grid convergence index read from the recorded results; disk use is read per
 //! variant, and stored results are pruned only by the one tool that does it, which shows a plan
-//! unless it is told to apply it. A solve is put in
+//! unless it is told to apply it. The solver backends are listed, a case folder of the workspace is
+//! imported as a read-only copy, and the parity table of a benchmark is read from the recorded
+//! runs of a document; compile, run and queue jobs may name the backend to use. A solve is put in
 //! the document's queue and a background runner, which outlives the server, advances it; the queue
 //! is listed, added to, reordered and cancelled, a running job is asked to stop, and its monitors
 //! and log are read from the copies the runner keeps on this machine. The reading operations write
@@ -157,6 +159,36 @@ struct NameArgs {
     /// The name of a study in the workspace. For `open_document`, `pack_document` and
     /// `unpack_document` it is the name of a document or pack held by the server.
     name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CompileArgs {
+    /// The name of a study in the workspace.
+    name: String,
+    /// The id of the backend to compile for, from `backend_list`. Left out, the default backend.
+    #[serde(default)]
+    backend: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ImportCaseArgs {
+    /// The name of a case folder in the workspace, below its top folder: a plain relative name
+    /// with no `..` and no link. It is read and never changed.
+    source: String,
+    /// The name to import it under: 1 to 40 lower-case letters, digits or hyphens. The case is
+    /// kept as `<name>.cfdcase` and an existing one is never replaced.
+    name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ParityTableArgs {
+    /// The name of a document in the workspace.
+    name: String,
+    /// The benchmark to compare the backends on, from `benchmark_list`.
+    benchmark: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -372,6 +404,10 @@ struct StartRunArgs {
     /// Run the stored export of the study instead of a fresh one; it must match the study exactly.
     #[serde(default)]
     from_export: bool,
+    /// The id of the backend to run on, from `backend_list`. Left out, the default backend. A
+    /// backend whose image is not pinned yet is refused before anything starts.
+    #[serde(default)]
+    backend: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Clone, Copy)]
@@ -529,6 +565,9 @@ struct QueueAddArgs {
     /// and nothing is queued for it.
     #[serde(default)]
     remake_pruned: bool,
+    /// The id of the backend the jobs run on, from `backend_list`. Left out, the default backend.
+    #[serde(default)]
+    backend: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1122,14 +1161,14 @@ impl CfdServer {
 
     #[tool(
         name = "compile",
-        description = "Compile a stored study into a solver case held by the server. Returns the findings and the files written."
+        description = "Compile a stored study into a solver case held by the server, for the default backend or the one named. Returns the findings and the files written. A setting the backend does not offer is a finding and nothing is written."
     )]
     async fn compile(
         &self,
-        Parameters(a): Parameters<NameArgs>,
+        Parameters(a): Parameters<CompileArgs>,
     ) -> Result<Json<Report>, ErrorData> {
         let s = self.state.clone();
-        blocking(move || s.workspace.compile(&a.name)).await
+        blocking(move || s.workspace.compile_on(&a.name, a.backend.as_deref())).await
     }
 
     #[tool(
@@ -1199,12 +1238,13 @@ impl CfdServer {
     ) -> Result<Json<StartRunOutput>, ErrorData> {
         let s = self.state.clone();
         blocking(move || {
-            let outcome = s.workspace.start_run(
+            let outcome = s.workspace.start_run_on(
                 &s.registry,
                 &s.settings,
                 &a.name,
                 a.mode.into(),
                 a.from_export,
+                a.backend,
             );
             start_output(outcome)
         })
@@ -1526,6 +1566,41 @@ impl CfdServer {
     }
 
     #[tool(
+        name = "backend_list",
+        description = "List the solver backends: id, family, admission state, image and whether its results are a preview, with the candidate and image notices that apply. Choose one by id for compile, start_run and queue_add. Writes nothing and starts nothing."
+    )]
+    async fn backend_list(
+        &self,
+        Parameters(_): Parameters<NoArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        blocking(cfdcraft_ops::backend_list).await
+    }
+
+    #[tool(
+        name = "import_case",
+        description = "Import an existing OpenFOAM case folder of the workspace as a read-only copy with an inventory of what its dictionaries say and the dialect it was written for. A case that holds a construct that could run code is refused whole, with one finding for each entry, and nothing is written. The source is only read."
+    )]
+    async fn import_case(
+        &self,
+        Parameters(a): Parameters<ImportCaseArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.import_case(&a.source, &a.name)).await
+    }
+
+    #[tool(
+        name = "parity_table",
+        description = "Show the parity table of a benchmark over the runs a stored document has recorded: one column for each backend that has a recorded run, against the default backend, with the gate, convergence and preview label of each column. A column that failed or did not converge is shown and marked, never hidden. Writes nothing and starts nothing."
+    )]
+    async fn parity_table(
+        &self,
+        Parameters(a): Parameters<ParityTableArgs>,
+    ) -> Result<Json<Report>, ErrorData> {
+        let s = self.state.clone();
+        blocking(move || s.workspace.parity_table(&a.name, &a.benchmark)).await
+    }
+
+    #[tool(
         name = "disk_use",
         description = "Say how much stored result each variant of a stored document holds, in bytes: its mesh, its result, what it shares with another variant and what was pruned. Writes nothing and starts nothing."
     )]
@@ -1628,7 +1703,7 @@ impl CfdServer {
 
     #[tool(
         name = "queue_add",
-        description = "Put more jobs in the queue of a stored document: the study itself (no other input), one variant, every point of a stored sweep, or the continuation of a stopped run. Give at most one of scenario, sweep and run. A background runner on this machine then advances the queue, one job at a time, and goes on when this server stops. Returns the queue. A request with nothing out of date adds nothing."
+        description = "Put more jobs in the queue of a stored document: the study itself (no other input), one variant, every point of a stored sweep, or the continuation of a stopped run. Give at most one of scenario, sweep and run; backend names the backend the jobs run on. A background runner on this machine then advances the queue, one job at a time, and goes on when this server stops. Returns the queue. A request with nothing out of date adds nothing."
     )]
     async fn queue_add(
         &self,
@@ -1641,6 +1716,7 @@ impl CfdServer {
                 sweep: a.sweep,
                 continue_run: a.run,
                 remake_pruned: a.remake_pruned,
+                backend: a.backend,
             };
             add_to_queue(&s, &a.name, &request).0
         })
@@ -1715,7 +1791,7 @@ impl CfdServer {
 #[tool_handler(
     router = self.tool_router,
     name = "cfdcraft",
-    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result). A solve is queued and answered with a job id that goes on when the server stops; a rerun or an update runs at once, one at a time. Poll a job with run_status, watch it with run_monitors and run_log, reorder or cancel the queue, ask a running job to stop with run_stop, and read how it ended with get_result. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, benchmark studies are listed and made as text, a recorded run is checked against the published reference of its benchmark, a mesh independence sweep is stored and its grid convergence index read from recorded results, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. Judge a run by evidence.verdict in its report."
+    instructions = "Create, check, export and run CFD studies by name, and save, open, pack and unpack them as documents by name. Start a job on a document (solve it, rerun a recorded result, update its mesh or its result). A solve is queued and answered with a job id that goes on when the server stops; a rerun or an update runs at once, one at a time. Poll a job with run_status, watch it with run_monitors and run_log, reorder or cancel the queue, ask a running job to stop with run_stop, and read how it ended with get_result. Read whether a document is up to date and why not, its runs, the checks and key numbers of a run, its provenance, the comparison of two runs and what an update would do. Document variants (scenarios) are listed, shown, diffed, created, changed, titled, pinned and annotated by name, and a variant is solved and its status read like the study. Sweeps are planned, stored and checked before anything is solved, benchmark studies are listed and made as text, a recorded run is checked against the published reference of its benchmark, a mesh independence sweep is stored and its grid convergence index read from recorded results, disk use is read per variant, and stored results are pruned only when a prune is asked to apply its plan. The solver backends are listed and may be named for a compile, a run or queued jobs, an OpenFOAM case folder of the workspace is imported as a read-only copy, and the parity table of a benchmark is read from the recorded runs of a document. Judge a run by evidence.verdict in its report."
 )]
 impl ServerHandler for CfdServer {}
 

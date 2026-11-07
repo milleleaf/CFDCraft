@@ -9,10 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use cfdcraft_backend_esi::dialect::IMAGE;
 use cfdcraft_doc::store_dir;
 use cfdcraft_drain::{DrainConfig, DrainEnd, run_drain, spawn_detached};
 use cfdcraft_executor::HostProfile;
+use cfdcraft_ops::backends::{default_row, image_or_refusal};
 use cfdcraft_ops::queue_file::QueueFile;
 use cfdcraft_ops::queue_ops::{
     AddRequest, queue_add, queue_cancel, queue_list, queue_reorder, queue_stop,
@@ -37,6 +37,7 @@ pub struct AddArgs {
     pub sweep: Option<String>,
     pub continue_run: Option<String>,
     pub remake_pruned: bool,
+    pub backend: Option<String>,
     pub json: bool,
 }
 
@@ -48,6 +49,7 @@ pub fn add(args: &AddArgs) -> Result<i32, Error> {
         sweep: args.sweep.clone(),
         remake_pruned: args.remake_pruned,
         continue_run: args.continue_run.clone(),
+        backend: args.backend.clone(),
     };
     Ok(emit_doc(&queue_add(&args.doc, &request), args.json))
 }
@@ -236,8 +238,10 @@ fn foreground(args: &DrainArgs) -> Result<i32, Error> {
     config.socket_dir = Some(base.clone());
     let scratch = store_dir(&args.doc).join("live").join("_upload");
     std::fs::create_dir_all(&scratch).map_err(|_| HOST_SETUP)?;
+    // The host starts on the image of the default backend; each job then names its own.
+    let image = image_or_refusal(&default_row()).map_err(|_| HOST_SETUP)?;
     let host =
-        SshHost::connect(profile, &args.key, base, scratch, IMAGE).map_err(|_| HOST_SETUP)?;
+        SshHost::connect(profile, &args.key, base, scratch, image).map_err(|_| HOST_SETUP)?;
     // Nothing in this process sets the flag: the runner ends when its queue has been idle for a
     // while, or when its parent ends it.
     let shutdown = AtomicBool::new(false);

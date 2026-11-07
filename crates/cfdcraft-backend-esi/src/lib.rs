@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod block_mesh;
 pub mod case;
 pub mod control_dict;
@@ -10,6 +11,7 @@ pub mod monitors;
 pub mod patches;
 pub mod raw;
 pub mod reader;
+pub mod rows;
 pub mod solver_plan;
 pub mod transport;
 
@@ -48,13 +50,13 @@ pub const WRITER_SOURCES: [(&str, &str); 12] = [
 ];
 
 /// Locale-independent, shortest-round-trip finite scalar representation.
-pub(crate) fn scalar(value: f64) -> String {
+pub fn scalar(value: f64) -> String {
     ryu::Buffer::new()
         .format_finite(if value == 0.0 { 0.0 } else { value })
         .into()
 }
 
-pub(crate) fn dictionary(object: &str, class: &str, body: &str) -> String {
+pub fn dictionary(object: &str, class: &str, body: &str) -> String {
     format!(
         "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {class};\n    object {object};\n}}\n\n{body}"
     )

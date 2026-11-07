@@ -19,6 +19,9 @@ pub struct EvidencePlan {
     pub solver: String,
     pub pressure: String,
     pub temperature: bool,
+    /// The energy field whose residual is checked when `temperature` is set: `T` unless the
+    /// solver solves for another (Foundation fluid: `h`).
+    pub energy_field: String,
     pub residual_limits: bool,
     pub potential_log: Option<String>,
 }
@@ -30,6 +33,7 @@ impl EvidencePlan {
             solver: "simpleFoam".into(),
             pressure: "p".into(),
             temperature: false,
+            energy_field: "T".into(),
             residual_limits: true,
             potential_log: None,
         }
@@ -43,7 +47,7 @@ impl EvidencePlan {
             ("Uy".to_string(), u_threshold),
         ];
         if self.temperature {
-            checks.push(("T".to_string(), u_threshold));
+            checks.push((self.energy_field.clone(), u_threshold));
         }
         checks
     }

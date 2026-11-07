@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cfdcraft_ops::DocOutcome;
 use cfdcraft_ops::convergence::assess_dir;
-use cfdcraft_ops::jobs::{DocJob, plan_scenario_job_with};
+use cfdcraft_ops::jobs::{DocJob, plan_scenario_job_on};
 use cfdcraft_ops::queue_file::QueueFile;
 use cfdcraft_queue::{
     Action, Job, JobState, MAX_ATTEMPTS, Outcome, Progress, Queue, active, next_to_start,
@@ -23,7 +23,7 @@ use cfdcraft_text::{Line, Text};
 use crate::disk::DiskRefusal;
 use crate::finalize::first_error_code;
 use crate::mirror::{Mirror, MirrorError};
-use crate::watch::{LiveSpec, solver_log_of};
+use crate::watch::{LiveSpec, mirrored_files_of, solver_log_of};
 use crate::{DrainConfig, DrainError, case, disk, explain, finalize, reattach, stop, watchdog};
 
 /// The file in the live folder that holds what the verdict is made from.
@@ -349,11 +349,19 @@ impl<H: Host> Drain<H> {
             run_id: Some(run_id.clone()),
             ..job.clone()
         };
-        let planned = match plan_scenario_job_with(
+        // The backend the job names runs it, in its own image. One that does not exist, or whose
+        // image is not pinned yet, fails the job here, before the host is touched.
+        let found = case::row_of(job).and_then(|row| case::image_of(&row));
+        let image = match found {
+            Ok(image) => image,
+            Err(error) => return finalize::fail_refused(self, &started, error, false),
+        };
+        let planned = match plan_scenario_job_on(
             &self.config.doc,
             job.scenario.as_deref(),
             finalize::action_of(job),
             &finalize::PLAN_OPTIONS,
+            job.backend.as_deref(),
         ) {
             Ok(planned) => planned,
             Err(outcome) => return self.end_unplanned(&started, &outcome),
@@ -366,7 +374,12 @@ impl<H: Host> Drain<H> {
             Err(error) if error.is_unreachable() => return Err(error),
             Err(error) => return finalize::fail(self, &started, error.code(), &[], false),
         };
-        match self.host.start(&run_id, &live.join("case"), &label, np) {
+        let case_dir = live.join("case");
+        let begun = self
+            .host
+            .use_image(image)
+            .and_then(|()| self.host.start(&run_id, &case_dir, &label, np));
+        match begun {
             Ok(()) => {}
             Err(HostError::Unreachable) => return Err(HostError::Unreachable.into()),
             Err(HostError::Busy { .. }) => return self.host_busy(&started),
@@ -426,10 +439,14 @@ impl<H: Host> Drain<H> {
         }
         std::fs::create_dir_all(&live).map_err(|e| DrainError::io(&e))?;
         let (spec, settings) = planned.assess_inputs().clone();
-        let text = serde_json::to_string_pretty(&LiveSpec { spec, settings }).map_err(|e| {
-            DrainError::Io {
-                reason: e.to_string(),
-            }
+        let files = planned.mirrored_files();
+        let text = serde_json::to_string_pretty(&LiveSpec {
+            spec,
+            settings,
+            files,
+        })
+        .map_err(|e| DrainError::Io {
+            reason: e.to_string(),
         })?;
         craft_atomic::atomic_write(&live.join(SPEC), text.as_bytes())
             .map_err(|e| DrainError::io(&e))?;
@@ -450,17 +467,31 @@ impl<H: Host> Drain<H> {
         }
         let plan = case::prepare_start(self, job, planned)?;
         case::write_case(planned, &live, plan.np, &plan.seed)?;
-        self.scratch.np = Some(plan.np);
+        // The count the backend's own run plan really starts the run with is the one recorded,
+        // and the one a restarted drain reads back from the file.
+        let ran = planned.effective_np(plan.np);
+        craft_atomic::atomic_write(&live.join(case::NP_FILE), ran.to_string().as_bytes())
+            .map_err(|e| DrainError::io(&e))?;
+        self.scratch.np = Some(ran);
         Ok((live, plan.np))
     }
 }
 
-/// Brings the mirror of a job up to date with the host: the three logs (the solver's under the name
-/// the job's specification gives it), and every monitor file. Returns whether any file grew.
+/// Brings the mirror of a job up to date with the host. A job whose specification names its files
+/// has exactly those copied, each a piece at a time; any other job has the three logs (the
+/// solver's under the name the job's specification gives it) and every monitor file copied.
+/// Returns whether any file grew.
 pub(crate) fn pull<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<bool, DrainError> {
     let run_id = run_id_of(job)?.to_owned();
     let mirror = ctx.mirror(job)?;
     let mut moved = false;
+    let named = mirrored_files_of(&ctx.live_dir(job)?);
+    if !named.is_empty() {
+        for rel in &named {
+            moved |= pull_file(&mut ctx.host, &mirror, &run_id, rel, None)?;
+        }
+        return Ok(moved);
+    }
     let solver_log = ctx.solver_log(job)?;
     for rel in logs_of(&solver_log) {
         if rel != solver_log && ended(&mirror.read_to_string(&rel)?) {

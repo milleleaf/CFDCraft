@@ -1,0 +1,163 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object controlDict;
+}
+
+solver fluid;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime 20000.0;
+deltaT 1;
+writeControl timeStep;
+writeInterval 1000.0;
+purgeWrite 2;
+writeFormat ascii;
+writePrecision 12;
+writeCompression off;
+timeFormat general;
+timePrecision 12;
+runTimeModifiable true;
+
+functions
+{
+    centreline
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            vertical
+            {
+                type lineUniform;
+                axis y;
+                start (0.5 0 0.05);
+                end (0.5 1.0 0.05);
+                nPoints 64;
+            }
+            horizontal
+            {
+                type lineUniform;
+                axis x;
+                start (0 0.5 0.05);
+                end (1.0 0.5 0.05);
+                nPoints 64;
+            }
+        }
+    }
+    line_1
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (0.0 0.5 0.05);
+                end (1.0 0.5 0.05);
+                nPoints 201;
+            }
+        }
+    }
+    line_2
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (0.5 0.0 0.05);
+                end (0.5 1.0 0.05);
+                nPoints 201;
+            }
+        }
+    }
+    heat_grad
+    {
+        type grad;
+        libs ("libfieldFunctionObjects.so");
+        field T;
+        result gradT;
+        writeControl none;
+    }
+    surface_1
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch isothermal1;
+        operation areaIntegrate;
+        fields (gradT);
+    }
+    surface_2
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch isothermal2;
+        operation areaIntegrate;
+        fields (gradT);
+    }
+    balance_fixedWalls
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch fixedWalls;
+        operation sum;
+        fields (phi);
+    }
+    balance_isothermal1
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch isothermal1;
+        operation sum;
+        fields (phi);
+    }
+    balance_isothermal2
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch isothermal2;
+        operation sum;
+        fields (phi);
+    }
+}

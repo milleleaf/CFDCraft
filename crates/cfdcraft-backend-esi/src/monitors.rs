@@ -76,7 +76,7 @@ fn field_word(field: MonitorField) -> &'static str {
 }
 
 /// The shortest decimal, with no `.0` on a whole number.
-pub(crate) fn short(value: f64) -> String {
+pub fn short(value: f64) -> String {
     let text = scalar(value);
     text.strip_suffix(".0").unwrap_or(&text).to_owned()
 }

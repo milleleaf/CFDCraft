@@ -1,10 +1,12 @@
 //! The case operations behind the command line: compile, export and check a case directory.
 
 use crate::{
-    prepare::{Prepared, prepare, refusal_diagnostic, rel_name},
+    jobs::row_for,
+    prepare::{Prepared, prepare_row, refusal_diagnostic, rel_name},
     report::{ExitClass, Report},
 };
-use cfdcraft_backend_esi::{CaseTree, Dialect, guard, write_to_disk};
+use cfdcraft_backend::CompileOptions;
+use cfdcraft_backend_esi::{CaseTree, guard, write_to_disk};
 use cfdcraft_model::Diagnostic;
 use std::path::Path;
 
@@ -29,15 +31,21 @@ fn dir_problem(dir: &Path) -> Option<Diagnostic> {
     }
 }
 
-/// The gates, then the chosen tree into an empty `out_dir`. Nothing is written when any step
-/// fails.
+/// The gates of the backend `backend` names (the registry default when none), then the chosen
+/// tree into an empty `out_dir`. Nothing is written when any step fails, and an id no backend has
+/// is `CFD-BACKEND-001`.
 fn write_case(
     operation: &str,
     study_json: &str,
     out_dir: &Path,
+    backend: Option<&str>,
     pick: impl FnOnce(&Prepared) -> &CaseTree,
 ) -> Report {
-    let prepared = match prepare(study_json, Dialect::EsiV2512) {
+    let row = match row_for(backend) {
+        Ok(row) => row,
+        Err(found) => return Report::from_diagnostics(operation, vec![found], None),
+    };
+    let prepared = match prepare_row(study_json, &row, &CompileOptions::default()) {
         Ok(p) => p,
         Err(report) => return report.for_operation(operation),
     };
@@ -66,12 +74,18 @@ fn write_case(
 
 /// Compile a study into the dictionary tree at `out_dir`.
 pub fn compile_study(study_json: &str, out_dir: &Path) -> Report {
-    write_case("compile", study_json, out_dir, |p| &p.tree)
+    compile_study_on(study_json, out_dir, None)
+}
+
+/// [`compile_study`] for the backend with this id; none is the registry default. The case is that
+/// backend's own tree, and a candidate or preview backend's warnings are on the report.
+pub fn compile_study_on(study_json: &str, out_dir: &Path, backend: Option<&str>) -> Report {
+    write_case("compile", study_json, out_dir, backend, |p| &p.tree)
 }
 
 /// Compile a study into the runnable form: dictionaries, `Allrun` and `README.md`.
 pub fn export_study(study_json: &str, out_dir: &Path) -> Report {
-    write_case("export", study_json, out_dir, |p| &p.export_tree)
+    write_case("export", study_json, out_dir, None, |p| &p.export_tree)
 }
 
 /// Scan any case directory with the safety scan. Needs no study.

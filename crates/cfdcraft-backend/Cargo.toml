@@ -1,0 +1,10 @@
+[package]
+name = "cfdcraft-backend"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-gate = { path = "../cfdcraft-gate", version = "=0.1.0" }
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+thiserror = "=2.0.21"

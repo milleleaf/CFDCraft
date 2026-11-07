@@ -15,7 +15,7 @@ use crate::{
     quantity::Dimension,
     raw::{MAX_RAW_OVERRIDES, RawBackend},
     study::{
-        BoundaryKind, Face, InitMode, MAX_LEVEL, Physics, Shape, SolverKind, Study,
+        BoundaryKind, Face, InitMode, InletProfile, MAX_LEVEL, Physics, Shape, SolverKind, Study,
         SurfaceQuantity, ThermalCondition, TimeMode, TurbulenceModel,
     },
     units::si_value,
@@ -274,6 +274,106 @@ pub const CODES: &[(&str, &str)] = &[
         "CFD-GCI-002",
         "the mesh levels are not systematically refined",
     ),
+    ("CFD-BACKEND-001", "no backend has this id"),
+    (
+        "CFD-BACKEND-002",
+        "the backend does not offer this turbulence model",
+    ),
+    (
+        "CFD-BACKEND-003",
+        "the backend does not offer this time mode",
+    ),
+    ("CFD-BACKEND-004", "the backend does not offer buoyancy"),
+    (
+        "CFD-BACKEND-005",
+        "the backend does not offer potential-flow initialisation",
+    ),
+    (
+        "CFD-BACKEND-006",
+        "the backend does not accept raw overrides",
+    ),
+    (
+        "CFD-BACKEND-007",
+        "the backend needs equal square cells and no grading",
+    ),
+    (
+        "CFD-BACKEND-008",
+        "the backend is a candidate: it has not passed all three gate levels, a warning",
+    ),
+    (
+        "CFD-BACKEND-009",
+        "preview result: not a gated result, a warning",
+    ),
+    (
+        "CFD-BACKEND-010",
+        "the backend's image is not pinned yet, so the case cannot run",
+    ),
+    (
+        "CFD-BACKEND-011",
+        "the preview backend has no gate claim for this case, a warning",
+    ),
+    (
+        "CFD-BACKEND-012",
+        "the backend does not offer a parabolic inlet profile",
+    ),
+    (
+        "CFD-IMPORT-001",
+        "the source folder cannot be read or is not a folder",
+    ),
+    (
+        "CFD-IMPORT-002",
+        "the case holds a refused construct, and the message carries the guard rule",
+    ),
+    ("CFD-IMPORT-003", "the target folder already exists"),
+    ("CFD-IMPORT-004", "the folder is not an OpenFOAM case"),
+    ("CFD-IMPORT-005", "no backend runs this case's dialect"),
+    (
+        "CFD-IMPORT-006",
+        "a cap was reached: file count, file size or depth",
+    ),
+    (
+        "CFD-IMPORT-007",
+        "the import record and the stored original disagree",
+    ),
+    (
+        "CFD-PARITY-001",
+        "no recorded run of this benchmark under this backend",
+    ),
+    ("CFD-PARITY-002", "the baseline column is missing"),
+    (
+        "CFD-PARITY-003",
+        "a column failed its gate or is not converged, shown and never hidden, a warning",
+    ),
+    ("CFD-PARITY-004", "a quantity is missing in a column"),
+    (
+        "CFD-PARITY-005",
+        "a quantity lies outside the parity tolerance",
+    ),
+    (
+        "CFD-PARITY-006",
+        "admission refused: a gate level did not pass",
+    ),
+    (
+        "CFD-GUARD-010",
+        "an SU2 configuration key is not on the allowlist",
+    ),
+    (
+        "CFD-GUARD-011",
+        "an SU2 configuration value holds a path or a forbidden character",
+    ),
+    (
+        "CFD-GUARD-012",
+        "a code_saturne setup holds a forbidden node, a formula or a user function",
+    ),
+    (
+        "CFD-GUARD-013",
+        "a code_saturne case holds a forbidden file: a user source, a user script or a shared library",
+    ),
+    ("CFD-GUARD-014", "an LBM command is not on the allowlist"),
+    (
+        "CFD-GUARD-015",
+        "an LBM command parameter is outside the allowed set or names a path outside the case",
+    ),
 ];
 // END OF CATALOGUE: code literals below this line are the ones the model emits.
 
@@ -375,6 +475,20 @@ pub struct Capabilities {
     pub same_kind_boundaries_must_agree: bool,
     /// The backend whose raw overrides this backend runs. `None` accepts any tag.
     pub raw_backend: Option<RawBackend>,
+    /// The turbulence models the backend offers.
+    pub turbulence_models: Vec<TurbulenceModel>,
+    /// The backend can march in time.
+    pub transient: bool,
+    /// The backend can start from a potential-flow solution.
+    pub potential_init: bool,
+    /// The backend can run Boussinesq buoyancy.
+    pub buoyancy: bool,
+    /// The backend needs equal square cells and no grading.
+    pub uniform_square_cells: bool,
+    /// The backend accepts raw overrides at all.
+    pub accepts_raw: bool,
+    /// The backend can impose a parabolic inlet profile.
+    pub parabolic_inlet: bool,
 }
 
 impl Capabilities {
@@ -384,9 +498,24 @@ impl Capabilities {
             requires_single_cell_z: false,
             same_kind_boundaries_must_agree: false,
             raw_backend: None,
+            turbulence_models: ALL_TURBULENCE_MODELS.to_vec(),
+            transient: true,
+            potential_init: true,
+            buoyancy: true,
+            uniform_square_cells: false,
+            accepts_raw: true,
+            parabolic_inlet: true,
         }
     }
 }
+
+/// Every turbulence model a study can ask for.
+pub const ALL_TURBULENCE_MODELS: [TurbulenceModel; 4] = [
+    TurbulenceModel::Laminar,
+    TurbulenceModel::KOmegaSst,
+    TurbulenceModel::RealizableKe,
+    TurbulenceModel::RngKEpsilon,
+];
 
 pub const ALL_KINDS: [BoundaryKind; 6] = [
     BoundaryKind::VelocityInlet,
@@ -449,6 +578,7 @@ pub fn diagnose(study: &Study, capabilities: &Capabilities) -> Vec<Diagnostic> {
     face_coverage(study, &mut found);
     domain_consistency(study, &mut found);
     capability_limits(study, capabilities, &mut found);
+    backend_limits(study, capabilities, &mut found);
     raw_overrides(study, capabilities, &mut found);
     warnings(study, &mut found);
     found.sort_by(|a, b| (&a.pointer, &a.code, &a.message).cmp(&(&b.pointer, &b.code, &b.message)));
@@ -2053,6 +2183,158 @@ fn capability_limits(study: &Study, capabilities: &Capabilities, found: &mut Vec
                 }
             }
         }
+    }
+}
+
+/// The settings a backend may not offer. Each missing capability is a finding at the setting
+/// that asks for it, so no writer ever sees a setting it would have to drop.
+fn backend_limits(study: &Study, capabilities: &Capabilities, found: &mut Vec<Diagnostic>) {
+    let physics = study.physics.clone().unwrap_or_default();
+    if !capabilities
+        .turbulence_models
+        .contains(&physics.turbulence.model)
+    {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-002",
+                "turbulence model",
+                "/physics/turbulence/model",
+                format!(
+                    "The selected backend does not offer the {} turbulence model.",
+                    physics.turbulence.model.word()
+                ),
+            )
+            .with_hint("Choose a model the backend offers, or another backend."),
+        );
+    }
+    if !capabilities.transient && matches!(physics.time, TimeMode::Transient { .. }) {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-003",
+                "time mode",
+                "/physics/time",
+                "The selected backend marches to a steady state only, but the study asks for a \
+                 transient run.",
+            )
+            .with_hint("Set the time mode to steady, or choose a backend that runs in time."),
+        );
+    }
+    if !capabilities.buoyancy && physics.buoyancy.is_some() {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-004",
+                "buoyancy",
+                "/physics/buoyancy",
+                "The selected backend does not offer buoyancy, but the study turns it on.",
+            )
+            .with_hint("Remove the buoyancy setting, or choose a backend that offers it."),
+        );
+    }
+    if !capabilities.potential_init && physics.init == InitMode::Potential {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-005",
+                "start of the flow",
+                "/physics/init",
+                "The selected backend cannot start from a potential-flow solution.",
+            )
+            .with_hint("Start from a uniform field, or choose another backend."),
+        );
+    }
+    if !capabilities.accepts_raw {
+        for name in study.raw_overrides.keys() {
+            let shown = label(name);
+            found.push(
+                Diagnostic::error(
+                    "CFD-BACKEND-006",
+                    format!("raw override {shown}"),
+                    format!("/raw_overrides/{}", pointer_token(name)),
+                    format!(
+                        "The selected backend does not accept raw overrides, but the study has \
+                         the override \"{shown}\"."
+                    ),
+                )
+                .with_hint("Remove the override, or choose a backend that accepts them."),
+            );
+        }
+    }
+    if !capabilities.parabolic_inlet {
+        for (name, boundary) in &study.boundary_conditions {
+            if boundary.profile == Some(InletProfile::Parabolic) {
+                let shown = label(name);
+                found.push(
+                    Diagnostic::error(
+                        "CFD-BACKEND-012",
+                        format!("{shown} inlet profile"),
+                        format!("/boundary_conditions/{}/profile", pointer_token(name)),
+                        format!(
+                            "The selected backend cannot impose a parabolic inlet profile \
+                             (boundary \"{shown}\")."
+                        ),
+                    )
+                    .with_hint("Use a flat profile, or choose another backend."),
+                );
+            }
+        }
+    }
+    if capabilities.uniform_square_cells {
+        uniform_square_cells(study, found);
+    }
+}
+
+/// The backend needs equal square cells and no grading. The cell sizes come from the domain
+/// lengths and the cell counts at the study's refinement level, never from a stored value.
+fn uniform_square_cells(study: &Study, found: &mut Vec<Diagnostic>) {
+    if let Some(grading) = &study.mesh.grading
+        && [grading.x, grading.y]
+            .into_iter()
+            .flatten()
+            .any(|ratio| (ratio - 1.0).abs() > 1e-12)
+    {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-007",
+                "wall grading",
+                "/mesh/grading",
+                "The selected backend needs equal square cells, but the mesh is graded toward \
+                 the walls.",
+            )
+            .with_hint("Remove the grading, or choose another backend."),
+        );
+    }
+    // A shaped study's counts are pinned to its block layout, so only the grading half applies.
+    if study.domain.shape.is_some() {
+        return;
+    }
+    let refine = f64::from(1_u32 << study.mesh.level.min(MAX_LEVEL));
+    let size = |length: &Quantity, cells: u64| -> Option<f64> {
+        let value = si_value(length);
+        let count = cells as f64 * refine;
+        let usable = length.unit.dimension() == Dimension::Length
+            && value.is_finite()
+            && value > 0.0
+            && count > 0.0;
+        usable.then_some(value / count)
+    };
+    let (Some(width), Some(height)) = (
+        size(&study.domain.length_x, study.mesh.cells_x),
+        size(&study.domain.length_y, study.mesh.cells_y),
+    ) else {
+        return;
+    };
+    if (width - height).abs() > 1e-9 * width.max(height) {
+        found.push(
+            Diagnostic::error(
+                "CFD-BACKEND-007",
+                "cell shape",
+                "/mesh",
+                format!(
+                    "The selected backend needs equal square cells, but the cells are \
+                     {width:.6} m wide and {height:.6} m high."
+                ),
+            )
+            .with_hint("Choose cell counts that give the same width and height."),
+        );
     }
 }
 

@@ -428,7 +428,7 @@ fn the_inputs_name_no_path_key_host_or_command() {
     let mut s = Server::start(&root);
     let r = s.call("tools/list", json!({}));
     let tools = r["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 40, "the closed surface has forty tools");
+    assert_eq!(tools.len(), 43, "the closed surface has forty-three tools");
     for name in NEW_TOOLS {
         let tool = tools
             .iter()

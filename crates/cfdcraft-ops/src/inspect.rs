@@ -13,7 +13,6 @@
 
 use std::path::Path;
 
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_compare::{Comparison, Tolerance, Verdict, compare};
 use cfdcraft_doc::{Document, open, store_dir};
 use cfdcraft_keys::{Stage, StageKey, StageRecipes};
@@ -27,8 +26,7 @@ use cfdcraft_text::Line;
 
 use crate::documents::{DocOutcome, Finding, finding, problem, refused, say, shown, study_hash};
 use crate::jobs::{blob_present, inconsistent, open_refusal};
-use crate::keys::tool_identity;
-use crate::prepare::prepare;
+use crate::keys::{default_tool_identity, prepare_default};
 use crate::reasons::{reason_parts, stale_line};
 use crate::report::{ExitClass, Report};
 use crate::repro::{
@@ -261,8 +259,7 @@ pub fn scenario_status(path: &Path, scenario: Option<&str>) -> DocOutcome {
     };
     let mut study_json = serde_json::to_string_pretty(&effective).expect("a study is plain data");
     study_json.push('\n');
-    let dialect = Dialect::EsiV2512;
-    let prepared = match prepare(&study_json, dialect) {
+    let prepared = match prepare_default(&study_json) {
         Ok(prepared) => prepared,
         Err(report) => {
             return DocOutcome {
@@ -271,7 +268,7 @@ pub fn scenario_status(path: &Path, scenario: Option<&str>) -> DocOutcome {
             };
         }
     };
-    let recipes = StageRecipes::from_resolved(&prepared.resolved, &tool_identity(dialect));
+    let recipes = StageRecipes::from_resolved(&prepared.resolved, &default_tool_identity());
     let keys = recipes.keys();
     let runs = loaded.runs();
     let state = status_for(runs, &recipes, tag.as_deref());

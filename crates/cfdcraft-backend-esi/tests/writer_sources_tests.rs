@@ -7,8 +7,16 @@ use cfdcraft_backend_esi::WRITER_SOURCES;
 use std::{collections::BTreeSet, fs, path::Path};
 
 /// Files of `src` that do not shape the case that is written or the way it is run: the image and
-/// capabilities, the judging of a run, the safety scan and the reader.
-const NOT_THE_WRITER: [&str; 4] = ["dialect.rs", "evidence.rs", "guard.rs", "reader.rs"];
+/// capabilities, the judging of a run, the safety scan, the reader, and the glue that presents the
+/// writer as a backend and lists it in the registry.
+const NOT_THE_WRITER: [&str; 6] = [
+    "adapter.rs",
+    "dialect.rs",
+    "evidence.rs",
+    "guard.rs",
+    "reader.rs",
+    "rows.rs",
+];
 
 fn src() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -89,4 +97,13 @@ fn the_writer_sources_list_has_twelve_files_including_the_solver_plan_and_the_fi
             .any(|(name, _)| *name == "monitors.rs")
     );
     assert!(!NOT_THE_WRITER.contains(&"monitors.rs"));
+}
+
+#[test]
+fn the_backend_glue_is_not_part_of_the_writer() {
+    assert_eq!(WRITER_SOURCES.len(), 12);
+    for name in ["adapter.rs", "rows.rs"] {
+        assert!(NOT_THE_WRITER.contains(&name), "{name}");
+        assert!(!WRITER_SOURCES.iter().any(|(listed, _)| *listed == name));
+    }
 }

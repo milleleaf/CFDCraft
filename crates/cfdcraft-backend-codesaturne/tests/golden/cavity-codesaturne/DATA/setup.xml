@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Code_Saturne_GUI case="CASE" solver_version="" study="STUDY" version="2.0">
+  <solution_domain>
+    <meshes_list>
+      <meshdir name="MESH"/>
+      <mesh name="mesh.msh"/>
+    </meshes_list>
+  </solution_domain>
+  <analysis_control>
+    <time_parameters>
+      <time_passing>-1</time_passing>
+      <iterations>5000</iterations>
+    </time_parameters>
+    <output>
+      <probe id="1" name="1" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="2" name="2" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.025</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="3" name="3" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="4" name="4" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.07500000000000001</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="5" name="5" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.1</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="6" name="6" status="on">
+        <probe_x>0</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="7" name="7" status="on">
+        <probe_x>0.025</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="8" name="8" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="9" name="9" status="on">
+        <probe_x>0.07500000000000001</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="10" name="10" status="on">
+        <probe_x>0.1</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="11" name="11" status="on">
+        <probe_x>0.05</probe_x>
+        <probe_y>0.05</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="12" name="12" status="on">
+        <probe_x>0.025</probe_x>
+        <probe_y>0.025</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="13" name="13" status="on">
+        <probe_x>0.07500000000000001</probe_x>
+        <probe_y>0.025</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="14" name="14" status="on">
+        <probe_x>0.025</probe_x>
+        <probe_y>0.07500000000000001</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe id="15" name="15" status="on">
+        <probe_x>0.07500000000000001</probe_x>
+        <probe_y>0.07500000000000001</probe_y>
+        <probe_z>0.025</probe_z>
+      </probe>
+      <probe_recording_frequency>500</probe_recording_frequency>
+      <probe_format choice="CSV"/>
+      <probes_snap choice="none"/>
+      <probes_interpolation choice="yes"/>
+    </output>
+  </analysis_control>
+  <calculation_management/>
+  <thermophysical_models>
+    <velocity_pressure>
+      <variable dimension="3" label="Velocity" name="velocity">
+        <probes_recording status="on"/>
+      </variable>
+      <variable dimension="1" label="Pressure" name="pressure">
+        <probes_recording status="on"/>
+      </variable>
+    </velocity_pressure>
+    <turbulence model="off"/>
+  </thermophysical_models>
+  <additional_scalars/>
+  <physical_properties>
+    <fluid_properties>
+      <property choice="constant" label="Density" name="density">
+        <initial_value>1</initial_value>
+      </property>
+      <property choice="constant" label="LamVisc" name="molecular_viscosity">
+        <initial_value>0.0001</initial_value>
+      </property>
+    </fluid_properties>
+  </physical_properties>
+  <boundary_conditions>
+    <boundary label="x_min" name="1" nature="wall">x_min</boundary>
+    <boundary label="x_max" name="2" nature="wall">x_max</boundary>
+    <boundary label="y_min" name="3" nature="wall">y_min</boundary>
+    <boundary label="y_max" name="4" nature="wall">y_max</boundary>
+    <boundary label="z_symmetry" name="5" nature="symmetry">z_symmetry</boundary>
+    <wall field_id="none" label="x_min">
+      <velocity_pressure choice="off"/>
+    </wall>
+    <wall field_id="none" label="x_max">
+      <velocity_pressure choice="off"/>
+    </wall>
+    <wall field_id="none" label="y_min">
+      <velocity_pressure choice="off"/>
+    </wall>
+    <wall field_id="none" label="y_max">
+      <velocity_pressure choice="on">
+        <dirichlet component="0" name="velocity">0.1</dirichlet>
+        <dirichlet component="1" name="velocity">0</dirichlet>
+        <dirichlet component="2" name="velocity">0</dirichlet>
+      </velocity_pressure>
+    </wall>
+    <symmetry field_id="none" label="z_symmetry"/>
+  </boundary_conditions>
+  <numerical_parameters>
+    <velocity_pressure_algo choice="simple"/>
+  </numerical_parameters>
+</Code_Saturne_GUI>

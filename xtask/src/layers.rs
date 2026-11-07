@@ -231,6 +231,94 @@ const RULES: &[(&str, &[&str])] = &[
             "thiserror",
         ],
     ),
+    (
+        "cfdcraft-backend",
+        &["cfdcraft-model", "cfdcraft-gate", "thiserror"],
+    ),
+    ("cfdcraft-blockmesh", &["cfdcraft-shapes", "thiserror"]),
+    ("cfdcraft-foamdict", &["thiserror"]),
+    (
+        "cfdcraft-parity",
+        &[
+            "cfdcraft-compare",
+            "schemars",
+            "serde",
+            "thiserror",
+            // The report tests round-trip its JSON.
+            "serde_json",
+        ],
+    ),
+    (
+        "cfdcraft-import",
+        &[
+            "blake3",
+            "cfdcraft-backend-esi",
+            "cfdcraft-foamdict",
+            "craft-atomic",
+            "craft-docpath",
+            "schemars",
+            "serde",
+            "serde_json",
+            "thiserror",
+        ],
+    ),
+    (
+        "cfdcraft-backend-of14",
+        &[
+            "cfdcraft-backend",
+            "cfdcraft-backend-esi",
+            "cfdcraft-dictedit",
+            "cfdcraft-foamdict",
+            "cfdcraft-model",
+            // Dev dependency: the tests compile the template studies.
+            "cfdcraft-templates",
+        ],
+    ),
+    // The settle name is allowed ahead of the judge plans that add it to the manifests.
+    (
+        "cfdcraft-backend-su2",
+        &[
+            "cfdcraft-backend",
+            "cfdcraft-blockmesh",
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-settle",
+            "cfdcraft-shapes",
+            "thiserror",
+            // Dev dependencies: template studies and exact number round trips.
+            "cfdcraft-templates",
+            "serde_json",
+        ],
+    ),
+    (
+        "cfdcraft-backend-codesaturne",
+        &[
+            "cfdcraft-backend",
+            "cfdcraft-blockmesh",
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-settle",
+            "cfdcraft-shapes",
+            "thiserror",
+            // Dev dependencies: template studies and exact number round trips.
+            "cfdcraft-templates",
+            "serde_json",
+        ],
+    ),
+    (
+        "cfdcraft-backend-lbm",
+        &[
+            "cfdcraft-backend",
+            "cfdcraft-gate",
+            "cfdcraft-model",
+            "cfdcraft-settle",
+            "serde_json",
+            "zip",
+            // Dev dependencies: the tests read monitors and compile the template studies.
+            "cfdcraft-monitors",
+            "cfdcraft-templates",
+        ],
+    ),
 ];
 
 /// Assert the dependency graph respects the layering: every crate listed in `RULES`
@@ -383,6 +471,7 @@ mod tests {
             ("cfdcraft-bench-cylinder", "cfdcraft-keys"),
             ("cfdcraft-bench-dvd", "cfdcraft-doc"),
             ("cfdcraft-templates", "cfdcraft-ops"),
+            ("cfdcraft-backend", "cfdcraft-backend-esi"),
         ] {
             let root = named_workspace(name, &deps_of(&[foreign]));
             let error = check_layers(&root).unwrap_err();
@@ -449,6 +538,15 @@ mod tests {
                 "cfdcraft-bench-cylinder",
                 "cfdcraft-bench-dvd",
                 "cfdcraft-templates",
+                "cfdcraft-backend",
+                "cfdcraft-blockmesh",
+                "cfdcraft-foamdict",
+                "cfdcraft-parity",
+                "cfdcraft-import",
+                "cfdcraft-backend-of14",
+                "cfdcraft-backend-su2",
+                "cfdcraft-backend-codesaturne",
+                "cfdcraft-backend-lbm",
             ]
         );
     }

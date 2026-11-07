@@ -30,6 +30,7 @@ fn buoyant() -> CapturePlan {
         fields: names(&["U", "p_rgh", "T"]),
         centreline: false,
         residual_fields: names(&["Ux", "Uy", "p_rgh", "T"]),
+        ..CapturePlan::cavity()
     }
 }
 

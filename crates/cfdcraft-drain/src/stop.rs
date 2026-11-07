@@ -10,21 +10,22 @@ use std::fs;
 use std::path::PathBuf;
 
 use cfdcraft_backend_esi::guard::scan_tree;
-use cfdcraft_backend_esi::{CaseFile, CaseTree, Dialect};
+use cfdcraft_backend_esi::{CaseFile, CaseTree};
 use cfdcraft_dictedit::{get_entry, set_entry};
 use cfdcraft_logscan::redact;
-use cfdcraft_ops::jobs::{CaseRun, plan_scenario_job_with};
-use cfdcraft_ops::run::judge_stopped_results;
-use cfdcraft_ops::{Repro, prepare};
+use cfdcraft_ops::Repro;
+use cfdcraft_ops::jobs::{CaseRun, plan_scenario_job_on, prepare_on};
+use cfdcraft_ops::run::judge_stopped_on;
 use cfdcraft_queue::{Action, Job, JobState, Outcome, StopCause, StopMode, StopRequest};
 use cfdcraft_remote::{ContainerState, Host, HostError};
 use cfdcraft_text::Line;
 
 use crate::DrainError;
+use crate::case::row_of;
 use crate::explain::{self, Classified};
 use crate::finalize::{
     EVIDENCE_FAILED, JobReport, NOT_RECORDED, PLAN_OPTIONS, ReportOutcome, action_of, conclude,
-    fail, first_error_code, run_checks, write_report,
+    fail, fail_refused, first_error_code, run_checks, write_report,
 };
 use crate::tick::{Drain, STUDY, run_id_of};
 
@@ -308,11 +309,15 @@ pub fn finish_stopped<H: Host>(
     ctx.host.download(&run_id, &results)?;
 
     let study = fs::read_to_string(live.join(STUDY)).map_err(|e| DrainError::io(&e))?;
-    let Ok(prepared) = prepare(&study, Dialect::EsiV2512) else {
+    let row = match row_of(job) {
+        Ok(row) => row,
+        Err(error) => return fail_refused(ctx, job, error, true),
+    };
+    let Ok(prepared) = prepare_on(&study, &row) else {
         let lines = ["the study of the job could not be prepared again".to_owned()];
         return fail(ctx, job, NOT_RECORDED, &lines, true);
     };
-    let evidence = judge_stopped_results(&results, &prepared.resolved, time);
+    let evidence = judge_stopped_on(&row, &results, &prepared.resolved, time);
     if evidence.verdict == "failed" {
         return fail(ctx, job, EVIDENCE_FAILED, &evidence.reasons, true);
     }
@@ -325,11 +330,12 @@ pub fn finish_stopped<H: Host>(
         None
     };
     let changed = "the document changed while the case ran, so the run was not recorded".to_owned();
-    let planned = match plan_scenario_job_with(
+    let planned = match plan_scenario_job_on(
         &ctx.config.doc,
         job.scenario.as_deref(),
         action_of(job),
         &PLAN_OPTIONS,
+        job.backend.as_deref(),
     ) {
         Ok(planned) => planned,
         Err(outcome) => {

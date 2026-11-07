@@ -1,8 +1,10 @@
 //! The stage keys of a study, reached through the same gate chain as every other operation.
 
-use crate::prepare::prepare;
+use crate::backends::{by_id, default_row, identity::tool_identity_for};
+use crate::prepare::{Prepared, prepare_row};
 use crate::report::Report;
-use cfdcraft_backend_esi::{Dialect, WRITER_SOURCES};
+use cfdcraft_backend::CompileOptions;
+use cfdcraft_backend_esi::Dialect;
 use cfdcraft_keys::{StageRecipes, ToolIdentity};
 use cfdcraft_store::ContentHash;
 
@@ -27,24 +29,34 @@ pub(crate) fn writer_version_of(version: &str, sources: &[(&str, &str)]) -> Stri
     format!("{version}+{}", &hash[..FINGERPRINT_LEN])
 }
 
-/// The tools that make a case in `dialect`: its image digest, its identifier, no geometry
-/// sidecar, and the version of this build's case writer (see [`writer_version_of`]).
+/// The tools that make a case in `dialect`: the identity of the registry row with its id (see
+/// [`tool_identity_for`]).
+#[doc(hidden)]
 pub fn tool_identity(dialect: Dialect) -> ToolIdentity {
-    let image = dialect.image();
-    let digest = image.split_once('@').map_or(image, |(_, digest)| digest);
-    let writer = writer_version_of(env!("CARGO_PKG_VERSION"), &WRITER_SOURCES);
-    ToolIdentity::new(digest, dialect.id(), None, writer)
+    let row = by_id(dialect.id()).expect("every dialect has a registry row");
+    tool_identity_for(row.backend)
+}
+
+/// The tools of the backend used when none is named.
+pub(crate) fn default_tool_identity() -> ToolIdentity {
+    tool_identity_for(default_row().backend)
+}
+
+/// The gate chain for the backend used when none is named.
+// The report is the error on purpose: a failed chain hands back the finished, classified result.
+#[allow(clippy::result_large_err)]
+pub(crate) fn prepare_default(study_json: &str) -> Result<Prepared, Report> {
+    prepare_row(study_json, &default_row(), &CompileOptions::default())
 }
 
 /// The geometry hash, the mesh key and the result key of a study, in that order as artifacts.
 /// A study that fails any gate gives its failing report and no key.
 pub fn stage_keys(study_json: &str) -> Report {
-    let dialect = Dialect::EsiV2512;
-    let prepared = match prepare(study_json, dialect) {
+    let prepared = match prepare_default(study_json) {
         Ok(prepared) => prepared,
         Err(report) => return report.for_operation("keys"),
     };
-    let recipes = StageRecipes::from_resolved(&prepared.resolved, &tool_identity(dialect));
+    let recipes = StageRecipes::from_resolved(&prepared.resolved, &default_tool_identity());
     let keys = recipes.keys();
     Report::from_diagnostics("keys", prepared.warnings, Some(prepared.hash))
         .with_migration(prepared.migration)
@@ -75,6 +87,7 @@ mod tests {
 
     #[test]
     fn the_writer_version_covers_the_override_step_and_the_dictionary_editor() {
+        let sources = default_row().backend.writer_sources();
         let earlier = [
             "block_mesh.rs",
             "case.rs",
@@ -83,7 +96,7 @@ mod tests {
             "lib.rs",
             "transport.rs",
         ];
-        let kept: Vec<(&str, &str)> = WRITER_SOURCES
+        let kept: Vec<(&str, &str)> = sources
             .iter()
             .filter(|(name, _)| earlier.contains(name))
             .copied()
@@ -92,11 +105,22 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION");
         assert_ne!(
             writer_version_of(version, &kept),
-            writer_version_of(version, &WRITER_SOURCES)
+            writer_version_of(version, sources)
         );
         assert_eq!(
-            tool_identity(Dialect::EsiV2512).writer_version,
-            writer_version_of(version, &WRITER_SOURCES)
+            tool_identity(Dialect::ALL[0]).writer_version,
+            writer_version_of(version, sources)
         );
+    }
+
+    #[test]
+    fn the_identity_of_a_dialect_is_the_identity_of_its_row() {
+        let default = tool_identity(Dialect::ALL[0]);
+        assert_eq!(default, default_tool_identity());
+        assert_eq!(default, tool_identity_for(default_row().backend));
+        let later = tool_identity(Dialect::EsiV2606);
+        assert_eq!(later.writer_version, default.writer_version);
+        assert_ne!(later.image_digest, default.image_digest);
+        assert_ne!(later.dialect, default.dialect);
     }
 }

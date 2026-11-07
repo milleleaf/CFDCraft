@@ -1,0 +1,230 @@
+name: probes
+
+# Short solver probes on a hosted runner. They show what normal CI cannot: what each solver image
+# ships, whether its entrypoint passes a command through, how each backend's own sample case runs, how
+# one OpenFOAM utility behaves, and how the lattice tool's stdio server behaves.
+#
+# Started by hand (workflow_dispatch) or by a push to a branch named probe/<something>, which runs every
+# probe. Only the repository owner pushes such a branch, and main is never touched. There is no pull
+# request trigger, no secret, no registry login and no push of an image.
+# Every container runs without network access under CPU, memory and process caps (docker/probes/common.sh).
+# Each job prints its findings as plain text in the job log. Normal CI never starts a solver.
+
+on:
+  push:
+    branches: ['probe/**']
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which probe to run
+        type: choice
+        required: true
+        options:
+          - etc
+          - openfoam-case
+          - surfacefeatures
+          - su2
+          - codesaturne
+          - fieldcraft
+          - all
+
+permissions:
+  contents: read
+
+jobs:
+  etc:
+    if: github.event_name == 'push' || inputs.target == 'etc' || inputs.target == 'all'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: esi-v2512
+            image: opencfd/openfoam-default@sha256:33fb575aa9980d2bc42fd58c75ae698c489293ba30c991380fe3f899c622f319
+            build: 'no'
+          - id: esi-v2606
+            image: opencfd/openfoam-run@sha256:4229997e74defb81548222d511b8e3b95b98305e5df41b8e88b031813fe47eeb
+            build: 'no'
+          - id: of14
+            image: solver-of14:probe
+            build: 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: pull
+        if: matrix.build == 'no'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: docker pull "$IMAGE"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: matrix.build == 'yes'
+      - name: build (not pushed)
+        if: matrix.build == 'yes'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/of14
+          file: docker/of14/Dockerfile
+          push: false
+          load: true
+          tags: solver-of14:probe
+      - name: etc listing
+        env:
+          IMAGE: ${{ matrix.image }}
+          CELL: ${{ matrix.id }}
+        run: |
+          set -u
+          . docker/probes/common.sh
+          probe_begin "etc-$CELL"
+          print_image_facts "$IMAGE"
+          # The listing does not depend on the entrypoint; the case probe checks that separately.
+          PROBE_ENTRYPOINT_RESET=1 run_container "$IMAGE" "etc-$CELL" 'cd /w && bash /probes/etc-listing.sh'
+          echo "PROBE-DONE etc-$CELL"
+
+  openfoam-case:
+    if: github.event_name == 'push' || inputs.target == 'openfoam-case' || inputs.target == 'all'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: esi-v2606
+            kind: esi
+            image: opencfd/openfoam-run@sha256:4229997e74defb81548222d511b8e3b95b98305e5df41b8e88b031813fe47eeb
+            build: 'no'
+          - id: of14
+            kind: of14
+            image: solver-of14:probe
+            build: 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: pull
+        if: matrix.build == 'no'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: docker pull "$IMAGE"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: matrix.build == 'yes'
+      - name: build (not pushed)
+        if: matrix.build == 'yes'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/of14
+          file: docker/of14/Dockerfile
+          push: false
+          load: true
+          tags: solver-of14:probe
+      - name: run the sample case
+        env:
+          IMAGE: ${{ matrix.image }}
+          CASE_KIND: ${{ matrix.kind }}
+        run: bash docker/probes/run-openfoam-case.sh
+
+  surfacefeatures:
+    if: github.event_name == 'push' || inputs.target == 'surfacefeatures' || inputs.target == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build the pinned package (not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/of14
+          file: docker/of14/Dockerfile
+          push: false
+          load: true
+          tags: solver-of14:probe-new
+      - name: write the older-package definition
+        env:
+          OLD_DEFINITION: ${{ runner.temp }}/Dockerfile.of14-older
+        run: |
+          set -eu
+          sed 's/openfoam14=20261008/openfoam14=20260724/' docker/of14/Dockerfile > "$OLD_DEFINITION"
+          test "$(grep -c 'openfoam14=20260724' "$OLD_DEFINITION")" = 1
+      - name: build the older package (not pushed)
+        continue-on-error: true
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/of14
+          file: ${{ runner.temp }}/Dockerfile.of14-older
+          push: false
+          load: true
+          tags: solver-of14:probe-old
+      - name: run the probe
+        env:
+          IMAGE_NEW: solver-of14:probe-new
+          IMAGE_OLD: solver-of14:probe-old
+        run: bash docker/probes/surfacefeatures.sh
+
+  su2:
+    if: github.event_name == 'push' || inputs.target == 'su2' || inputs.target == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build (not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/su2
+          file: docker/su2/Dockerfile
+          push: false
+          load: true
+          tags: solver-su2:probe
+      - name: run the sample case
+        env:
+          IMAGE: solver-su2:probe
+        run: bash docker/probes/su2-run.sh
+
+  codesaturne:
+    if: github.event_name == 'push' || inputs.target == 'codesaturne' || inputs.target == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build (not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/codesaturne
+          file: docker/codesaturne/Dockerfile
+          push: false
+          load: true
+          tags: solver-codesaturne:probe
+      - name: run the sample case
+        env:
+          IMAGE: solver-codesaturne:probe
+        run: bash docker/probes/codesaturne-run.sh
+
+  fieldcraft:
+    if: github.event_name == 'push' || inputs.target == 'fieldcraft' || inputs.target == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: build (not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/fieldcraft
+          file: docker/fieldcraft/Dockerfile
+          push: false
+          load: true
+          tags: solver-fieldcraft:probe
+      - name: run the sample stream
+        env:
+          IMAGE: solver-fieldcraft:probe
+        run: bash docker/probes/fieldcraft-run.sh

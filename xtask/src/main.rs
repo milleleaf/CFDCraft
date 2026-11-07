@@ -1,3 +1,4 @@
+pub mod dockerfiles;
 pub mod equivalents;
 pub mod layers;
 pub mod pins;
@@ -22,6 +23,8 @@ enum Command {
     Sources,
     /// Refuse in-house copies of the shared crash-safe save.
     Equivalents,
+    /// Require every solver image definition to pin its base, check its downloads and reset its entrypoint.
+    Dockerfiles,
 }
 
 fn main() {
@@ -32,6 +35,7 @@ fn main() {
         Command::Layers => layers::check_layers(&root),
         Command::Sources => sources::check_sources(&root),
         Command::Equivalents => equivalents::check_equivalents(&root),
+        Command::Dockerfiles => dockerfiles::check_dockerfiles(&root),
     };
     if let Err(report) = result {
         eprintln!("{report}");

@@ -33,6 +33,15 @@ fn is_plain_name(text: &str) -> bool {
             .all(|(i, &c)| c.is_ascii_lowercase() || c.is_ascii_digit() || (i > 0 && c == b'-'))
 }
 
+/// A backend id: 1 to 40 lower-case letters, digits, hyphens or dots, such as `su2-8.6.0`. Whether a
+/// backend with the id exists is for the registry to say; the file only has to hold plain text.
+fn is_backend_id(text: &str) -> bool {
+    (1..=40).contains(&text.len())
+        && text
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.')
+}
+
 fn is_run_id(text: &str) -> bool {
     (1..=MAX_RUN_ID).contains(&text.len())
         && text.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
@@ -55,7 +64,8 @@ fn damaged(job: &Job, what: &str) -> QueueError {
 ///
 /// - at most [`MAX_JOBS`] jobs;
 /// - job ids are `q-` and digits, and unique;
-/// - a scenario, a sweep and a continued run, when present, are plain names;
+/// - a scenario, a sweep and a continued run, when present, are plain names, and a backend id is
+///   1 to 40 lower-case letters, digits, hyphens or dots;
 /// - at most one job is active;
 /// - a starting, running, stopping, finishing or unreachable job has a run id, and a queued job
 ///   has none; a run id is 1 to [`MAX_RUN_ID`] letters, digits or hyphens;
@@ -143,6 +153,11 @@ fn check_state_members(job: &Job) -> Result<(), QueueError> {
 
 /// The shape of the members that hold text or numbers.
 fn check_members(job: &Job) -> Result<(), QueueError> {
+    if let Some(backend) = &job.backend
+        && !is_backend_id(backend)
+    {
+        return Err(damaged(job, "names a backend that is not a plain id"));
+    }
     if let Some(run_id) = &job.run_id
         && !is_run_id(run_id)
     {

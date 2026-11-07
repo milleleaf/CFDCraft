@@ -203,6 +203,27 @@ const REASON_SHAPE: &str = "domain shape {from} → {to}";
 const REASON_INLET_PROFILE: &str = "{boundary} inlet profile {from} → {to}";
 const REASON_PHYSICS: &str = "{what} {from} → {to}";
 const REASON_THERMAL: &str = "{boundary} thermal condition {from} → {to}";
+const BACKEND_ROW: &str = "{id} ({family}): {admission}, image {image}.";
+const BACKEND_NONE: &str = "No backend is registered.";
+const BACKEND_CANDIDATE: &str = "{id} is a candidate: it has not passed all three gate levels yet.";
+const BACKEND_PREVIEW: &str = "Preview result: this backend's results are not gated results.";
+const BACKEND_IMAGE_PENDING: &str = "The image of {id} is not pinned yet, so its cases cannot run.";
+const BACKEND_UNKNOWN: &str = "No backend has the id {id}.";
+const PARITY_TABLE_HEADER: &str = "Parity of {benchmark}, {case}, against {baseline}.";
+const PARITY_COLUMN: &str = "{backend} (image {image}): gate {gate}, converged {converged}.";
+const PARITY_LEVELS: &str =
+    "Levels: golden compile {golden}, reference oracle {oracle}, parity {parity}.";
+const PARITY_NO_RUNS: &str = "There is no recorded run of {benchmark} under {backend}.";
+const PARITY_CONVERGED: &str = "{backend} is converged.";
+const PARITY_NOT_CONVERGED: &str =
+    "{backend} is not converged; its column is shown but does not count towards admission.";
+const IMPORT_DONE: &str = "Imported {name}: {files} files copied, {refused} refused.";
+const IMPORT_REFUSED_ENTRY: &str = "{file}, line {line}: refused by {rule}.";
+const IMPORT_DIALECT: &str = "Detected case dialect: {dialect}.";
+const IMPORT_READ_ONLY: &str = "The original in {name} is read-only; edit the working copy.";
+const IMPORT_INVENTORY: &str = "{key}: {value}.";
+const IMPORT_NO_MATCHING_BACKEND: &str =
+    "No backend runs a case of the dialect {dialect}, so this case can be inspected but not run.";
 
 /// Every English source text: the plain templates and both forms of each plural pair.
 pub const SOURCES: &[&str] = &[
@@ -377,6 +398,24 @@ pub const SOURCES: &[&str] = &[
     REASON_INLET_PROFILE,
     REASON_PHYSICS,
     REASON_THERMAL,
+    BACKEND_ROW,
+    BACKEND_NONE,
+    BACKEND_CANDIDATE,
+    BACKEND_PREVIEW,
+    BACKEND_IMAGE_PENDING,
+    BACKEND_UNKNOWN,
+    PARITY_TABLE_HEADER,
+    PARITY_COLUMN,
+    PARITY_LEVELS,
+    PARITY_NO_RUNS,
+    PARITY_CONVERGED,
+    PARITY_NOT_CONVERGED,
+    IMPORT_DONE,
+    IMPORT_REFUSED_ENTRY,
+    IMPORT_DIALECT,
+    IMPORT_READ_ONLY,
+    IMPORT_INVENTORY,
+    IMPORT_NO_MATCHING_BACKEND,
 ];
 
 /// One thing the document layer tells a person. Data only: the sentence is made by
@@ -994,6 +1033,75 @@ pub enum Line {
         from: String,
         to: String,
     },
+    /// One row of the backend list.
+    BackendRow {
+        id: String,
+        family: String,
+        admission: String,
+        image: String,
+    },
+    BackendNone,
+    /// The backend has not passed all three gate levels.
+    BackendCandidate {
+        id: String,
+    },
+    /// The one fixed sentence that marks a preview result.
+    BackendPreview,
+    BackendImagePending {
+        id: String,
+    },
+    BackendUnknown {
+        id: String,
+    },
+    ParityTableHeader {
+        benchmark: String,
+        case: String,
+        baseline: String,
+    },
+    ParityColumn {
+        backend: String,
+        image: String,
+        gate: String,
+        converged: String,
+    },
+    ParityLevels {
+        golden: String,
+        oracle: String,
+        parity: String,
+    },
+    ParityNoRuns {
+        benchmark: String,
+        backend: String,
+    },
+    ParityConverged {
+        backend: String,
+    },
+    ParityNotConverged {
+        backend: String,
+    },
+    ImportDone {
+        name: String,
+        files: String,
+        refused: String,
+    },
+    ImportRefusedEntry {
+        file: String,
+        line: String,
+        rule: String,
+    },
+    ImportDialect {
+        dialect: String,
+    },
+    ImportReadOnly {
+        name: String,
+    },
+    ImportInventory {
+        key: String,
+        value: String,
+    },
+    ImportNoMatchingBackend {
+        dialect: String,
+    },
 }
 
 impl Line {
@@ -1169,6 +1277,24 @@ impl Line {
             Line::ReasonInletProfile { .. } => REASON_INLET_PROFILE,
             Line::ReasonPhysics { .. } => REASON_PHYSICS,
             Line::ReasonThermal { .. } => REASON_THERMAL,
+            Line::BackendRow { .. } => BACKEND_ROW,
+            Line::BackendNone => BACKEND_NONE,
+            Line::BackendCandidate { .. } => BACKEND_CANDIDATE,
+            Line::BackendPreview => BACKEND_PREVIEW,
+            Line::BackendImagePending { .. } => BACKEND_IMAGE_PENDING,
+            Line::BackendUnknown { .. } => BACKEND_UNKNOWN,
+            Line::ParityTableHeader { .. } => PARITY_TABLE_HEADER,
+            Line::ParityColumn { .. } => PARITY_COLUMN,
+            Line::ParityLevels { .. } => PARITY_LEVELS,
+            Line::ParityNoRuns { .. } => PARITY_NO_RUNS,
+            Line::ParityConverged { .. } => PARITY_CONVERGED,
+            Line::ParityNotConverged { .. } => PARITY_NOT_CONVERGED,
+            Line::ImportDone { .. } => IMPORT_DONE,
+            Line::ImportRefusedEntry { .. } => IMPORT_REFUSED_ENTRY,
+            Line::ImportDialect { .. } => IMPORT_DIALECT,
+            Line::ImportReadOnly { .. } => IMPORT_READ_ONLY,
+            Line::ImportInventory { .. } => IMPORT_INVENTORY,
+            Line::ImportNoMatchingBackend { .. } => IMPORT_NO_MATCHING_BACKEND,
         }
     }
 
@@ -1518,6 +1644,73 @@ impl Line {
             Line::ReasonThermal { boundary, from, to } => {
                 vec![("boundary", s(boundary)), ("from", s(from)), ("to", s(to))]
             }
+            Line::BackendRow {
+                id,
+                family,
+                admission,
+                image,
+            } => vec![
+                ("id", s(id)),
+                ("family", s(family)),
+                ("admission", s(admission)),
+                ("image", s(image)),
+            ],
+            Line::BackendNone | Line::BackendPreview => Vec::new(),
+            Line::BackendCandidate { id }
+            | Line::BackendImagePending { id }
+            | Line::BackendUnknown { id } => vec![("id", s(id))],
+            Line::ParityTableHeader {
+                benchmark,
+                case,
+                baseline,
+            } => vec![
+                ("benchmark", s(benchmark)),
+                ("case", s(case)),
+                ("baseline", s(baseline)),
+            ],
+            Line::ParityColumn {
+                backend,
+                image,
+                gate,
+                converged,
+            } => vec![
+                ("backend", s(backend)),
+                ("image", s(image)),
+                ("gate", s(gate)),
+                ("converged", s(converged)),
+            ],
+            Line::ParityLevels {
+                golden,
+                oracle,
+                parity,
+            } => vec![
+                ("golden", s(golden)),
+                ("oracle", s(oracle)),
+                ("parity", s(parity)),
+            ],
+            Line::ParityNoRuns { benchmark, backend } => {
+                vec![("benchmark", s(benchmark)), ("backend", s(backend))]
+            }
+            Line::ParityConverged { backend } | Line::ParityNotConverged { backend } => {
+                vec![("backend", s(backend))]
+            }
+            Line::ImportDone {
+                name,
+                files,
+                refused,
+            } => vec![
+                ("name", s(name)),
+                ("files", s(files)),
+                ("refused", s(refused)),
+            ],
+            Line::ImportRefusedEntry { file, line, rule } => {
+                vec![("file", s(file)), ("line", s(line)), ("rule", s(rule))]
+            }
+            Line::ImportDialect { dialect } | Line::ImportNoMatchingBackend { dialect } => {
+                vec![("dialect", s(dialect))]
+            }
+            Line::ImportReadOnly { name } => vec![("name", s(name))],
+            Line::ImportInventory { key, value } => vec![("key", s(key)), ("value", s(value))],
         }
     }
 
@@ -2069,6 +2262,66 @@ impl Line {
                 boundary: t("hot"),
                 from: t("none"),
                 to: t("fixed 307.8 K"),
+            },
+            Line::BackendRow {
+                id: t("su2-8.6.0"),
+                family: t("su2"),
+                admission: t("candidate"),
+                image: t("not pinned"),
+            },
+            Line::BackendNone,
+            Line::BackendCandidate { id: t("su2-8.6.0") },
+            Line::BackendPreview,
+            Line::BackendImagePending { id: t("su2-8.6.0") },
+            Line::BackendUnknown { id: t("nope-1") },
+            Line::ParityTableHeader {
+                benchmark: t("step"),
+                case: t("medium"),
+                baseline: t("esi-v2512"),
+            },
+            Line::ParityColumn {
+                backend: t("su2-8.6.0"),
+                image: t("not pinned"),
+                gate: t("PASS"),
+                converged: t("yes"),
+            },
+            Line::ParityLevels {
+                golden: t("pass"),
+                oracle: t("pass"),
+                parity: t("not_run"),
+            },
+            Line::ParityNoRuns {
+                benchmark: t("step"),
+                backend: t("su2-8.6.0"),
+            },
+            Line::ParityConverged {
+                backend: t("su2-8.6.0"),
+            },
+            Line::ParityNotConverged {
+                backend: t("su2-8.6.0"),
+            },
+            Line::ImportDone {
+                name: t("cavity.cfdcase"),
+                files: t("12"),
+                refused: t("1"),
+            },
+            Line::ImportRefusedEntry {
+                file: t("system/controlDict"),
+                line: t("31"),
+                rule: t("CFD-GUARD-001"),
+            },
+            Line::ImportDialect {
+                dialect: t("esi-v2512"),
+            },
+            Line::ImportReadOnly {
+                name: t("cavity.cfdcase"),
+            },
+            Line::ImportInventory {
+                key: t("turbulence model"),
+                value: t("laminar"),
+            },
+            Line::ImportNoMatchingBackend {
+                dialect: t("foundation-14"),
             },
         ]
     }

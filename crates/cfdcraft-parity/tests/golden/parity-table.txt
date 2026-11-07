@@ -1,0 +1,11 @@
+benchmark: dvd
+case: ra1e5 medium
+baseline: esi-v2512 PASS
+
+backend    gate  converged  preview  golden  oracle  parity
+esi-v2606  PASS  true       false    pass    pass    pass
+su2-8.6.0  PASS  true       false    pass    pass    fail
+
+quantity          baseline  esi-v2606 value  esi-v2606 abs_diff  esi-v2606 verdict  su2-8.6.0 value  su2-8.6.0 abs_diff  su2-8.6.0 verdict
+bench.dvd.nu_hot  4.000000  4.250000         2.500e-1            within_tolerance   5.000000         1.000e0             differs
+bench.dvd.u_max   0.500000  0.500000         0.000e0             reproduced         0.500000         0.000e0             reproduced

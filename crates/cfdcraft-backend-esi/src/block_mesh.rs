@@ -38,7 +38,7 @@ fn block(b: &Block) -> String {
     )
 }
 
-pub(crate) fn block_mesh(layout: &Layout, patches: &[Patch]) -> String {
+pub fn block_mesh(layout: &Layout, patches: &[Patch]) -> String {
     let vertices: String = layout
         .vertices
         .iter()

@@ -4,6 +4,7 @@ use crate::gci_ops::GciData;
 use cfdcraft_compare::{Comparison, KeyNumbers};
 use cfdcraft_diskuse::{DiskUse, PrunePlan};
 use cfdcraft_keys::Change;
+use cfdcraft_parity::ParityReport;
 use cfdcraft_runs::{Check, Provenance};
 use cfdcraft_scenarios::Override;
 use cfdcraft_settle::Verdict;
@@ -54,6 +55,12 @@ pub enum Repro {
     Gci(Box<GciData>),
     /// The benchmark templates and the benchmark that judges each.
     Benchmarks(Box<BenchmarksData>),
+    /// The registered solver backends.
+    Backends(Box<BackendsData>),
+    /// An imported case.
+    Import(Box<ImportData>),
+    /// The parity table of one benchmark.
+    Parity(Box<ParityData>),
 }
 
 /// The outcome of one solve.
@@ -360,4 +367,122 @@ pub struct BenchmarkEntry {
     pub defaults: String,
     /// The key numbers a mesh independence study reads, by name.
     pub headline_quantities: Vec<String>,
+}
+
+/// What `image` says for a backend whose image is not pinned yet.
+pub const IMAGE_NOT_PINNED: &str = "not pinned";
+
+/// Every registered backend, the default first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BackendsData {
+    pub backends: Vec<BackendEntry>,
+}
+
+impl BackendsData {
+    /// The sentences for a person: one row per backend, each followed by what its state adds (a
+    /// preview label, the candidate notice, the notice that its image is not pinned).
+    pub fn lines(&self) -> Vec<Line> {
+        if self.backends.is_empty() {
+            return vec![Line::BackendNone];
+        }
+        let mut lines = Vec::new();
+        for entry in &self.backends {
+            let id = entry.id.clone();
+            lines.push(Line::BackendRow {
+                id: id.clone(),
+                family: entry.family.clone(),
+                admission: entry.admission.clone(),
+                image: entry.image.clone(),
+            });
+            if entry.preview {
+                lines.push(Line::BackendPreview);
+            }
+            if entry.admission == "candidate" {
+                lines.push(Line::BackendCandidate { id: id.clone() });
+            }
+            if entry.image == IMAGE_NOT_PINNED {
+                lines.push(Line::BackendImagePending { id });
+            }
+        }
+        lines
+    }
+}
+
+/// One backend of the registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BackendEntry {
+    pub id: String,
+    /// `esi`, `of14`, `su2`, `codesaturne` or `lbm`.
+    pub family: String,
+    /// `default`, `supported` or `candidate`.
+    pub admission: String,
+    /// The digest-pinned image reference, or `not pinned`.
+    pub image: String,
+    /// A preview backend's results are not gated results.
+    pub preview: bool,
+    /// How many benchmark cases the backend is claimed for; counted for the preview backend.
+    pub claims: u32,
+    /// A fact about the image that a person should know, or empty.
+    pub note: String,
+}
+
+/// A case that was imported, and what its dictionaries say about it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ImportData {
+    /// The folder the import went into, `<name>.cfdcase`, by name.
+    pub case: String,
+    /// How many files were copied.
+    pub files: u64,
+    /// How many entries were refused; an import that happened refused none.
+    pub refused: u64,
+    pub dialect: String,
+    /// What the dictionaries say, as label and value.
+    pub inventory: Vec<InventoryItem>,
+    /// Whether a registered backend runs the case's dialect.
+    pub runnable: bool,
+}
+
+impl ImportData {
+    /// The sentences for a person.
+    pub fn lines(&self) -> Vec<Line> {
+        let mut lines = vec![
+            Line::ImportDone {
+                name: self.case.clone(),
+                files: self.files.to_string(),
+                refused: self.refused.to_string(),
+            },
+            Line::ImportDialect {
+                dialect: self.dialect.clone(),
+            },
+            Line::ImportReadOnly {
+                name: self.case.clone(),
+            },
+        ];
+        lines.extend(self.inventory.iter().map(|item| Line::ImportInventory {
+            key: item.key.clone(),
+            value: item.value.clone(),
+        }));
+        if !self.runnable {
+            lines.push(Line::ImportNoMatchingBackend {
+                dialect: self.dialect.clone(),
+            });
+        }
+        lines
+    }
+}
+
+/// One thing the dictionaries of an imported case say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InventoryItem {
+    pub key: String,
+    pub value: String,
+}
+
+/// The parity table of one benchmark, as data and as the text a person reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ParityData {
+    pub parity: ParityReport,
+    /// The header sentence, the fixed-format table, the levels sentence and one sentence per
+    /// column, in that order.
+    pub text: String,
 }

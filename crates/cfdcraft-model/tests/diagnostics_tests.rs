@@ -210,7 +210,7 @@ fn an_authored_outlet_pressure_names_the_unknown_field() {
 
 #[test]
 fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
-    assert_eq!(CODES.len(), 93);
+    assert_eq!(CODES.len(), 124);
     let mut seen = std::collections::BTreeSet::new();
     for (code, meaning) in CODES {
         let parts: Vec<_> = code.split('-').collect();
@@ -281,6 +281,13 @@ fn the_catalogue_is_unique_well_formed_and_covers_what_the_model_emits() {
         "CFD-MON-007",
         "CFD-MON-008",
         "CFD-MON-009",
+        "CFD-BACKEND-002",
+        "CFD-BACKEND-003",
+        "CFD-BACKEND-004",
+        "CFD-BACKEND-005",
+        "CFD-BACKEND-006",
+        "CFD-BACKEND-007",
+        "CFD-BACKEND-012",
     ];
     for literal in emitters.split("\"CFD-").skip(1) {
         let code = format!("CFD-{}", &literal[..literal.find('"').unwrap()]);
@@ -322,6 +329,7 @@ fn writer_limits() -> Capabilities {
         requires_single_cell_z: true,
         same_kind_boundaries_must_agree: true,
         raw_backend: None,
+        ..Capabilities::unrestricted()
     }
 }
 

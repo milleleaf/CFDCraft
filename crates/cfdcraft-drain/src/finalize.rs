@@ -11,11 +11,10 @@
 use std::fs;
 use std::path::Path;
 
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_logscan::redact_sentence;
-use cfdcraft_ops::jobs::{CaseRun, JobAction, JobOptions, plan_scenario_job_with};
-use cfdcraft_ops::run::judge_finished_results;
-use cfdcraft_ops::{Report, Repro, prepare};
+use cfdcraft_ops::jobs::{CaseRun, JobAction, JobOptions, plan_scenario_job_on, prepare_on};
+use cfdcraft_ops::run::judge_finished_on;
+use cfdcraft_ops::{Report, Repro};
 use cfdcraft_queue::{Action, Job, JobKind, Outcome};
 use cfdcraft_remote::{Host, is_owned};
 use cfdcraft_runs::{Check, Outcome as RunOutcome};
@@ -23,6 +22,7 @@ use cfdcraft_text::Line;
 use serde::{Deserialize, Serialize};
 
 use crate::DrainError;
+use crate::case::row_of;
 use crate::explain::{self, Classified};
 use crate::stop::{self, Ended};
 use crate::tick::{self, Drain, STUDY, run_id_of};
@@ -184,6 +184,24 @@ pub fn fail<H: Host>(
     fail_with(ctx, job, code, lines, cleanup, false)
 }
 
+/// Ends a job on a refusal that came up before or after the host was used (a backend that does
+/// not exist, an image that is not pinned): the job fails with the refusal's code and sentence.
+/// Anything else is handed back as the error it is.
+pub fn fail_refused<H: Host>(
+    ctx: &mut Drain<H>,
+    job: &Job,
+    error: DrainError,
+    cleanup: bool,
+) -> Result<(), DrainError> {
+    match error {
+        DrainError::Refused { code, line } => {
+            let sentence = ctx.text.render(&line);
+            fail(ctx, job, code, &[sentence], cleanup)
+        }
+        other => Err(other),
+    }
+}
+
 /// Like [`fail`] for a failure the mirrored logs explain: the run folder on the host is removed
 /// as well, when the drain was set up to do that.
 pub fn fail_explained<H: Host>(
@@ -314,20 +332,25 @@ fn record<H: Host>(ctx: &mut Drain<H>, job: &Job, live: &Path) -> Result<(), Dra
 
     // The case was made from the study as it was when the job started.
     let study = fs::read_to_string(live.join(STUDY)).map_err(|e| DrainError::io(&e))?;
-    let Ok(prepared) = prepare(&study, Dialect::EsiV2512) else {
+    let row = match row_of(job) {
+        Ok(row) => row,
+        Err(error) => return fail_refused(ctx, job, error, true),
+    };
+    let Ok(prepared) = prepare_on(&study, &row) else {
         let lines = ["the study of the job could not be prepared again".to_owned()];
         return fail(ctx, job, NOT_RECORDED, &lines, true);
     };
-    let evidence = judge_finished_results(&results, &prepared.resolved);
+    let evidence = judge_finished_on(&row, &results, &prepared.resolved);
     if evidence.verdict == "failed" {
         return fail(ctx, job, EVIDENCE_FAILED, &evidence.reasons, true);
     }
 
-    let planned = match plan_scenario_job_with(
+    let planned = match plan_scenario_job_on(
         &ctx.config.doc,
         job.scenario.as_deref(),
         action_of(job),
         &PLAN_OPTIONS,
+        job.backend.as_deref(),
     ) {
         Ok(planned) => planned,
         Err(outcome) => {

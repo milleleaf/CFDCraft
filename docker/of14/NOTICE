@@ -1,0 +1,11 @@
+OpenFOAM Foundation version 14 image (package 20261008)
+
+This image contains OpenFOAM version 14, installed from the OpenFOAM Foundation package repository at dl.openfoam.org, on Ubuntu 26.04.
+
+CFDCraft is not approved or endorsed by OpenCFD Limited. OPENFOAM(R) and OpenCFD(R) are registered trade marks of OpenCFD Limited. CFDCraft runs OpenFOAM as a separate program and does not include or link its code.
+
+Licence: OpenFOAM is licensed under the GNU General Public License version 3 (GPL-3.0). The image carries each installed package's own copyright and licence files under /usr/share/doc.
+
+Source: https://dl.openfoam.org/source/14.20261008 (it redirects to https://github.com/OpenFOAM/OpenFOAM-14/archive/20261008.tar.gz).
+
+The image is built by the repository's manual image workflow from docker/of14/Dockerfile and is not published until the maintainers approve it.

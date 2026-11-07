@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 /// One written OpenFOAM patch.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Patch {
+pub struct Patch {
     pub name: &'static str,
     /// `None` is the front/back `empty` patch.
     pub kind: Option<BoundaryKind>,
@@ -202,14 +202,11 @@ fn quads_of(layout: &Layout, sides: &[Side]) -> Vec<[usize; 4]> {
 
 /// Group the resolved boundaries by kind into the fixed patch order, then the walls held at a
 /// fixed temperature, the obstacle, the start-up section, and `frontAndBack`.
-pub(crate) fn patch_plan(s: &ResolvedStudy) -> Result<Vec<Patch>, CompileError> {
+pub fn patch_plan(s: &ResolvedStudy) -> Result<Vec<Patch>, CompileError> {
     patch_plan_with(s, &layout_of(s)?)
 }
 
-pub(crate) fn patch_plan_with(
-    s: &ResolvedStudy,
-    layout: &Layout,
-) -> Result<Vec<Patch>, CompileError> {
+pub fn patch_plan_with(s: &ResolvedStudy, layout: &Layout) -> Result<Vec<Patch>, CompileError> {
     let mut seen = BTreeSet::new();
     for boundary in s.boundary_conditions.values() {
         for face in &boundary.faces {

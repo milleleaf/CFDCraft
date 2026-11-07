@@ -286,6 +286,7 @@ fn enqueue(queue: &mut Queue, jobs: Vec<NewJob>) -> Result<(), QueueError> {
             scenario: new.scenario,
             kind: new.kind,
             origin: new.origin,
+            backend: new.backend,
             state: JobState::Queued,
             attempts: 0,
             run_id: None,

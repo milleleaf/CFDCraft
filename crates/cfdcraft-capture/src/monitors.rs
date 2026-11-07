@@ -152,11 +152,8 @@ pub fn checkpoint_bundle_with(
         .iter()
         .map(|f| format!("{folder}/{f}"))
         .collect();
-    names.extend([
-        "log.blockMesh".to_owned(),
-        "log.checkMesh".to_owned(),
-        plan.log.clone(),
-    ]);
+    names.extend(plan.logs.iter().cloned());
+    names.push(plan.log.clone());
     push_if_present(results, format!("{folder}/phi"), &mut names)?;
     names.extend(monitor_names(results)?);
     read_all(results, names, FILE_CAP)

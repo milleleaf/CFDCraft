@@ -118,6 +118,7 @@ fn study_job() -> NewJob {
         scenario: None,
         kind: JobKind::Solve,
         origin: None,
+        backend: None,
     }
 }
 

@@ -10,6 +10,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "backend": {
+          "description": "The id of the backend the job runs on; none means the registry default. A file written\nbefore this member existed has none and reads as before.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "code": {
           "description": "The stable code of a failed or interrupted job.",
           "type": [

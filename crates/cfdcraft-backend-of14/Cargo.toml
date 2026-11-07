@@ -1,0 +1,15 @@
+[package]
+name = "cfdcraft-backend-of14"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-backend = { path = "../cfdcraft-backend", version = "=0.1.0" }
+cfdcraft-backend-esi = { path = "../cfdcraft-backend-esi", version = "=0.1.0" }
+cfdcraft-dictedit = { path = "../cfdcraft-dictedit", version = "=0.1.0" }
+cfdcraft-foamdict = { path = "../cfdcraft-foamdict", version = "=0.1.0" }
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+
+[dev-dependencies]
+cfdcraft-templates = { path = "../cfdcraft-templates", version = "=0.1.0" }

@@ -59,6 +59,7 @@ fn buoyant_plan() -> EvidencePlan {
         solver: "buoyantBoussinesqSimpleFoam".into(),
         pressure: "p_rgh".into(),
         temperature: true,
+        energy_field: "T".into(),
         residual_limits: true,
         potential_log: None,
     }
@@ -69,6 +70,7 @@ fn transient_plan() -> EvidencePlan {
         solver: "pimpleFoam".into(),
         pressure: "p".into(),
         temperature: false,
+        energy_field: "T".into(),
         residual_limits: false,
         potential_log: None,
     }
@@ -119,6 +121,52 @@ fn a_buoyant_steady_run_is_gated_on_p_rgh_and_t() {
     let reasons = failure(judge_run(&evidence(&good, &times), &expected(100.0)));
     assert!(
         reasons.iter().any(|r| r.contains("residual for p")),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn a_buoyant_run_is_gated_on_the_plans_energy_field() {
+    // The Foundation fluid module solves the enthalpy `h`, so its plan names `h` and no `T`
+    // residual is asked for; the ESI plan keeps `T`.
+    let log = |field: &str| {
+        block(
+            "100",
+            &[
+                ("Ux", "1e-8"),
+                ("Uy", "2e-8"),
+                ("p_rgh", "1e-8"),
+                (field, "3e-9"),
+            ],
+        ) + "End\n"
+    };
+    let times = [0.0, 100.0];
+    let h_plan = EvidencePlan {
+        energy_field: "h".into(),
+        ..buoyant_plan()
+    };
+    let with_h = log("h");
+    assert_eq!(
+        judge_run_with(&evidence(&with_h, &times), &expected(100.0), &h_plan),
+        Verdict::Passed
+    );
+    let reasons = failure(judge_run_with(
+        &evidence(&with_h, &times),
+        &expected(100.0),
+        &buoyant_plan(),
+    ));
+    assert!(
+        reasons.iter().any(|r| r.contains("residual for T")),
+        "{reasons:?}"
+    );
+    let with_t = log("T");
+    let reasons = failure(judge_run_with(
+        &evidence(&with_t, &times),
+        &expected(100.0),
+        &h_plan,
+    ));
+    assert!(
+        reasons.iter().any(|r| r.contains("residual for h")),
         "{reasons:?}"
     );
 }

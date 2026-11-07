@@ -6,6 +6,7 @@
 
 use crate::case::CaseTree;
 use std::{
+    collections::BTreeSet,
     fmt, io,
     path::{Component, Path},
 };
@@ -83,6 +84,99 @@ impl Rule {
                 "only a plain $name may be used; other expansion can build forbidden words"
             }
         }
+    }
+}
+
+/// Exact `etc` include paths and exact function names an import scan may accept. It is built from
+/// a reviewed list; the scans of the cases CFDCraft writes never take one. Entries match whole,
+/// never by prefix, and an entry that could name anything but a plain relative path is refused
+/// when the list is built.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Allowlist {
+    etc_includes: BTreeSet<String>,
+    functions: BTreeSet<String>,
+}
+
+/// An allowlist entry that was refused when the list was built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowlistError {
+    pub entry: String,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for AllowlistError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "allowlist entry `{}`: {}", self.entry, self.reason)
+    }
+}
+
+impl std::error::Error for AllowlistError {}
+
+fn check_entry(entry: &str) -> Result<(), AllowlistError> {
+    let reason = if entry.is_empty() {
+        Some("is empty")
+    } else if entry.contains("..") {
+        Some("holds a parent component")
+    } else if entry.starts_with('/') {
+        Some("is absolute")
+    } else if !entry
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/' | ':'))
+    {
+        Some("holds a character other than letters, digits and _ . - / :")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(AllowlistError {
+            entry: entry.chars().take(ENTRY_MAX).collect(),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
+impl Allowlist {
+    /// The list that accepts nothing.
+    pub fn empty() -> Allowlist {
+        Allowlist::default()
+    }
+
+    /// Builds a list; the first entry that is not a plain relative name is an error.
+    pub fn new<E, F>(etc_includes: E, functions: F) -> Result<Allowlist, AllowlistError>
+    where
+        E: IntoIterator,
+        E::Item: AsRef<str>,
+        F: IntoIterator,
+        F::Item: AsRef<str>,
+    {
+        let mut list = Allowlist::default();
+        for e in etc_includes {
+            check_entry(e.as_ref())?;
+            list.etc_includes.insert(e.as_ref().to_string());
+        }
+        for f in functions {
+            check_entry(f.as_ref())?;
+            list.functions.insert(f.as_ref().to_string());
+        }
+        Ok(list)
+    }
+
+    /// Number of entries, `etc` includes and function names together.
+    pub fn len(&self) -> usize {
+        self.etc_includes.len() + self.functions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn etc_includes(&self) -> impl Iterator<Item = &str> {
+        self.etc_includes.iter().map(String::as_str)
+    }
+
+    pub fn functions(&self) -> impl Iterator<Item = &str> {
+        self.functions.iter().map(String::as_str)
     }
 }
 
@@ -291,7 +385,7 @@ fn keyword_rule(word: &str) -> Option<Rule> {
     }
 }
 
-fn scan_content(file: &str, bytes: &[u8], out: &mut Vec<Refusal>) {
+fn scan_content(file: &str, bytes: &[u8], allow: &Allowlist, out: &mut Vec<Refusal>) {
     if bytes.len() > FILE_MAX {
         refuse(out, file, 1, "file over 16 MiB", Rule::Tree);
         return;
@@ -321,7 +415,7 @@ fn scan_content(file: &str, bytes: &[u8], out: &mut Vec<Refusal>) {
             cut = Some(tokens[i].line);
             break;
         }
-        check_token(file, &tokens, i, &mut libs_done, out);
+        check_token(file, &tokens, i, &mut libs_done, allow, out);
     }
     if let Some(line) = cut {
         out.truncate(start + REFUSALS_MAX);
@@ -336,12 +430,16 @@ fn check_token(
     tokens: &[Token],
     i: usize,
     libs_done: &mut usize,
+    allow: &Allowlist,
     out: &mut Vec<Refusal>,
 ) {
     let t = tokens[i];
     match t.kind {
         Kind::Verbatim => refuse(out, file, t.line, "#{", Rule::Directive),
         Kind::Word("#include") => check_include(file, tokens, i, out),
+        // Listed forms only; with an empty list both fall through to the refusal below.
+        Kind::Word("#includeEtc") if etc_include_listed(tokens, i, allow) => {}
+        Kind::Word("#includeFunc") if function_listed(tokens, i, allow) => {}
         // OpenFOAM starts a directive at a `#` that follows a number or a one-character
         // punctuation token without a space (`1#calc`, `-#calc`), so any other `#` in a word is
         // refused, not just a leading one.
@@ -413,6 +511,57 @@ fn check_include(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>)
     }
 }
 
+/// `#includeEtc` followed by exactly one listed path, quoted or bare.
+fn etc_include_listed(tokens: &[Token], i: usize, allow: &Allowlist) -> bool {
+    matches!(
+        tokens.get(i + 1).map(|t| t.kind),
+        Some(Kind::Word(p) | Kind::Str(p)) if allow.etc_includes.contains(p)
+    )
+}
+
+/// Arguments of a listed function may hold only letters, digits and `_ . - : , space`.
+fn argument_char_ok(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | ':' | ',' | ' ')
+}
+
+/// `#includeFunc name` or `#includeFunc name(args)` with a listed `name` and plain arguments, as
+/// separate tokens or as one quoted string.
+fn function_listed(tokens: &[Token], i: usize, allow: &Allowlist) -> bool {
+    match tokens.get(i + 1).map(|t| t.kind) {
+        Some(Kind::Word(name)) if allow.functions.contains(name) => {
+            match tokens.get(i + 2).map(|t| t.kind) {
+                Some(Kind::Punct(b'(')) => arguments_ok(&tokens[i + 3..]),
+                _ => true,
+            }
+        }
+        Some(Kind::Str(text)) => match text.split_once('(') {
+            None => allow.functions.contains(text),
+            Some((name, rest)) => {
+                allow.functions.contains(name)
+                    && rest
+                        .strip_suffix(')')
+                        .is_some_and(|a| a.chars().all(argument_char_ok))
+            }
+        },
+        _ => false,
+    }
+}
+
+/// The tokens after an opening parenthesis up to its closing one: plain words and commas only.
+/// A nested parenthesis, a quote, a `;` or a brace ends the check with a refusal, and so does a
+/// missing closing parenthesis.
+fn arguments_ok(rest: &[Token]) -> bool {
+    for t in rest {
+        match t.kind {
+            Kind::Punct(b')') => return true,
+            Kind::Punct(b',') => {}
+            Kind::Word(w) if w.chars().all(argument_char_ok) => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// The value of `libs` runs up to the next `;`. Every item must be on the allowlist. Returns the
 /// index of the token the scan stopped at. A value that reaches the end of the file still open
 /// (no `;` at depth 0) is refused once, at the keyword, whatever its items were.
@@ -449,17 +598,16 @@ fn check_libs(file: &str, tokens: &[Token], i: usize, out: &mut Vec<Refusal>) ->
 }
 
 /// Path rules: no parent, absolute, drive or backslash paths, no compressed or shared-object
-/// files, no generated-code directories.
-fn path_rules(path: &str, out: &mut Vec<Refusal>) {
+/// files, no generated-code directories. `left_out` is true for entries an import neither copies
+/// nor reads: compressed files there are not refused, everything else still is.
+fn path_rules(path: &str, left_out: bool, out: &mut Vec<Refusal>) {
     let parts: Vec<&str> = path.split(['/', '\\']).collect();
     if path.contains('\\') || path.starts_with('/') || has_drive(path) || parts.contains(&"..") {
         refuse(out, path, 1, path, Rule::Tree);
     }
     let last = parts.last().copied().unwrap_or("").to_ascii_lowercase();
-    if [".gz", ".so", ".dylib", ".dll"]
-        .iter()
-        .any(|e| last.ends_with(e))
-    {
+    let compressed = last.ends_with(".gz");
+    if (compressed && !left_out) || [".so", ".dylib", ".dll"].iter().any(|e| last.ends_with(e)) {
         refuse(out, path, 1, &last, Rule::Tree);
     }
     if let Some(c) = parts.iter().find(|c| {
@@ -474,10 +622,16 @@ fn path_rules(path: &str, out: &mut Vec<Refusal>) {
 
 /// Scans the given files. Refusals come back sorted by file, then line.
 pub fn scan_files(files: &[GuardFile]) -> Vec<Refusal> {
+    scan_files_with(files, &Allowlist::empty())
+}
+
+/// [`scan_files`] for an import: the listed `#includeEtc` paths and `#includeFunc` names are
+/// accepted, everything else is refused as before.
+pub fn scan_files_with(files: &[GuardFile], allow: &Allowlist) -> Vec<Refusal> {
     let mut out = Vec::new();
     for f in files {
-        path_rules(&f.path, &mut out);
-        scan_content(&f.path, &f.bytes, &mut out);
+        path_rules(&f.path, false, &mut out);
+        scan_content(&f.path, &f.bytes, allow, &mut out);
     }
     out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     out
@@ -529,6 +683,16 @@ enum Mode {
     Dict,
     /// Inside any other directory: only links and special files are looked for.
     LinksOnly,
+    /// Inside an entry the caller leaves out: like `LinksOnly`, and compressed files are not
+    /// refused, because nothing there is copied, read or run.
+    LeftOut,
+}
+
+/// What a walk of a case directory is told besides the path.
+struct Walk<'a> {
+    allow: &'a Allowlist,
+    /// Whether a top-level entry (name, is a folder) is one the caller neither copies nor reads.
+    left_out: &'a dyn Fn(&str, bool) -> bool,
 }
 
 fn is_case_dir(name: &str) -> bool {
@@ -544,8 +708,26 @@ fn is_case_dir(name: &str) -> bool {
 /// the dictionary rules run on `constant`, `system`, `0`, `0.orig` and time directories only, and
 /// other top-level entries are listed as skipped. Paths are relative to `root`, `/` separated.
 pub fn scan_dir(root: &Path) -> io::Result<DirScan> {
+    scan_dir_with(root, &Allowlist::empty())
+}
+
+/// [`scan_dir`] for an import: the listed `#includeEtc` paths and `#includeFunc` names are
+/// accepted, everything else is refused as before.
+pub fn scan_dir_with(root: &Path, allow: &Allowlist) -> io::Result<DirScan> {
+    scan_dir_leaving_out(root, allow, &|_, _| false)
+}
+
+/// [`scan_dir_with`] for an import that copies only part of the case. `left_out(name, is_folder)`
+/// says whether a top-level entry is one the import neither copies nor reads (result folders,
+/// logs). Inside such an entry the dictionary rules and the size limit do not run and compressed
+/// files are not refused; links, special files, unsafe names and shared-object files still are.
+pub fn scan_dir_leaving_out(
+    root: &Path,
+    allow: &Allowlist,
+    left_out: &dyn Fn(&str, bool) -> bool,
+) -> io::Result<DirScan> {
     let mut s = DirScan::default();
-    walk(root, "", 0, Mode::Top, &mut s)?;
+    walk(root, "", 0, Mode::Top, &Walk { allow, left_out }, &mut s)?;
     s.refusals
         .sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     s.scanned.sort();
@@ -553,7 +735,14 @@ pub fn scan_dir(root: &Path) -> io::Result<DirScan> {
     Ok(s)
 }
 
-fn walk(dir: &Path, rel: &str, depth: usize, mode: Mode, s: &mut DirScan) -> io::Result<()> {
+fn walk(
+    dir: &Path,
+    rel: &str,
+    depth: usize,
+    mode: Mode,
+    w: &Walk<'_>,
+    s: &mut DirScan,
+) -> io::Result<()> {
     let mut names = Vec::new();
     for e in std::fs::read_dir(dir)? {
         names.push(e?.file_name());
@@ -578,8 +767,10 @@ fn walk(dir: &Path, rel: &str, depth: usize, mode: Mode, s: &mut DirScan) -> io:
         let path = dir.join(&name);
         let md = std::fs::symlink_metadata(&path)?;
         let before = s.refusals.len();
-        path_rules(&child, &mut s.refusals);
         let kind = md.file_type();
+        let left_out =
+            mode == Mode::LeftOut || (mode == Mode::Top && (w.left_out)(n, kind.is_dir()));
+        path_rules(&child, left_out, &mut s.refusals);
         if kind.is_symlink() || !(kind.is_file() || kind.is_dir()) {
             refuse(&mut s.refusals, &child, 1, n, Rule::Tree);
         } else if kind.is_dir() {
@@ -597,6 +788,10 @@ fn walk(dir: &Path, rel: &str, depth: usize, mode: Mode, s: &mut DirScan) -> io:
                 continue;
             }
             let next = match mode {
+                Mode::Top if left_out => {
+                    s.skipped.push(child.clone());
+                    Mode::LeftOut
+                }
                 Mode::Top if is_case_dir(n) => Mode::Dict,
                 Mode::Top => {
                     s.skipped.push(child.clone());
@@ -604,16 +799,16 @@ fn walk(dir: &Path, rel: &str, depth: usize, mode: Mode, s: &mut DirScan) -> io:
                 }
                 m => m,
             };
-            walk(&path, &child, depth + 1, next, s)?;
+            walk(&path, &child, depth + 1, next, w, s)?;
         } else {
             match mode {
                 Mode::Top => s.skipped.push(child),
-                Mode::LinksOnly => {}
+                Mode::LinksOnly | Mode::LeftOut => {}
                 Mode::Dict if md.len() > FILE_MAX as u64 => {
                     refuse(&mut s.refusals, &child, 1, "file over 16 MiB", Rule::Tree)
                 }
                 Mode::Dict => {
-                    scan_content(&child, &std::fs::read(&path)?, &mut s.refusals);
+                    scan_content(&child, &std::fs::read(&path)?, w.allow, &mut s.refusals);
                     s.scanned.push(child);
                 }
             }

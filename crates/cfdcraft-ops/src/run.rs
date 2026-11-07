@@ -5,16 +5,15 @@
 //! Nothing here prints; everything comes back as a [`Finished`].
 
 use crate::{
+    backends::{Row, default_row, image_or_refusal},
     benchmarks::{self, DirFiles},
     cases::cli_problem,
-    prepare::{Prepared, prepare, rel_name},
+    jobs::{comparer_files, row_for},
+    prepare::{Prepared, prepare_row, rel_name},
     report::{EvidenceReport, ExitClass, HolderInfo, InfraReport, Report, RunInfo},
 };
-use cfdcraft_backend_esi::{
-    CaseTree, Dialect, EvidenceExpectations, EvidencePlan, RunEvidence, SmokeExpectations,
-    SolverPlan, Verdict, dialect, evidence::PartialExpectations, judge_partial_with,
-    judge_run_with, judge_smoke_with, write_to_disk,
-};
+use cfdcraft_backend::{Backend, CompileOptions, DirRunFiles, JudgeMode};
+use cfdcraft_backend_esi::{CaseTree, write_to_disk};
 use cfdcraft_executor::{HostProfile, Job, RunConfig, RunError, docker::RunSpec, lock};
 use cfdcraft_gate::Benchmark;
 use cfdcraft_model::{Diagnostic, ResolvedStudy};
@@ -66,6 +65,8 @@ pub struct RunRequest {
     pub cancel: Arc<AtomicBool>,
     /// A short plain name that becomes part of the run id.
     pub label: String,
+    /// The id of the backend to run on; none means the registry default.
+    backend: Option<String>,
 }
 
 impl RunRequest {
@@ -88,7 +89,16 @@ impl RunRequest {
             socket_dir: socket_dir.into(),
             cancel: Arc::default(),
             label: "study".to_owned(),
+            backend: None,
         }
+    }
+
+    /// The same request for the backend with this id; `None` is the registry default. An id no
+    /// backend has is refused by `begin` before any file is made.
+    #[must_use]
+    pub fn with_backend(mut self, backend: Option<String>) -> Self {
+        self.backend = backend;
+        self
     }
 }
 
@@ -104,6 +114,10 @@ pub struct Finished {
 /// A job that holds the compute host's lock and has not started its container yet.
 pub struct Begun {
     job: Job,
+    /// The registry row whose backend wrote the case, and so judges it and reads its results.
+    row: Row,
+    /// The pinned image the case runs in.
+    image: &'static str,
     prepared: Prepared,
     mode: RunMode,
     case: PathBuf,
@@ -360,9 +374,23 @@ fn verify_case_dir(dir: &Path, export: &CaseTree) -> Result<(), Diagnostic> {
 // The finished report is the error on purpose.
 #[allow(clippy::result_large_err)]
 pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> {
+    let row = row_for(request.backend.as_deref()).map_err(|found| {
+        let operation = request.mode.operation();
+        finished(Report::from_diagnostics(operation, vec![found], None))
+    })?;
+    begin_row(study_json, request, &row)
+}
+
+/// `begin` for a registry row. A row whose image is not pinned is refused with `CFD-BACKEND-010`
+/// before a host profile is read, a connection is made or a run directory is built.
+// The finished report is the error on purpose.
+#[doc(hidden)]
+#[allow(clippy::result_large_err)]
+pub fn begin_row(study_json: &str, request: &RunRequest, row: &Row) -> Result<Begun, Finished> {
     let operation = request.mode.operation();
-    let prepared = prepare(study_json, Dialect::EsiV2512)
+    let prepared = prepare_row(study_json, row, &CompileOptions::default())
         .map_err(|report| finished(report.for_operation(operation)))?;
+    let image = image_or_refusal(row).map_err(|found| refused(operation, &prepared, found))?;
     if let Some(found) = mode_problem(request.mode, &prepared.resolved) {
         return Err(refused(operation, &prepared, found));
     }
@@ -411,6 +439,8 @@ pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> 
         }
     };
     Ok(Begun {
+        row: *row,
+        image,
         results: run_dir.join("results"),
         cap_seconds: profile.wall_clock_seconds,
         override_used: benchmark.is_some() && request.tolerance_override.is_some(),
@@ -423,135 +453,32 @@ pub fn begin(study_json: &str, request: &RunRequest) -> Result<Begun, Finished> 
     })
 }
 
-/// The logs and the numeric time directories a run left in its results directory.
-struct Evidence {
-    block_mesh: String,
-    check_mesh: String,
-    solver: String,
-    /// The log of the potential-flow step, when the plan has one.
-    potential: Option<String>,
-    times: Vec<f64>,
-}
-
-impl Evidence {
-    /// The logs are read by the names the plan gives; a missing log is an empty text, which the
-    /// judge fails on its missing end marker.
-    fn read(results: &Path, plan: &SolverPlan) -> Self {
-        let log = |name: &str| std::fs::read_to_string(results.join(name)).unwrap_or_default();
-        let times = std::fs::read_dir(results)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().to_string_lossy().parse::<f64>().ok())
-            .collect();
-        Self {
-            block_mesh: log("log.blockMesh"),
-            check_mesh: log("log.checkMesh"),
-            solver: log(&plan.log_file),
-            potential: plan.potential.then(|| log("log.potentialFoam")),
-            times,
-        }
+/// Judge a finished run through the backend that wrote its case: its logs and result files are
+/// read from `results`, and the exit status of the solver takes no part in it.
+pub fn judge_for(
+    backend: &dyn Backend,
+    results: &Path,
+    r: &ResolvedStudy,
+    mode: JudgeMode,
+) -> EvidenceReport {
+    let outcome = backend.judge(&DirRunFiles::new(results), r, mode);
+    EvidenceReport {
+        verdict: outcome.verdict,
+        reasons: outcome.reasons,
     }
-
-    fn run_evidence(&self) -> RunEvidence<'_> {
-        RunEvidence {
-            block_mesh_log: &self.block_mesh,
-            check_mesh_log: &self.check_mesh,
-            solver_log: &self.solver,
-            time_directories: &self.times,
-        }
-    }
-
-    /// The plan's view for the judge, with the potential-flow log it needs.
-    fn judge_plan(&self, plan: &SolverPlan) -> EvidencePlan {
-        let mut judge = plan.evidence_plan();
-        judge.potential_log.clone_from(&self.potential);
-        judge
-    }
-}
-
-/// Field names as a phrase: `U and p`, `U, p_rgh and T`.
-fn field_phrase(fields: &[String]) -> String {
-    match fields.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        Some((last, _)) => last.clone(),
-        None => String::new(),
-    }
-}
-
-/// True when the final time directory holds every named field, non-empty.
-fn final_fields_present(results: &Path, end_time: f64, fields: &[String]) -> bool {
-    std::fs::read_dir(results)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .parse::<f64>()
-                .is_ok_and(|t| (t - end_time).abs() < 1e-6)
-        })
-        .any(|dir| {
-            fields.iter().all(|name| {
-                std::fs::metadata(dir.path().join(name)).is_ok_and(|m| m.is_file() && m.len() > 0)
-            })
-        })
 }
 
 /// Judge a finished run from its logs and output directories. The solver's exit status takes no
 /// part in it.
 pub fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> EvidenceReport {
-    let plan = SolverPlan::for_study(r);
-    let read = Evidence::read(results, &plan);
-    let evidence = read.run_evidence();
-    let judge = read.judge_plan(&plan);
-    let mut reasons = Vec::new();
-    let verdict = match r.cell_count() {
-        None => {
-            reasons.push("the study's cell count overflows".to_owned());
-            None
-        }
-        Some(cell_count) if mode == RunMode::Smoke => Some(judge_smoke_with(
-            &evidence,
-            &SmokeExpectations {
-                end_time: r.solver.end_time,
-                cell_count,
-                domain_volume: r.meshed_volume(),
-            },
-            &judge,
-        )),
-        Some(cell_count) => Some(judge_run_with(
-            &evidence,
-            &EvidenceExpectations {
-                end_time: r.solver.end_time,
-                cell_count,
-                domain_volume: r.meshed_volume(),
-                p_threshold: r.solver.convergence.p,
-                u_threshold: r.solver.convergence.u,
-            },
-            &judge,
-        )),
-    };
-    if let Some(Verdict::Failed(found)) = &verdict {
-        reasons.extend(found.iter().cloned());
-    }
-    if !final_fields_present(results, r.solver.end_time, &plan.final_fields) {
-        reasons.push(format!(
-            "the final-time {} field files are missing or empty",
-            field_phrase(&plan.final_fields)
-        ));
-    }
-    let verdict = if !reasons.is_empty() {
-        "failed"
-    } else if mode == RunMode::Smoke {
-        "smoke_passed"
-    } else {
-        "passed"
-    };
-    EvidenceReport {
-        verdict: verdict.to_owned(),
-        reasons,
+    judge_for(default_row().backend, results, r, judge_mode(mode))
+}
+
+/// How a run mode is judged.
+fn judge_mode(mode: RunMode) -> JudgeMode {
+    match mode {
+        RunMode::Smoke => JudgeMode::Smoke,
+        RunMode::Run | RunMode::Validate => JudgeMode::Run,
     }
 }
 
@@ -560,64 +487,33 @@ pub fn judge_results(results: &Path, r: &ResolvedStudy, mode: RunMode) -> Eviden
 /// fields are there. There is no residual limit. Whether the run converged is a separate verdict.
 /// The verdict word is `passed` or `failed`.
 pub fn judge_finished_results(results: &Path, r: &ResolvedStudy) -> EvidenceReport {
-    let mut report = judge_results(results, r, RunMode::Smoke);
-    if report.verdict == "smoke_passed" {
-        report.verdict = "passed".to_owned();
-    }
-    report
+    judge_finished_on(&default_row(), results, r)
+}
+
+/// [`judge_finished_results`] through the backend of `row`.
+pub fn judge_finished_on(row: &Row, results: &Path, r: &ResolvedStudy) -> EvidenceReport {
+    judge_for(row.backend, results, r, JudgeMode::Finished)
 }
 
 /// Judge a run that was stopped on request at `time`: every log ends, nothing is fatal, the mesh is
 /// good, the residuals are well formed, the last logged time is the newest time folder, and that
 /// folder holds a non-empty `U` and pressure field (`p`, or `p_rgh` when buoyant). There is no
-/// residual limit and no end time to reach. The
-/// verdict word is `passed` or `failed`.
+/// residual limit and no end time to reach. The verdict word is `passed` or `failed`.
 pub fn judge_stopped_results(results: &Path, r: &ResolvedStudy, time: &str) -> EvidenceReport {
-    let plan = SolverPlan::for_study(r);
-    let read = Evidence::read(results, &plan);
-    let evidence = read.run_evidence();
-    let mut reasons = Vec::new();
-    match r.cell_count() {
-        None => reasons.push("the study's cell count overflows".to_owned()),
-        Some(cell_count) => {
-            let expected = PartialExpectations {
-                end_time: r.solver.end_time,
-                cell_count,
-                domain_volume: r.meshed_volume(),
-            };
-            if let Verdict::Failed(found) =
-                judge_partial_with(&evidence, &expected, &read.judge_plan(&plan))
-            {
-                reasons.extend(found);
-            }
-        }
-    }
-    // The time becomes part of a path, so only a plain decimal number is used as one.
-    let plain = !time.is_empty()
-        && time.bytes().all(|c| c.is_ascii_digit() || c == b'.')
-        && time.bytes().any(|c| c.is_ascii_digit());
-    let filled = |name: &str| {
-        plain
-            && std::fs::metadata(results.join(time).join(name))
-                .is_ok_and(|m| m.is_file() && m.len() > 0)
+    judge_stopped_on(&default_row(), results, r, time)
+}
+
+/// [`judge_stopped_results`] through the backend of `row`.
+pub fn judge_stopped_on(
+    row: &Row,
+    results: &Path,
+    r: &ResolvedStudy,
+    time: &str,
+) -> EvidenceReport {
+    let mode = JudgeMode::Stopped {
+        time: time.to_owned(),
     };
-    // A stopped run is held to the velocity and the pressure it solves for.
-    let needed = ["U".to_owned(), plan.pressure_field.clone()];
-    if !needed.iter().all(|name| filled(name)) {
-        reasons.push(format!(
-            "the {} field files of the stopped time {time} are missing or empty",
-            field_phrase(&needed)
-        ));
-    }
-    EvidenceReport {
-        verdict: if reasons.is_empty() {
-            "passed"
-        } else {
-            "failed"
-        }
-        .to_owned(),
-        reasons,
-    }
+    judge_for(row.backend, results, r, mode)
 }
 
 /// The long part of a run: upload the case, run it, download the results, judge them. The report
@@ -625,6 +521,8 @@ pub fn judge_stopped_results(results: &Path, r: &ResolvedStudy, time: &str) -> E
 pub fn execute(begun: Begun) -> Finished {
     let Begun {
         job,
+        row,
+        image,
         prepared,
         mode,
         case,
@@ -636,13 +534,18 @@ pub fn execute(begun: Begun) -> Finished {
     } = begun;
     let operation = mode.operation();
     let run_id = job.run_id().to_owned();
-    let outcome = RunSpec::allrun(dialect::IMAGE)
+    let outcome = RunSpec::allrun(image)
         .map_err(RunError::Setup)
         .and_then(|spec| job.execute(&case, &results, &spec));
     let mut done = match outcome {
         Err(e) => infra_finished(operation, &e, Some(&prepared), Some(&run_id)),
         Ok(outcome) => {
-            let evidence = judge_results(&outcome.results_dir, &prepared.resolved, mode);
+            let evidence = judge_for(
+                row.backend,
+                &outcome.results_dir,
+                &prepared.resolved,
+                judge_mode(mode),
+            );
             let mut report = Report::from_diagnostics(
                 operation,
                 prepared.warnings.clone(),
@@ -651,10 +554,14 @@ pub fn execute(begun: Begun) -> Finished {
             .with_migration(prepared.migration.clone());
             let mut passed = evidence.verdict != "failed";
             if let (true, RunMode::Validate, Some(benchmark)) = (passed, mode, &benchmark) {
-                let files = DirFiles {
-                    root: outcome.results_dir.clone(),
-                };
-                let mut gate = benchmark.compare(&files, &prepared.resolved);
+                let files = comparer_files(
+                    &row,
+                    Box::new(DirFiles {
+                        root: outcome.results_dir.clone(),
+                    }),
+                    &prepared.resolved,
+                );
+                let mut gate = benchmark.compare(files.as_ref(), &prepared.resolved);
                 if override_used {
                     gate.note_override("the tolerances come from the file given with the run");
                 }

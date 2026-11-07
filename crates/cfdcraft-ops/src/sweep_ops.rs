@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_doc::{Document, Stamp, open_stamped, save_if_unchanged};
 use cfdcraft_keys::{StageRecipes, ToolIdentity};
 use cfdcraft_model::{Diagnostic, MigrationNote, Severity};
@@ -26,8 +25,7 @@ use crate::documents::{
     study_hash,
 };
 use crate::jobs::open_refusal;
-use crate::keys::tool_identity;
-use crate::prepare::prepare;
+use crate::keys::{default_tool_identity, prepare_default};
 use crate::report::{ExitClass, Report};
 use crate::repro::{PointCheck, PreflightData, Repro, SweepData};
 use crate::scenario_ops::effective_of;
@@ -289,8 +287,7 @@ fn check_point(
         .map_err(|outcome| messages(&outcome.report.diagnostics))?;
     let mut study_json = serde_json::to_string_pretty(&study).map_err(|e| vec![e.to_string()])?;
     study_json.push('\n');
-    let prepared =
-        prepare(&study_json, Dialect::EsiV2512).map_err(|report| messages(&report.diagnostics))?;
+    let prepared = prepare_default(&study_json).map_err(|report| messages(&report.diagnostics))?;
     let keys = StageRecipes::from_resolved(&prepared.resolved, tool).keys();
     Ok(Passed {
         mesh: keys.mesh.to_string(),
@@ -320,7 +317,7 @@ fn preflight_inner(path: &Path, sweep_id: &str) -> Reply {
         ));
     };
     let all = points(sweep).map_err(|e| fail(PREFLIGHT, sweep_refusal(sweep_id, &e)))?;
-    let tool = tool_identity(Dialect::EsiV2512);
+    let tool = default_tool_identity();
 
     let mut checks: Vec<PointCheck> = Vec::with_capacity(all.len());
     let mut findings: Vec<Diagnostic> = Vec::new();

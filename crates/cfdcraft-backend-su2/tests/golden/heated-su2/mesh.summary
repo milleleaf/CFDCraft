@@ -1,0 +1,8 @@
+nodes 1681
+cells 1600
+x 0.000000 1.000000
+y 0.000000 1.000000
+area 1.000000000
+marker fixedWalls 80
+marker isothermal1 40
+marker isothermal2 40

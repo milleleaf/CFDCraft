@@ -8,16 +8,7 @@ use zip::{
     CompressionMethod, DateTime, ZipArchive, ZipWriter, result::ZipError, write::SimpleFileOptions,
 };
 
-use crate::{BUNDLE_CAP, CaptureError, FILE_CAP};
-
-/// The files of a mesh, relative to the results folder.
-const MESH_FILES: [&str; 5] = [
-    "constant/polyMesh/boundary",
-    "constant/polyMesh/faces",
-    "constant/polyMesh/neighbour",
-    "constant/polyMesh/owner",
-    "constant/polyMesh/points",
-];
+use crate::{BUNDLE_CAP, CaptureError, FILE_CAP, POLY_MESH_FILES};
 
 /// Named files held together; the ZIP form is a pure function of the names and bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,9 +181,27 @@ pub fn mesh_bundle(results: &Path) -> Result<Bundle, CaptureError> {
 
 /// [`mesh_bundle`] with a smaller cap per file (for tests).
 pub fn mesh_bundle_limited(results: &Path, file_cap: u64) -> Result<Bundle, CaptureError> {
+    mesh_bundle_limited_with(results, &POLY_MESH_FILES, file_cap)
+}
+
+/// The mesh bundle of exactly the named files, relative to the results folder. An empty list gives
+/// an empty bundle.
+pub fn mesh_bundle_with<S: AsRef<str>>(
+    results: &Path,
+    files: &[S],
+) -> Result<Bundle, CaptureError> {
+    mesh_bundle_limited_with(results, files, FILE_CAP)
+}
+
+/// [`mesh_bundle_with`] with a smaller cap per file (for tests).
+pub fn mesh_bundle_limited_with<S: AsRef<str>>(
+    results: &Path,
+    files: &[S],
+    file_cap: u64,
+) -> Result<Bundle, CaptureError> {
     read_all(
         results,
-        MESH_FILES.iter().map(|name| (*name).to_owned()).collect(),
+        files.iter().map(|name| name.as_ref().to_owned()).collect(),
         file_cap,
     )
 }

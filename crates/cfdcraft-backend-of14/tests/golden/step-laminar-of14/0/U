@@ -1,0 +1,17 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class volVectorField;
+    object U;
+}
+
+dimensions [0 1 -1 0 0 0 0];
+internalField uniform (0 0 0);
+boundaryField
+{
+    inlet { type fixedProfile; profile polynomial (((332.84023668639054 0 0) (1 0 0)) ((-64007.73782430588 0 0) (2 0 0))); direction (0 1 0); origin 0.0049; }
+    outlet { type zeroGradient; }
+    fixedWalls { type noSlip; }
+    frontAndBack { type empty; }
+}

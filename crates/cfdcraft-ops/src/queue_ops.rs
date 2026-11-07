@@ -28,7 +28,7 @@ use cfdcraft_text::Line;
 use crate::documents::{
     DocOutcome, finding, is_pack_name, migration_with, problem, refused, shown, study_hash,
 };
-use crate::jobs::{JobAction, JobOptions, open_refusal, plan_scenario_job_with};
+use crate::jobs::{JobAction, JobOptions, open_refusal, plan_scenario_job_on, row_for};
 use crate::queue_file::{QueueFile, QueueFileError};
 use crate::report::{ExitClass, Report};
 use crate::repro::{JobView, QueueData, Repro};
@@ -66,6 +66,9 @@ pub struct AddRequest {
     pub remake_pruned: bool,
     /// The stopped run whose saved state is continued.
     pub continue_run: Option<String>,
+    /// The id of the backend the jobs run on; none means the registry default. An id no backend
+    /// has is refused before anything is stored.
+    pub backend: Option<String>,
 }
 
 type Reply = Result<DocOutcome, Box<DocOutcome>>;
@@ -247,6 +250,8 @@ pub fn queue_add(path: &Path, request: &AddRequest) -> DocOutcome {
 }
 
 fn add_inner(path: &Path, request: &AddRequest) -> Reply {
+    // The backend is checked first, so a request for one that does not exist stores nothing.
+    row_for(request.backend.as_deref()).map_err(|found| Box::new(refused(ADD, found)))?;
     let opened = load(ADD, path)?;
     if let Some(run) = &request.continue_run {
         return add_continue(path, &opened, request, run);
@@ -258,12 +263,14 @@ fn add_inner(path: &Path, request: &AddRequest) -> Reply {
     let mut wanted = Vec::new();
     for candidate in candidates {
         let scenario = candidate.scenario.as_deref();
-        match plan_scenario_job_with(path, scenario, JobAction::Solve, &options) {
+        let backend = request.backend.as_deref();
+        match plan_scenario_job_on(path, scenario, JobAction::Solve, &options, backend) {
             // The planned job is dropped: the runner plans again when the job starts.
             Ok(_) => wanted.push(NewJob {
                 scenario: candidate.scenario,
                 kind: JobKind::Solve,
                 origin: candidate.origin,
+                backend: request.backend.clone(),
             }),
             Err(outcome) if matches!(outcome.line, Some(Line::NothingToRun)) => {}
             Err(outcome) => return Err(outcome),
@@ -286,13 +293,15 @@ fn add_continue(path: &Path, opened: &Opened, request: &AddRequest, run: &str) -
     let action = JobAction::Continue {
         run: run.to_owned(),
     };
-    let planned = plan_scenario_job_with(path, None, action, &options)?;
+    let backend = request.backend.as_deref();
+    let planned = plan_scenario_job_on(path, None, action, &options, backend)?;
     let wanted = vec![NewJob {
         scenario: planned.scenario().map(str::to_owned),
         kind: JobKind::Continue {
             run: run.to_owned(),
         },
         origin: None,
+        backend: request.backend.clone(),
     }];
     enqueue(path, opened, wanted)
 }
@@ -306,7 +315,10 @@ fn enqueue(path: &Path, opened: &Opened, wanted: Vec<NewJob>) -> Reply {
         .update(|queue| {
             let open_for = |new: &NewJob| {
                 queue.jobs.iter().any(|job| {
-                    !job.state.is_terminal() && job.kind == new.kind && job.scenario == new.scenario
+                    !job.state.is_terminal()
+                        && job.kind == new.kind
+                        && job.scenario == new.scenario
+                        && job.backend == new.backend
                 })
             };
             let jobs: Vec<NewJob> = wanted.into_iter().filter(|new| !open_for(new)).collect();

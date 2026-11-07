@@ -1,0 +1,9 @@
+nodes 5990
+cells 5784
+x 0.000000 2.200000
+y 0.000000 0.410000
+area 0.894151624
+marker inlet 44
+marker outlet 44
+marker fixedWalls 228
+marker obstacle 96

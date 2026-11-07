@@ -1,0 +1,203 @@
+FoamFile
+{
+    version 2.0;
+    format ascii;
+    class dictionary;
+    object controlDict;
+}
+
+solver incompressibleFluid;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime 2000.0;
+deltaT 1;
+writeControl timeStep;
+writeInterval 100.0;
+purgeWrite 2;
+writeFormat ascii;
+writePrecision 12;
+writeCompression off;
+timeFormat general;
+timePrecision 12;
+runTimeModifiable true;
+
+functions
+{
+    centreline
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            vertical
+            {
+                type lineUniform;
+                axis y;
+                start (1.143 0 0.00635);
+                end (1.143 0.1143 0.00635);
+                nPoints 64;
+            }
+            horizontal
+            {
+                type lineUniform;
+                axis x;
+                start (0 0.05715 0.00635);
+                end (2.286 0.05715 0.00635);
+                nPoints 64;
+            }
+        }
+    }
+    line_1
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (1.651 0.000127 0.00635);
+                end (2.286 0.000127 0.00635);
+                nPoints 1000;
+            }
+        }
+    }
+    line_2
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (1.6637 0.0 0.00635);
+                end (1.6637 0.1143 0.00635);
+                nPoints 400;
+            }
+        }
+    }
+    line_3
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (1.778 0.0 0.00635);
+                end (1.778 0.1143 0.00635);
+                nPoints 400;
+            }
+        }
+    }
+    line_4
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (1.7018 0.0 0.00635);
+                end (1.7018 0.1143 0.00635);
+                nPoints 400;
+            }
+        }
+    }
+    line_5
+    {
+        type sets;
+        libs ("libsampling.so");
+        writeControl writeTime;
+        setFormat raw;
+        interpolationScheme cellPoint;
+        fields (U);
+        sets
+        {
+            line
+            {
+                type lineUniform;
+                axis xyz;
+                start (1.7272 0.0 0.00635);
+                end (1.7272 0.1143 0.00635);
+                nPoints 400;
+            }
+        }
+    }
+    balance_inlet
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch inlet;
+        operation sum;
+        fields (phi);
+    }
+    balance_outlet
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch outlet;
+        operation sum;
+        fields (phi);
+    }
+    balance_fixedWalls
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch fixedWalls;
+        operation sum;
+        fields (phi);
+    }
+    balance_startup
+    {
+        type surfaceFieldValue;
+        libs ("libfieldFunctionObjects.so");
+        writeControl timeStep;
+        writeInterval 1;
+        log no;
+        writeFields no;
+        patch startup;
+        operation sum;
+        fields (phi);
+    }
+}

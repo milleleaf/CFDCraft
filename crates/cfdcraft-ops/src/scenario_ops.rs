@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_doc::{Document, Stamp, open, open_stamped, save_if_unchanged};
 use cfdcraft_keys::{Change, StageKeys, StageRecipes, ToolIdentity, diff_mesh, diff_result};
 use cfdcraft_model::{Diagnostic, MigrationNote, Severity, Study, diagnose, has_errors, resolve};
@@ -22,12 +21,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::backends::default_row;
 use crate::documents::{
     DocOutcome, Finding, is_pack_name, migration_with, not_written, pack_kept, problem, refused,
     say, study_hash,
 };
 use crate::jobs::open_refusal;
-use crate::keys::tool_identity;
+use crate::keys::default_tool_identity;
 use crate::reasons::{reason_parts, reason_text};
 use crate::report::Report;
 use crate::repro::{DiffData, RawView, Repro, ScenarioData, ScenarioSummary, ScenariosData};
@@ -173,7 +173,7 @@ fn target_of(item: &Override) -> &str {
 
 /// The recipes of a study as the ESI line makes it, or none when its checks find an error.
 fn recipes_of(study: &Study, tool: &ToolIdentity) -> Option<StageRecipes> {
-    if has_errors(&diagnose(study, &Dialect::EsiV2512.capabilities())) {
+    if has_errors(&diagnose(study, &default_row().backend.capabilities())) {
         return None;
     }
     let resolved = resolve(study).ok()?;
@@ -184,7 +184,7 @@ fn recipes_of(study: &Study, tool: &ToolIdentity) -> Option<StageRecipes> {
 /// its study cannot be built.
 pub(crate) fn keys_of(document: &Document, id: &str) -> Option<StageKeys> {
     let study = effective_study(&document.study, &document.artifacts.scenarios, id).ok()?;
-    let tool = tool_identity(Dialect::EsiV2512);
+    let tool = default_tool_identity();
     recipes_of(&study, &tool).map(|recipes| recipes.keys())
 }
 
@@ -296,7 +296,7 @@ fn scenario_data(document: &Document, tool: &ToolIdentity, id: &str) -> Option<S
 /// `report`, naming the variant and carrying its full description.
 fn described(report: Report, document: &Document, id: &str) -> Report {
     let report = report.with_artifact("scenario", id);
-    match scenario_data(document, &tool_identity(Dialect::EsiV2512), id) {
+    match scenario_data(document, &default_tool_identity(), id) {
         Some(data) => report.with_repro(Repro::Scenario(Box::new(data))),
         None => report,
     }
@@ -433,7 +433,7 @@ pub fn scenario_list(path: &Path) -> DocOutcome {
 
 fn list_inner(path: &Path) -> Reply {
     let document = read(LIST, path)?;
-    let scenarios = rows(&document, &tool_identity(Dialect::EsiV2512))
+    let scenarios = rows(&document, &default_tool_identity())
         .into_iter()
         .map(|r| r.summary)
         .collect();
@@ -451,7 +451,7 @@ pub fn scenario_show(path: &Path, id: &str) -> DocOutcome {
 fn show_inner(path: &Path, id: &str) -> Reply {
     let document = read(SHOW, path)?;
     let (study, _) = effective_of(SHOW, &document, Some(id))?;
-    let found = diagnose(&study, &Dialect::EsiV2512.capabilities())
+    let found = diagnose(&study, &default_row().backend.capabilities())
         .into_iter()
         .map(|mut finding| {
             finding.severity = Severity::Warning;
@@ -472,7 +472,7 @@ fn recipes_for(
     tool: &ToolIdentity,
 ) -> Result<StageRecipes, Box<DocOutcome>> {
     let (study, _) = effective_of(DIFF, document, Some(id))?;
-    let found = diagnose(&study, &Dialect::EsiV2512.capabilities());
+    let found = diagnose(&study, &default_row().backend.capabilities());
     if has_errors(&found) {
         return Err(Box::new(DocOutcome {
             report: Report::from_diagnostics(DIFF, found, None),
@@ -497,7 +497,7 @@ pub fn scenario_diff(path: &Path, a: &str, b: &str) -> DocOutcome {
 
 fn diff_inner(path: &Path, a: &str, b: &str) -> Reply {
     let document = read(DIFF, path)?;
-    let tool = tool_identity(Dialect::EsiV2512);
+    let tool = default_tool_identity();
     let from = recipes_for(&document, a, &tool)?;
     let to = recipes_for(&document, b, &tool)?;
     let mut changes = diff_mesh(&from.mesh, &to.mesh);

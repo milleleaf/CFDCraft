@@ -1,0 +1,9 @@
+code_saturne 9.2.0 image
+
+This image adds a login-shell path script and clears the entrypoint of the official simvia/code_saturne:9.2.0 image published by the code_saturne maintainers; every other layer is theirs and is pulled by digest.
+
+Licence: code_saturne is licensed under the GNU General Public License version 2 or any later version (GPL-2.0-or-later). The base image carries the licence files of the software it contains.
+
+Source: https://github.com/code-saturne/code_saturne/archive/refs/tags/v9.2.0.tar.gz (the release tarball is named code_saturne-9.2.0.tar.gz).
+
+The image is built by the repository's manual image workflow from docker/codesaturne/Dockerfile and is not published until the maintainers approve it.

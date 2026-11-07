@@ -286,6 +286,7 @@ fn mirror(doc: &Path, job: &str) -> PathBuf {
     let given = LiveSpec {
         spec: spec_for(&prepared.resolved),
         settings: settings_for(&study),
+        files: Vec::new(),
     };
     fs::write(
         live.join("spec.json"),

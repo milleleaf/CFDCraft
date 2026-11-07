@@ -23,7 +23,10 @@ mod monitors;
 mod numbers;
 mod result;
 
-pub use bundle::{Bundle, entry_names, mesh_bundle, mesh_bundle_limited, read_entry, store_bundle};
+pub use bundle::{
+    Bundle, entry_names, mesh_bundle, mesh_bundle_limited, mesh_bundle_limited_with,
+    mesh_bundle_with, read_entry, store_bundle,
+};
 pub use monitors::{
     MAX_MONITOR_FILES, checkpoint_bundle, checkpoint_bundle_with, latest_time_dir, monitor_names,
     monitor_names_limited,
@@ -34,19 +37,38 @@ pub use result::{
     result_bundle_with,
 };
 
-/// What a solver run leaves that is worth keeping: the name of its log, the fields of its last
-/// time folder, whether it samples the cavity centrelines, and the fields whose last initial
-/// residual becomes a key number. The caller builds it from the solver it ran.
+/// The five files of an OpenFOAM mesh, relative to the results folder, in bundle order.
+pub const POLY_MESH_FILES: [&str; 5] = [
+    "constant/polyMesh/boundary",
+    "constant/polyMesh/faces",
+    "constant/polyMesh/neighbour",
+    "constant/polyMesh/owner",
+    "constant/polyMesh/points",
+];
+
+/// What a solver run leaves that is worth keeping: the name of its log, the fields it ends with,
+/// whether it samples the cavity centrelines, and the fields whose last initial residual becomes a
+/// key number. The caller builds it from the solver it ran. An OpenFOAM run keeps its fields in
+/// the end-time folder ([`CapturePlan::openfoam`]); any other solver names plain files relative to
+/// the results folder ([`CapturePlan::files`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CapturePlan {
     /// The solver log, relative to the results folder.
     pub log: String,
-    /// The fields kept from the end-time folder, in bundle order.
+    /// The fields kept, in bundle order: relative to the end-time folder when `time_folder` is
+    /// true, to the results folder otherwise.
     pub fields: Vec<String>,
     /// Whether the two centreline sample files are required and read.
     pub centreline: bool,
     /// The names that follow `Solving for ` in the log, one residual each.
     pub residual_fields: Vec<String>,
+    /// Whether the fields are in the end-time folder (the OpenFOAM layout) and the run leaves the
+    /// monitor files, `phi` and a potential-flow log beside them.
+    pub time_folder: bool,
+    /// The other logs kept with the result beside `log`.
+    pub logs: Vec<String>,
+    /// The files of the mesh bundle, relative to the results folder.
+    pub mesh: Vec<String>,
 }
 
 impl CapturePlan {
@@ -54,11 +76,44 @@ impl CapturePlan {
     /// of `Ux`, `Uy` and `p`.
     pub fn cavity() -> Self {
         let names = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect();
+        Self::openfoam(
+            "log.simpleFoam".to_owned(),
+            names(&["U", "p"]),
+            true,
+            names(&["Ux", "Uy", "p"]),
+        )
+    }
+
+    /// An OpenFOAM run: fields in the end-time folder, the two mesh logs and the five `polyMesh`
+    /// files kept with it.
+    pub fn openfoam(
+        log: String,
+        fields: Vec<String>,
+        centreline: bool,
+        residual_fields: Vec<String>,
+    ) -> Self {
         Self {
-            log: "log.simpleFoam".to_owned(),
-            fields: names(&["U", "p"]),
-            centreline: true,
-            residual_fields: names(&["Ux", "Uy", "p"]),
+            log,
+            fields,
+            centreline,
+            residual_fields,
+            time_folder: true,
+            logs: vec!["log.blockMesh".to_owned(), "log.checkMesh".to_owned()],
+            mesh: POLY_MESH_FILES.iter().map(|n| (*n).to_owned()).collect(),
+        }
+    }
+
+    /// A run of any other solver: the files it names, relative to the results folder. It has no
+    /// end-time folder, no centreline samples and no log-derived numbers.
+    pub fn files(log: String, logs: Vec<String>, fields: Vec<String>, mesh: Vec<String>) -> Self {
+        Self {
+            log,
+            fields,
+            centreline: false,
+            residual_fields: Vec::new(),
+            time_folder: false,
+            logs,
+            mesh,
         }
     }
 }

@@ -25,6 +25,7 @@ fn one_job() -> Action {
             scenario: None,
             kind: JobKind::Solve,
             origin: None,
+            backend: None,
         }],
     }
 }

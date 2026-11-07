@@ -9,6 +9,7 @@ use cfdcraft_remote::{ContainerState, Host};
 use cfdcraft_text::Line;
 
 use crate::DrainError;
+use crate::case::row_of;
 use crate::finalize;
 use crate::tick::{Drain, FETCH_CAP, run_id_of};
 
@@ -120,7 +121,15 @@ fn container_end<H: Host>(
 /// log that ends with `End` and shows no fatal line is clean; anything else is a known solver
 /// error or an unknown one with the redacted last lines. A container killed for lack of memory
 /// that left no recognised message is an out-of-memory failure.
+///
+/// A job of a backend that is not an OpenFOAM line is not read for OpenFOAM text: only the facts of
+/// the container that hold for any solver apply (out of memory, the time limit), and otherwise the
+/// run is clean here and the backend's own judge decides when the result is recorded.
 pub fn classify<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Classified, DrainError> {
+    // A row that does not resolve is treated as an OpenFOAM line, as it always was.
+    if row_of(job).is_ok_and(|row| !row.backend.family().openfoam()) {
+        return container_facts(ctx, job);
+    }
     let mirror = ctx.mirror(job)?;
     let solver_log = ctx.solver_log(job)?;
     let mut solver = mirror.read_to_string(&solver_log)?;
@@ -167,20 +176,41 @@ pub fn classify<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Classified, Dr
         if oom_killed {
             id = ErrorId::OutOfMemory;
         } else if let Some(status) = status.filter(|s| TIME_LIMIT_STATUSES.contains(s)) {
-            return Ok(Classified::Failed {
-                code: TIME_LIMIT.to_owned(),
-                line: Line::JobFailed {
-                    job: job.id.clone(),
-                    reason: format!(
-                        "the run ended with exit status {status}, which is how the time limit of the compute host ends a run. The fields it had written were not kept, so it cannot be continued. Run a smaller case, or ask for a higher limit"
-                    ),
-                },
-            });
+            return Ok(time_limit(job, status));
         }
     }
     Ok(Classified::Failed {
         code: id.code().to_owned(),
         line: error_line(id, tail),
+    })
+}
+
+/// The failure of a run the time limit of the compute host ended.
+fn time_limit(job: &Job, status: i32) -> Classified {
+    Classified::Failed {
+        code: TIME_LIMIT.to_owned(),
+        line: Line::JobFailed {
+            job: job.id.clone(),
+            reason: format!(
+                "the run ended with exit status {status}, which is how the time limit of the compute host ends a run. The fields it had written were not kept, so it cannot be continued. Run a smaller case, or ask for a higher limit"
+            ),
+        },
+    }
+}
+
+/// What the container alone says about a run that ended: killed for lack of memory, ended by the
+/// time limit, or nothing.
+fn container_facts<H: Host>(ctx: &mut Drain<H>, job: &Job) -> Result<Classified, DrainError> {
+    let (status, oom_killed) = container_end(ctx, job)?;
+    if oom_killed {
+        return Ok(Classified::Failed {
+            code: ErrorId::OutOfMemory.code().to_owned(),
+            line: error_line(ErrorId::OutOfMemory, ""),
+        });
+    }
+    Ok(match status.filter(|s| TIME_LIMIT_STATUSES.contains(s)) {
+        Some(status) => time_limit(job, status),
+        None => Classified::Clean,
     })
 }
 

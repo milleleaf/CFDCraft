@@ -6,11 +6,11 @@
 
 use crate::{
     benchmark_ops::BenchmarkOptions,
-    cases::{cli_problem, compile_study, export_study},
+    cases::{cli_problem, compile_study_on, export_study},
     gci_ops::{DEFAULT_LEVELS, GciRequest},
     host_runner::finish_job,
     jobs::{JobAction, JobOptions, operation_of, plan_scenario_job_with},
-    prepare::prepare,
+    keys::prepare_default,
     queue_file::QueueFile,
     queue_ops::{self, AddRequest},
     registry::{ResultOutcome, RunRegistry, StartOutcome, Status},
@@ -19,7 +19,6 @@ use crate::{
     run::{RunMode, RunRequest},
     scenario_ops::LabelUpdate,
 };
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_compare::Tolerance;
 use cfdcraft_keys::Stage;
 use cfdcraft_model::{Diagnostic, Study};
@@ -150,7 +149,7 @@ impl Workspace {
             );
         }
         let text = study.to_string();
-        let prepared = match prepare(&text, Dialect::EsiV2512) {
+        let prepared = match prepare_default(&text) {
             Ok(p) => p,
             Err(report) => return report.for_operation(OP),
         };
@@ -179,7 +178,7 @@ impl Workspace {
             Ok(t) => t,
             Err(report) => return report,
         };
-        match prepare(&text, Dialect::EsiV2512) {
+        match prepare_default(&text) {
             Ok(p) => report_of(OP, &p),
             Err(report) => report.for_operation(OP),
         }
@@ -189,7 +188,15 @@ impl Workspace {
 impl Workspace {
     /// Compile a stored study into `compiled/<name>`, replacing what was there.
     pub fn compile(&self, name: &str) -> Report {
-        self.write_output("compile", COMPILED, name, compile_study)
+        self.compile_on(name, None)
+    }
+
+    /// [`Workspace::compile`] for the backend with this id; none is the registry default. An id no
+    /// backend has is `CFD-BACKEND-001` and the previous output is kept.
+    pub fn compile_on(&self, name: &str, backend: Option<&str>) -> Report {
+        self.write_output("compile", COMPILED, name, |text, out| {
+            compile_study_on(text, out, backend)
+        })
     }
 
     /// Export a stored study into `exports/<name>`: the case plus `Allrun` and `README.md`.
@@ -205,7 +212,7 @@ impl Workspace {
         operation: &str,
         sub: &str,
         name: &str,
-        write: fn(&str, &Path) -> Report,
+        write: impl FnOnce(&str, &Path) -> Report,
     ) -> Report {
         let text = match self.load_study(operation, name) {
             Ok(t) => t,
@@ -544,6 +551,25 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// Import the case folder `source`, a name below the workspace root, as `<name>.cfdcase` in
+    /// the root. The source is resolved with plain relative rules (see the import operation), and
+    /// the report names the case only.
+    pub fn import_case(&self, source: &str, name: &str) -> Report {
+        self.named("import_case", name, || {
+            crate::import_ops::import_case(&self.root, source, name)
+        })
+    }
+
+    /// The parity table of `benchmark` over the runs the document `name` has recorded. Nothing is
+    /// written.
+    pub fn parity_table(&self, name: &str, benchmark: &str) -> Report {
+        self.named("parity_table", name, || {
+            crate::parity_ops::parity_table(&self.document_file(name), benchmark, None)
+        })
+    }
+}
+
+impl Workspace {
     /// The file of the document called `name`, for a valid name.
     pub fn document_path(&self, name: &str) -> Option<PathBuf> {
         Self::valid_name(name).then(|| self.document_file(name))
@@ -812,6 +838,20 @@ impl Workspace {
         mode: RunMode,
         from_export: bool,
     ) -> StartOutcome {
+        self.start_run_on(registry, settings, name, mode, from_export, None)
+    }
+
+    /// [`Workspace::start_run`] on the backend with this id; none is the registry default. An id no
+    /// backend has, and a backend whose image is not pinned, are refused before anything is made.
+    pub fn start_run_on(
+        &self,
+        registry: &RunRegistry,
+        settings: &ServerSettings,
+        name: &str,
+        mode: RunMode,
+        from_export: bool,
+        backend: Option<String>,
+    ) -> StartOutcome {
         let text = match self.load_study(mode.operation(), name) {
             Ok(t) => t,
             Err(report) => return StartOutcome::Refused(Box::new(report)),
@@ -823,7 +863,8 @@ impl Workspace {
             &settings.profile,
             self.dir(RUNS),
             &settings.socket_dir,
-        );
+        )
+        .with_backend(backend);
         request.label = name.to_owned();
         if from_export {
             let dir = self.dir(EXPORTS).join(name);

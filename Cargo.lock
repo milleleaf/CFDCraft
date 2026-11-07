@@ -184,13 +184,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-backend"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-backend-codesaturne"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-backend",
+ "cfdcraft-blockmesh",
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-settle",
+ "cfdcraft-shapes",
+ "cfdcraft-templates",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-backend-esi"
 version = "0.1.0"
 dependencies = [
+ "cfdcraft-backend",
  "cfdcraft-dictedit",
  "cfdcraft-model",
  "cfdcraft-shapes",
  "ryu",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-backend-lbm"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-backend",
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-monitors",
+ "cfdcraft-settle",
+ "cfdcraft-templates",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "cfdcraft-backend-of14"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-backend",
+ "cfdcraft-backend-esi",
+ "cfdcraft-dictedit",
+ "cfdcraft-foamdict",
+ "cfdcraft-model",
+ "cfdcraft-templates",
+]
+
+[[package]]
+name = "cfdcraft-backend-su2"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-backend",
+ "cfdcraft-blockmesh",
+ "cfdcraft-gate",
+ "cfdcraft-model",
+ "cfdcraft-settle",
+ "cfdcraft-shapes",
+ "cfdcraft-templates",
+ "serde_json",
  "thiserror",
 ]
 
@@ -237,6 +303,14 @@ dependencies = [
  "serde",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "cfdcraft-blockmesh"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-shapes",
+ "thiserror",
 ]
 
 [[package]]
@@ -362,6 +436,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfdcraft-foamdict"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "cfdcraft-gate"
 version = "0.1.0"
 dependencies = [
@@ -378,6 +459,21 @@ version = "0.1.0"
 dependencies = [
  "schemars",
  "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "cfdcraft-import"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cfdcraft-backend-esi",
+ "cfdcraft-foamdict",
+ "craft-atomic",
+ "craft-docpath",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -456,7 +552,12 @@ name = "cfdcraft-ops"
 version = "0.1.0"
 dependencies = [
  "cfdcraft-assess",
+ "cfdcraft-backend",
+ "cfdcraft-backend-codesaturne",
  "cfdcraft-backend-esi",
+ "cfdcraft-backend-lbm",
+ "cfdcraft-backend-of14",
+ "cfdcraft-backend-su2",
  "cfdcraft-bench-cylinder",
  "cfdcraft-bench-dvd",
  "cfdcraft-bench-ghia",
@@ -468,10 +569,12 @@ dependencies = [
  "cfdcraft-executor",
  "cfdcraft-gate",
  "cfdcraft-gci",
+ "cfdcraft-import",
  "cfdcraft-keys",
  "cfdcraft-model",
  "cfdcraft-monitors",
  "cfdcraft-pack",
+ "cfdcraft-parity",
  "cfdcraft-queue",
  "cfdcraft-runs",
  "cfdcraft-scenarios",
@@ -501,6 +604,17 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zip",
+]
+
+[[package]]
+name = "cfdcraft-parity"
+version = "0.1.0"
+dependencies = [
+ "cfdcraft-compare",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

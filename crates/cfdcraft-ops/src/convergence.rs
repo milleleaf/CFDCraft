@@ -18,13 +18,16 @@ use cfdcraft_assess::{
     Assessment, Files, ForceSpec, HeatSpec, LineSpec, PatchSpec, ProbeSpec, Spec,
     SurfaceQuantityKind, SurfaceSpec, assess,
 };
-use cfdcraft_backend_esi::{SolverPlan, monitors::balance_patches};
+use cfdcraft_backend::{Backend, ConvergenceOutcome, DirRunFiles};
+use cfdcraft_backend_esi::monitors::balance_patches;
 use cfdcraft_capture::{entry_names, read_entry};
 use cfdcraft_model::{
     Face, MonitorField, PlannedSurface, ResolvedStudy, ResolvedThermal, Study, SurfaceQuantity,
 };
 use cfdcraft_monitors::FieldKind;
-use cfdcraft_settle::Settings;
+use cfdcraft_settle::{Balance, BalanceStatus, Settings, Verdict, VerdictState};
+
+use crate::backends::default_row;
 
 /// The most bytes one monitor file may hold.
 const MONITOR_FILE_CAP: u64 = 8 * 1024 * 1024;
@@ -114,8 +117,14 @@ fn heat_pair(resolved: &ResolvedStudy, surfaces: &[PlannedSurface]) -> Option<He
 /// judged on periodic settledness. A monitor with no label of its own is shown by its
 /// function-object name.
 pub fn spec_for(resolved: &ResolvedStudy) -> Spec {
+    spec_on(resolved, default_row().backend)
+}
+
+/// [`spec_for`] for the run plan of `backend`: its log, its pressure field, its buoyancy and time
+/// mode, and residual limits when its plan has residual checks.
+pub fn spec_on(resolved: &ResolvedStudy, backend: &dyn Backend) -> Spec {
     let plan = resolved.monitor_plan();
-    let solver = SolverPlan::for_study(resolved);
+    let solver = backend.run_plan(resolved, 1);
     let shown = |label: Option<String>, fo: &str| label.unwrap_or_else(|| fo.to_owned());
     let heat = heat_pair(resolved, &plan.surfaces);
     let surfaces = plan
@@ -172,7 +181,7 @@ pub fn spec_for(resolved: &ResolvedStudy) -> Spec {
         transient: solver.transient,
         periodic: solver.transient,
         pressure_field: solver.pressure_field,
-        log_file: solver.log_file,
+        log_file: solver.solver_log,
     }
 }
 
@@ -338,4 +347,42 @@ pub fn files_from_bundle(bytes: &[u8], spec: &Spec) -> Files {
 /// The numbers and the verdict for the results folder `dir`.
 pub fn assess_dir(dir: &Path, spec: &Spec, settings: &Settings) -> Assessment {
     assess(spec, &files_from_dir(dir, spec), settings)
+}
+
+/// The verdict a backend's own outcome stands for. Its reasons are kept as they are, so the
+/// report text carries the backend's sentences. It states no quantity and no balance of its own:
+/// both balances are not applicable, and the residual check is the outcome itself.
+fn verdict_of(outcome: ConvergenceOutcome) -> Verdict {
+    let none = || Balance {
+        status: BalanceStatus::NotApplicable,
+        imbalance: None,
+        reference: None,
+    };
+    Verdict {
+        state: if outcome.converged {
+            VerdictState::Converged
+        } else {
+            VerdictState::NotConverged
+        },
+        reasons: outcome.reasons,
+        quantities: Vec::new(),
+        mass: none(),
+        energy: none(),
+        residuals_ok: outcome.converged,
+    }
+}
+
+/// The convergence verdict for the results folder `dir` of a run of `backend`. The backend is
+/// asked first; when it has a verdict of its own that is the answer, and when it has none the
+/// assessment of the monitors in `inputs` applies, as it does for the OpenFOAM backends.
+pub fn verdict_for(
+    backend: &dyn Backend,
+    dir: &Path,
+    inputs: &(Spec, Settings),
+    resolved: &ResolvedStudy,
+) -> Verdict {
+    match backend.convergence(&DirRunFiles::new(dir), resolved) {
+        Some(outcome) => verdict_of(outcome),
+        None => assess_dir(dir, &inputs.0, &inputs.1).verdict,
+    }
 }

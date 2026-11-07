@@ -7,13 +7,14 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use cfdcraft_assess::{Assessment, Spec, assess};
-use cfdcraft_backend_esi::Dialect;
 use cfdcraft_doc::{open, store_dir};
 use cfdcraft_logscan::redact;
-use cfdcraft_ops::convergence::{assess_dir, files_from_bundle, settings_for, spec_for};
-use cfdcraft_ops::prepare;
+use cfdcraft_ops::backends::{by_id, default_row};
+use cfdcraft_ops::convergence::{assess_dir, files_from_bundle, settings_for, spec_on};
+use cfdcraft_ops::jobs::prepare_on;
 use cfdcraft_ops::queue_file::QueueFile;
 use cfdcraft_queue::JobState;
+use cfdcraft_remote::valid_rel;
 use cfdcraft_runs::{find_run, is_plain_name};
 use cfdcraft_settle::{Balance, BalanceStatus, NOT_FINISHED, Settings, Status, Verdict};
 use cfdcraft_store::Store;
@@ -36,6 +37,10 @@ pub const MAX_LINES: usize = 500;
 pub struct LiveSpec {
     pub spec: Spec,
     pub settings: Settings,
+    /// The files of the run the live view copies while it grows, in order. Empty means the
+    /// OpenFOAM set: the three logs and `postProcessing`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 /// Why a job could not be watched.
@@ -154,6 +159,28 @@ pub fn solver_log_of(live: &Path) -> String {
     }
 }
 
+/// The files the live view of the job whose live folder is `live` copies, from the specification
+/// written when the job started: the names in its `files` member that are plain relative names by
+/// the host's rule, in order. Empty when the specification is missing, unreadable or names none,
+/// which means the OpenFOAM set.
+pub fn mirrored_files_of(live: &Path) -> Vec<String> {
+    let Some(value) = fs::read_to_string(live.join(SPEC))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    value
+        .pointer("/files")
+        .and_then(|files| files.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str())
+        .filter(|name| valid_rel(name))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Whether `name` is one file name: not empty, no separator, not a dot name, no control character.
 fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty()
@@ -261,9 +288,11 @@ pub fn monitors_of_run(doc: &Path, run: &str) -> Result<RunView, WatchError> {
         .map_err(|_| no_result())?;
     let study = serde_json::to_string(&record.provenance.settings)
         .map_err(|_| unusable("the recorded settings cannot be read"))?;
-    let prepared = prepare(&study, Dialect::EsiV2512)
+    // The run records the backend it was made with in its tool identity, as the id.
+    let row = by_id(&record.provenance.tool.dialect).unwrap_or_else(default_row);
+    let prepared = prepare_on(&study, &row)
         .map_err(|_| unusable("the recorded settings can no longer be prepared"))?;
-    let spec = spec_for(&prepared.resolved);
+    let spec = spec_on(&prepared.resolved, row.backend);
     let settings = settings_for(&record.provenance.settings);
     let found = assess(&spec, &files_from_bundle(&bytes, &spec), &settings);
     Ok(RunView {

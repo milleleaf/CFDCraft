@@ -15,19 +15,19 @@
 use std::path::{Path, PathBuf};
 
 use cfdcraft_assess::Spec;
+use cfdcraft_backend::{CompileOptions, Family};
 use cfdcraft_backend_esi::{
-    CaseFile, CaseTree, Dialect, SolverPlan,
-    case::{CaseOptions, continue_case},
-    export::export_tree_with,
+    CaseFile, CaseTree, SolverPlan, case::continue_case, export::export_tree_with,
 };
 use cfdcraft_capture::{
     CaptureError, CapturePlan, checkpoint_bundle_with, key_numbers_with, latest_time_dir,
-    mesh_bundle, read_entry, result_bundle_with, store_bundle,
+    mesh_bundle, mesh_bundle_with, read_entry, result_bundle_with, store_bundle,
 };
 use cfdcraft_compare::{Comparison, KeyNumbers, Tolerance, compare};
 use cfdcraft_doc::{
     DocError, Document, Opened, Stamp, open, open_stamped, save_if_unchanged, store_dir,
 };
+use cfdcraft_gate::ResultFiles;
 use cfdcraft_keys::{Stage, StageKeys, StageRecipes, ToolIdentity, diff_mesh};
 use cfdcraft_model::{Diagnostic, ResolvedStudy, Severity, Study};
 use cfdcraft_runs::{
@@ -38,15 +38,15 @@ use cfdcraft_settle::{Settings, Verdict};
 use cfdcraft_store::{ContentHash, Store};
 use cfdcraft_text::Line;
 
+use crate::backends::{Row, default_row, identity::tool_identity_for, image_or_refusal, resolve};
 use crate::benchmarks::{DirFiles, quantities_for};
-use crate::convergence::{assess_dir, settings_for, spec_for};
+use crate::convergence::{settings_for, spec_on, verdict_for};
 use crate::documents::{
     DocOutcome, Finding, finding, is_pack_name, migration_with, not_written, pack_kept, problem,
     read_failure, refused, shown,
 };
 use crate::inspect::judgement;
-use crate::keys::tool_identity;
-use crate::prepare::{Prepared, prepare, prepare_with_options};
+use crate::prepare::{Prepared, prepare_row};
 use crate::queue_ops::CONTINUE_REFUSED;
 use crate::reasons::reason_text;
 use crate::report::{ExitClass, Report};
@@ -171,22 +171,56 @@ pub struct DocJob {
     capture: CapturePlan,
     /// The study as resolved, for the numbers a benchmark records.
     bench_study: ResolvedStudy,
+    /// The backend the job runs on: it writes the case and has the say on convergence.
+    row: Row,
 }
 
-/// What is kept of the results of a run of this study, from its solver plan. The centreline
-/// samples are kept for a box, the only layout the sampled lines are written for.
+/// What is kept of the results of a run of this study on the default backend.
 pub fn capture_plan_for(resolved: &ResolvedStudy) -> CapturePlan {
-    let solver = SolverPlan::for_study(resolved);
-    let mut residual_fields = vec!["Ux".to_owned(), "Uy".to_owned(), solver.pressure_field];
-    if solver.buoyant {
-        residual_fields.push("T".to_owned());
+    capture_plan_on(resolved, &default_row())
+}
+
+/// What is kept of the results of a run of this study on the backend of `row`, from that
+/// backend's run plan. A run of an OpenFOAM line keeps its end-time folder, mesh logs and mesh
+/// files, and the centreline samples for a box, the only layout the sampled lines are written
+/// for. A run of any other backend keeps the files its plan names: the solver log, the other
+/// judged logs, the final result files and the files that stand for its mesh.
+pub fn capture_plan_on(resolved: &ResolvedStudy, row: &Row) -> CapturePlan {
+    let plan = row.backend.run_plan(resolved, 1);
+    if !row.backend.family().openfoam() {
+        let logs = plan
+            .judged_logs
+            .iter()
+            .filter(|log| **log != plan.solver_log)
+            .cloned()
+            .collect();
+        return CapturePlan::files(
+            plan.solver_log,
+            logs,
+            plan.final_fields,
+            row.backend.mesh_files(resolved),
+        );
     }
-    CapturePlan {
-        log: solver.log_file,
-        fields: solver.final_fields,
-        centreline: resolved.domain.shape.is_none(),
+    let mut residual_fields = vec!["Ux".to_owned(), "Uy".to_owned(), plan.pressure_field];
+    if plan.buoyant {
+        residual_fields.push(plan.energy_field);
+    }
+    CapturePlan::openfoam(
+        plan.solver_log,
+        plan.final_fields,
+        resolved.domain.shape.is_none(),
         residual_fields,
-    }
+    )
+}
+
+/// The files of a stored or fresh results folder as the benchmark comparers read them: the view
+/// the backend of `row` gives of `files`. It is the one place a backend's result view is applied.
+pub fn comparer_files(
+    row: &Row,
+    files: Box<dyn ResultFiles>,
+    resolved: &ResolvedStudy,
+) -> Box<dyn ResultFiles> {
+    row.backend.results(files, resolved)
 }
 
 /// The cells of the mesh a study makes.
@@ -362,6 +396,7 @@ fn look(
     path: &Path,
     tool: &ToolIdentity,
     scenario: Option<&str>,
+    row: &Row,
 ) -> Result<Looked, Box<DocOutcome>> {
     if is_pack_name(path) {
         return Err(Box::new(refused(operation, problem(pack_kept(path)))));
@@ -375,7 +410,7 @@ fn look(
     let mut study_json = serde_json::to_string_pretty(&effective).expect("a study is plain data");
     study_json.push('\n');
 
-    let prepared = prepare(&study_json, Dialect::EsiV2512).map_err(|report| {
+    let prepared = prepare_on(&study_json, row).map_err(|report| {
         Box::new(DocOutcome {
             report: report.for_operation(operation),
             line: None,
@@ -415,7 +450,9 @@ pub(crate) fn pending_items(
     path: &Path,
     label: &str,
 ) -> Result<Vec<Item>, Box<DocOutcome>> {
-    let looked = look(operation, path, &tool_identity(Dialect::EsiV2512), None)?;
+    let row = default_row();
+    let tool = tool_identity_for(row.backend);
+    let looked = look(operation, path, &tool, None, &row)?;
     let runs = &looked.document.artifacts.runs;
     // The same question a solve asks, so the plan and the job cannot disagree: a fresh stage whose
     // stored blob is gone is waiting too.
@@ -509,13 +546,38 @@ pub fn plan_scenario_job_with(
     action: JobAction,
     options: &JobOptions,
 ) -> Result<DocJob, Box<DocOutcome>> {
-    plan_with_tool(
-        path,
-        scenario,
-        action,
-        tool_identity(Dialect::EsiV2512),
-        options,
-    )
+    plan_scenario_job_on(path, scenario, action, options, None)
+}
+
+/// [`plan_scenario_job_with`] for the backend with id `backend`; `None` is the registry default.
+/// The case, the stage keys and the verdict all come from that backend. An id no backend has is
+/// refused with `CFD-BACKEND-001` before the document is read.
+pub fn plan_scenario_job_on(
+    path: &Path,
+    scenario: Option<&str>,
+    action: JobAction,
+    options: &JobOptions,
+    backend: Option<&str>,
+) -> Result<DocJob, Box<DocOutcome>> {
+    let row = row_for(backend).map_err(|found| Box::new(refused(operation_of(&action), found)))?;
+    let tool = tool_identity_for(row.backend);
+    plan_with_tool(path, scenario, action, tool, options, &row)
+}
+
+/// The registry row a job runs on: the one with id `backend`, or the default row when none is
+/// named. An id no backend has is the finding `CFD-BACKEND-001`.
+// The finding is the error on purpose, as it is in `resolve`.
+#[allow(clippy::result_large_err)]
+pub fn row_for(backend: Option<&str>) -> Result<Row, Diagnostic> {
+    backend.map_or_else(|| Ok(default_row()), resolve)
+}
+
+/// The gate chain of a study for a registry row, written for one process. A candidate or preview
+/// row adds its warning to the case and to a failed report alike.
+// The report is the error on purpose: a failed chain hands back the finished, classified result.
+#[allow(clippy::result_large_err)]
+pub fn prepare_on(study_json: &str, row: &Row) -> Result<Prepared, Report> {
+    prepare_row(study_json, row, &CompileOptions::default())
 }
 
 /// [`plan_job`] for another set of tools than this build's. It exists so tests can make a
@@ -526,7 +588,26 @@ pub fn plan_job_with_tool(
     action: JobAction,
     tool: ToolIdentity,
 ) -> Result<DocJob, Box<DocOutcome>> {
-    plan_with_tool(path, None, action, tool, &JobOptions::default())
+    plan_with_tool(
+        path,
+        None,
+        action,
+        tool,
+        &JobOptions::default(),
+        &default_row(),
+    )
+}
+
+/// [`plan_job`] for a registry row given by value. It exists so tests can plan a job on a backend
+/// that is not in the registry; no front end calls it.
+#[doc(hidden)]
+pub fn plan_job_on_row(
+    path: &Path,
+    action: JobAction,
+    row: &Row,
+) -> Result<DocJob, Box<DocOutcome>> {
+    let tool = tool_identity_for(row.backend);
+    plan_with_tool(path, None, action, tool, &JobOptions::default(), row)
 }
 
 fn plan_with_tool(
@@ -535,6 +616,7 @@ fn plan_with_tool(
     action: JobAction,
     tool: ToolIdentity,
     options: &JobOptions,
+    row: &Row,
 ) -> Result<DocJob, Box<DocOutcome>> {
     if let JobAction::Rerun {
         run,
@@ -542,12 +624,12 @@ fn plan_with_tool(
         allow_tool_change,
     } = &action
     {
-        return plan_rerun(path, run, *tolerance, *allow_tool_change, &tool);
+        return plan_rerun(path, run, *tolerance, *allow_tool_change, &tool, row);
     }
     if let JobAction::Continue { run } = &action {
-        return plan_continue(path, run, &tool);
+        return plan_continue(path, run, &tool, row);
     }
-    plan_make(path, scenario, action, &tool, options)
+    plan_make(path, scenario, action, &tool, options, row)
 }
 
 /// Plan a solve, or the update of one stage.
@@ -557,9 +639,10 @@ fn plan_make(
     action: JobAction,
     tool: &ToolIdentity,
     options: &JobOptions,
+    row: &Row,
 ) -> Result<DocJob, Box<DocOutcome>> {
     let operation = operation_of(&action);
-    let looked = look(operation, path, tool, requested)?;
+    let looked = look(operation, path, tool, requested, row)?;
     let Looked {
         document,
         effective,
@@ -576,9 +659,9 @@ fn plan_make(
         ..
     } = prepared;
     let runs = &document.artifacts.runs;
-    let assess = (spec_for(&resolved), settings_for(&effective));
+    let assess = (spec_on(&resolved, row.backend), settings_for(&effective));
     let cells = cells_of(&resolved);
-    let capture = capture_plan_for(&resolved);
+    let capture = capture_plan_on(&resolved, row);
 
     let keys = recipes.keys();
     let pruned = Pruned {
@@ -645,6 +728,7 @@ fn plan_make(
         checkpoint: None,
         capture,
         bench_study: resolved,
+        row: *row,
     })
 }
 
@@ -656,6 +740,7 @@ fn plan_rerun(
     tolerance: Tolerance,
     allow_tool_change: bool,
     tool: &ToolIdentity,
+    row: &Row,
 ) -> Result<DocJob, Box<DocOutcome>> {
     const OP: &str = "rerun";
     let fail = |found: Finding| Box::new(refused(OP, problem(found)));
@@ -699,7 +784,7 @@ fn plan_rerun(
 
     let study_json =
         serde_json::to_string_pretty(&original.provenance.settings).expect("a study is plain data");
-    let prepared = prepare(&study_json, Dialect::EsiV2512).map_err(|report| {
+    let prepared = prepare_on(&study_json, row).map_err(|report| {
         Box::new(DocOutcome {
             report: report.for_operation(OP),
             line: None,
@@ -732,9 +817,12 @@ fn plan_rerun(
     room_for_run(OP, path, &document)?;
     let effective = original.provenance.settings.clone();
     let scenario = original.scenario.clone();
-    let assess = (spec_for(&prepared.resolved), settings_for(&effective));
+    let assess = (
+        spec_on(&prepared.resolved, row.backend),
+        settings_for(&effective),
+    );
     let cells = cells_of(&prepared.resolved);
-    let capture = capture_plan_for(&prepared.resolved);
+    let capture = capture_plan_on(&prepared.resolved, row);
     let repeat = Repeat {
         original: original.clone(),
         tolerance,
@@ -766,6 +854,7 @@ fn plan_rerun(
         checkpoint: None,
         capture,
         bench_study: prepared.resolved,
+        row: *row,
     })
 }
 
@@ -775,6 +864,7 @@ fn plan_continue(
     path: &Path,
     wanted: &str,
     tool: &ToolIdentity,
+    row: &Row,
 ) -> Result<DocJob, Box<DocOutcome>> {
     let fail = |reason: String| {
         let line = Line::ContinueRefused { reason };
@@ -820,7 +910,7 @@ fn plan_continue(
 
     let study_json =
         serde_json::to_string_pretty(&original.provenance.settings).expect("a study is plain data");
-    let prepared = prepare(&study_json, Dialect::EsiV2512).map_err(|report| {
+    let prepared = prepare_on(&study_json, row).map_err(|report| {
         Box::new(DocOutcome {
             report: report.for_operation(CONTINUE),
             line: None,
@@ -856,9 +946,12 @@ fn plan_continue(
         time: checkpoint.time.clone(),
     };
     let held = (checkpoint.blob, checkpoint.size);
-    let assess = (spec_for(&prepared.resolved), settings_for(&effective));
+    let assess = (
+        spec_on(&prepared.resolved, row.backend),
+        settings_for(&effective),
+    );
     let cells = cells_of(&prepared.resolved);
-    let capture = capture_plan_for(&prepared.resolved);
+    let capture = capture_plan_on(&prepared.resolved, row);
     Ok(DocJob {
         path: path.to_owned(),
         action: JobAction::Continue {
@@ -883,6 +976,7 @@ fn plan_continue(
         checkpoint: Some(held),
         capture,
         bench_study: prepared.resolved,
+        row: *row,
     })
 }
 
@@ -905,6 +999,23 @@ impl DocJob {
     /// The cells of the mesh the case makes.
     pub fn cell_count(&self) -> u64 {
         self.cells
+    }
+
+    /// The id of the backend the job runs on.
+    pub fn backend_id(&self) -> &'static str {
+        self.row.backend.id()
+    }
+
+    /// The image the job runs in, or the finding that its backend has none pinned yet.
+    // The finding is the error on purpose, as it is in `image_or_refusal`.
+    #[allow(clippy::result_large_err)]
+    pub fn image(&self) -> Result<&'static str, Diagnostic> {
+        image_or_refusal(&self.row)
+    }
+
+    /// The tools that make the case: their identity is part of every stage key of the job.
+    pub fn tool(&self) -> &ToolIdentity {
+        &self.recipes.mesh.tool
     }
 
     /// What the verdict on a finished run of this job is made from: the monitors and the
@@ -948,11 +1059,20 @@ impl DocJob {
     /// same case continued from the seed's latest time. The seed goes through the safety scan with
     /// the rest of the case. Without a seed this is the ordinary export for `np` processes.
     pub fn case_tree(&self, np: u32, seed: &[CaseFile]) -> Result<CaseTree, Box<Report>> {
-        let prepared =
-            prepare_with_options(&self.study_json, Dialect::EsiV2512, &CaseOptions { np })
-                .map_err(|report| Box::new(report.for_operation(self.operation())))?;
+        let prepared = prepare_row(&self.study_json, &self.row, &CompileOptions { np })
+            .map_err(|report| Box::new(report.for_operation(self.operation())))?;
         if seed.is_empty() {
             return Ok(prepared.export_tree);
+        }
+        // Continuing rewrites the control dictionary of the ESI writer's case; no other backend's
+        // case is changed that way, so a saved state is refused for them rather than guessed at.
+        if self.row.backend.family() != Family::Esi {
+            let line = Line::ContinueRefused {
+                reason: "this backend cannot continue from a saved state".to_owned(),
+            };
+            return Err(Box::new(
+                refused(CONTINUE, problem((CONTINUE_REFUSED, line))).report,
+            ));
         }
         let continued = continue_case(&prepared.tree, seed).map_err(|e| {
             let line = Line::ContinueRefused {
@@ -962,6 +1082,41 @@ impl DocJob {
         })?;
         let plan = SolverPlan::for_study(&prepared.resolved);
         Ok(export_tree_with(&continued, &prepared.hash, np, &plan))
+    }
+
+    /// The files the live view copies while the job runs: the solver log, the other judged logs
+    /// and the final result files of the backend's run plan, each once, in that order. Empty for
+    /// an OpenFOAM line, whose live view has its own set.
+    pub fn mirrored_files(&self) -> Vec<String> {
+        if self.row.backend.family().openfoam() {
+            return Vec::new();
+        }
+        let plan = self.row.backend.run_plan(&self.bench_study, 1);
+        let mut names: Vec<String> = Vec::new();
+        for name in std::iter::once(plan.solver_log)
+            .chain(plan.judged_logs)
+            .chain(plan.final_fields)
+        {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// The number of processes the backend really starts the run with when asked for `np`: `np`
+    /// when it is above one and the backend's run plan for `np` differs from its plan for one,
+    /// otherwise one. A backend whose plan ignores the count is recorded as having used one.
+    pub fn effective_np(&self, np: u32) -> u32 {
+        let backend = self.row.backend;
+        if np > 1
+            && backend.run_plan(&self.bench_study, np).steps
+                != backend.run_plan(&self.bench_study, 1).steps
+        {
+            np
+        } else {
+            1
+        }
     }
 
     /// Record what the runner made. Nothing is recorded unless every check held and the whole
@@ -1032,11 +1187,11 @@ impl DocJob {
         let verdict = self
             .pending
             .result
-            .then(|| assess_dir(dir, &self.assess.0, &self.assess.1).verdict);
+            .then(|| verdict_for(self.row.backend, dir, &self.assess, &self.bench_study));
         let mesh = self
             .pending
             .mesh
-            .then(|| mesh_bundle(dir))
+            .then(|| mesh_bundle_with(dir, &self.capture.mesh))
             .transpose()
             .map_err(|e| e.to_string())?;
         let result = self
@@ -1049,10 +1204,15 @@ impl DocJob {
             let mut numbers =
                 key_numbers_with(dir, self.end_time, &self.capture).map_err(|e| e.to_string())?;
             // The numbers of the benchmark the study is, named `bench.<benchmark>.<quantity>`.
-            let files = DirFiles {
-                root: dir.to_path_buf(),
-            };
-            numbers.extend(quantities_for(&self.bench_study, &files));
+            // They are read through the backend's own view of its files.
+            let files = comparer_files(
+                &self.row,
+                Box::new(DirFiles {
+                    root: dir.to_path_buf(),
+                }),
+                &self.bench_study,
+            );
+            numbers.extend(quantities_for(&self.bench_study, files.as_ref()));
             numbers
         } else {
             KeyNumbers::new()
@@ -1339,7 +1499,9 @@ impl DocJob {
             Err(reason) => return self.not_recorded(&reason),
         };
         if repeat.tool_changed.is_some() {
-            match mesh_bundle(run.results_dir.as_path()).and_then(|bundle| bundle.hash()) {
+            match mesh_bundle_with(run.results_dir.as_path(), &self.capture.mesh)
+                .and_then(|bundle| bundle.hash())
+            {
                 Ok(hash) => stored.regenerated_mesh = Some(hash),
                 Err(e) => return self.not_recorded(&e.to_string()),
             }

@@ -209,14 +209,20 @@ fn the_word_converged_appears_only_in_verdict_sentences() {
             assert!(
                 matches!(
                     line,
-                    Line::VerdictConverged | Line::VerdictNotConverged { .. }
+                    Line::VerdictConverged
+                        | Line::VerdictNotConverged { .. }
+                        | Line::ParityColumn { .. }
+                        | Line::ParityConverged { .. }
+                        | Line::ParityNotConverged { .. }
                 ),
                 "a sentence outside the verdict says converged: {sentence}"
             );
             found.push(sentence);
         }
     }
-    assert_eq!(found.len(), 2, "{found:?}");
+    // The two verdict sentences, plus the three parity-table sentences that report a
+    // backend's own convergence assessment.
+    assert_eq!(found.len(), 5, "{found:?}");
     assert!(found.iter().any(|s| s.starts_with("Converged: ")));
     assert!(found.iter().any(|s| s.starts_with("Not converged: ")));
 }

@@ -244,6 +244,7 @@ fn a_finished_job_can_still_be_watched_and_a_missing_mirror_says_so() {
                     scenario: None,
                     kind: JobKind::Solve,
                     origin: None,
+                    backend: None,
                 }],
             }])
         })

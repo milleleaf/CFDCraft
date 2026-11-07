@@ -8,6 +8,7 @@ fn solve() -> NewJob {
         scenario: None,
         kind: JobKind::Solve,
         origin: None,
+        backend: None,
     }
 }
 
@@ -455,6 +456,7 @@ fn raw(text: &str, state: JobState) -> Job {
         scenario: None,
         kind: JobKind::Solve,
         origin: None,
+        backend: None,
         state,
         attempts: 0,
         run_id: None,

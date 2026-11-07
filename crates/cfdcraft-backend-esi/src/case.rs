@@ -8,18 +8,10 @@ use crate::{
 use cfdcraft_model::ResolvedStudy;
 use std::{
     io,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaseFile {
-    pub rel_path: PathBuf,
-    pub bytes: Vec<u8>,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaseTree {
-    pub files: Vec<CaseFile>,
-}
+pub use cfdcraft_backend::{CaseFile, CaseTree};
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
     #[error("ESI case requires one cell through z for empty front/back patches")]
@@ -30,7 +22,7 @@ pub enum CompileError {
     Raw { label: String, reason: String },
 }
 
-pub(crate) use crate::patches::{Patch, patch_plan};
+pub use crate::patches::{Patch, patch_plan};
 
 /// How a case is written beyond what the study says. One process writes the case exactly as it
 /// has always been written.

@@ -10,6 +10,8 @@ pub struct RunArgs {
     pub hosts: PathBuf,
     pub case_dir: Option<PathBuf>,
     pub tolerance_override: Option<PathBuf>,
+    /// The id of the backend to run on; none is the registry default.
+    pub backend: Option<String>,
     pub json: bool,
 }
 
@@ -54,6 +56,7 @@ pub fn execute(args: &RunArgs) -> Result<i32, Error> {
                 target.join("cfdcraft-sockets"),
             );
             request.case_dir = args.case_dir.clone();
+            request = request.with_backend(args.backend.clone());
             request.tolerance_override = args.tolerance_override.clone();
             request.label = label(&args.study);
             run_study(&text, &request)

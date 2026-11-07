@@ -144,6 +144,7 @@ impl SolverPlan {
             solver: self.binary.clone(),
             pressure: self.pressure_field.clone(),
             temperature: self.buoyant,
+            energy_field: "T".into(),
             residual_limits: !self.residual_checks.is_empty(),
             potential_log: None,
         }

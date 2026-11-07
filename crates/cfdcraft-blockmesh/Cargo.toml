@@ -1,0 +1,9 @@
+[package]
+name = "cfdcraft-blockmesh"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-shapes = { path = "../cfdcraft-shapes", version = "=0.1.0" }
+thiserror = "=2.0.21"

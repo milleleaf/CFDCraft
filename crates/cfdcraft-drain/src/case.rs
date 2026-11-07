@@ -5,10 +5,10 @@ use std::fs;
 use std::path::Path;
 
 use cfdcraft_backend_esi::case::np_for;
-use cfdcraft_backend_esi::{CaseFile, Dialect, write_to_disk};
+use cfdcraft_backend_esi::{CaseFile, write_to_disk};
 use cfdcraft_ops::CONTINUE_REFUSED;
-use cfdcraft_ops::jobs::DocJob;
-use cfdcraft_ops::prepare;
+use cfdcraft_ops::backends::{Row, image_or_refusal};
+use cfdcraft_ops::jobs::{DocJob, prepare_on, row_for};
 use cfdcraft_queue::{Job, JobKind};
 use cfdcraft_remote::Host;
 use cfdcraft_store::Store;
@@ -19,6 +19,27 @@ use crate::tick::{Drain, STUDY};
 
 /// What the case script of a parallel run starts the solver with, up to the process count.
 const MPIRUN: &str = "mpirun -np ";
+/// The file in the live folder that holds the number of processes the run was started with, as
+/// decimal text.
+pub const NP_FILE: &str = "np";
+
+/// The registry row a job runs on: the backend it names, or the default one when it names none. A
+/// stored job whose backend no longer exists is refused with `CFD-BACKEND-001`.
+pub fn row_of(job: &Job) -> Result<Row, DrainError> {
+    row_for(job.backend.as_deref()).map_err(|_| {
+        let id = job.backend.clone().unwrap_or_default();
+        DrainError::refused("CFD-BACKEND-001", Line::BackendUnknown { id })
+    })
+}
+
+/// The image a row runs in; a backend whose image is not pinned yet is refused with
+/// `CFD-BACKEND-010`.
+pub fn image_of(row: &Row) -> Result<&'static str, DrainError> {
+    image_or_refusal(row).map_err(|_| {
+        let id = row.backend.id().to_owned();
+        DrainError::refused("CFD-BACKEND-010", Line::BackendImagePending { id })
+    })
+}
 
 /// How a job starts: the number of processes, and the files of a saved state to start from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,15 +107,17 @@ fn checkpoint_time(doc: &Path, run: &str) -> Option<String> {
 /// The cells of the mesh of the study the job was started from.
 fn cells_of<H: Host>(ctx: &Drain<H>, job: &Job) -> Option<u64> {
     let study = fs::read_to_string(ctx.live_dir(job).ok()?.join(STUDY)).ok()?;
-    let prepared = prepare(&study, Dialect::EsiV2512).ok()?;
+    let prepared = prepare_on(&study, &row_of(job).ok()?).ok()?;
     let mesh = &prepared.resolved.mesh;
     mesh.cells_x
         .checked_mul(mesh.cells_y)?
         .checked_mul(mesh.cells_z)
 }
 
-/// Brings back the process count of the job in hand after a restart, from the case script that was
-/// uploaded. A process that started the job already knows it.
+/// Brings back the process count of the job in hand after a restart: from the file the drain
+/// wrote when the job started, or for a live folder written before that file existed from the case
+/// script that was uploaded, or one when there is neither. A process that started the job already
+/// knows it.
 pub fn restore_np<H: Host>(ctx: &mut Drain<H>, job: &Job) {
     if ctx.scratch.np.is_some() {
         return;
@@ -102,8 +125,14 @@ pub fn restore_np<H: Host>(ctx: &mut Drain<H>, job: &Job) {
     let Ok(live) = ctx.live_dir(job) else {
         return;
     };
-    let script = fs::read_to_string(live.join("case").join("Allrun")).unwrap_or_default();
-    ctx.scratch.np = Some(np_in(&script));
+    let written = fs::read_to_string(live.join(NP_FILE))
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|n| *n >= 1);
+    ctx.scratch.np = Some(written.unwrap_or_else(|| {
+        let script = fs::read_to_string(live.join("case").join("Allrun")).unwrap_or_default();
+        np_in(&script)
+    }));
 }
 
 /// The process count a case script runs the solver with; one when it runs it alone.

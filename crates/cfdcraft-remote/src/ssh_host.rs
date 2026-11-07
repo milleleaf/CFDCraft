@@ -200,6 +200,13 @@ impl SshHost {
 }
 
 impl Host for SshHost {
+    fn use_image(&mut self, image: &str) -> Result<(), HostError> {
+        RunSpec::allrun_timed(image, self.profile.wall_clock_seconds)
+            .map_err(|_| refused("invalid image"))?;
+        self.image = image.to_string();
+        Ok(())
+    }
+
     fn start(&mut self, run_id: &str, case: &Path, doc: &str, np: u32) -> Result<(), HostError> {
         if !is_owned(run_id) || !run_id.starts_with(&self.profile.container_prefix) {
             return Err(refused("invalid run id"));

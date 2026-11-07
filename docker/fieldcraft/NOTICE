@@ -1,0 +1,9 @@
+FieldCraft 0.7.5 command line tool image
+
+This image contains the fieldcraft-cli program from the official FieldCraft 0.7.5 Linux release, on Debian 13 (slim). The release archive and its checksum list are checked against the release's minisign signature when the image is built, and the program is meant to be run without network access.
+
+Licence: FieldCraft is dual licensed under MIT OR Apache-2.0. The licence texts, the FieldCraft NOTICE and the third-party licence list of the release are installed under /opt/fieldcraft/licenses.
+
+Source: https://github.com/tangency-labs/fieldcraft/tree/v0.7.5
+
+The image is built by the repository's manual image workflow from docker/fieldcraft/Dockerfile and is not published until the maintainers approve it.

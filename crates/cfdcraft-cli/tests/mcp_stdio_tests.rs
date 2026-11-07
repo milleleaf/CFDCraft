@@ -7,7 +7,8 @@ mod support;
 
 use cfdcraft_capture::fixture::{FixtureSpec, write_results};
 use cfdcraft_ops::{
-    CaseRun, CaseRunner, Report, save_document, scenario_ops, solve_document, solve_scenario,
+    CaseRun, CaseRunner, Report, backend_list, save_document, scenario_ops, solve_document,
+    solve_scenario,
 };
 use cfdcraft_scenarios::Override;
 use cfdcraft_store::{ContentHash, Store};
@@ -230,6 +231,7 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
     assert_eq!(
         s.tool_names(),
         [
+            "backend_list",
             "benchmark_check",
             "benchmark_create",
             "benchmark_list",
@@ -244,9 +246,11 @@ fn the_handshake_completes_and_tools_are_listed_with_closed_schemas() {
             "get_provenance",
             "get_result",
             "get_run_result",
+            "import_case",
             "list_runs",
             "open_document",
             "pack_document",
+            "parity_table",
             "plan_update",
             "prune",
             "queue_add",
@@ -450,6 +454,164 @@ fn compile_and_export_write_the_golden_trees() {
         !public.contains(&root.to_string_lossy().into_owned()),
         "{public}"
     );
+}
+
+// ---- backends, import and parity ----
+
+#[test]
+fn the_mcp_tool_returns_the_same_report() {
+    let root = fresh("bl");
+    let mut s = Server::start(&root, "ok");
+    let r = s.tool("backend_list", json!({}));
+    assert_eq!(r, serde_json::to_value(backend_list()).unwrap());
+    assert_eq!(r["repro"]["kind"], "backends", "{r}");
+    assert_eq!(r["repro"]["backends"].as_array().unwrap().len(), 6, "{r}");
+    assert_eq!(r["repro"]["backends"][5]["preview"], true, "{r}");
+}
+
+/// A small clean case of a current Foundation release, in the folder `case`.
+fn write_foam_case(case: &Path) {
+    let dict = |object: &str, body: &str| {
+        format!(
+            "FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class dictionary;\n    object {object};\n}}\n\n{body}\n"
+        )
+    };
+    for (rel, text) in [
+        (
+            "system/controlDict",
+            dict("controlDict", "solver incompressibleFluid;\nendTime 0.5;"),
+        ),
+        (
+            "constant/physicalProperties",
+            dict("physicalProperties", "viscosityModel constant;\nnu 0.01;"),
+        ),
+    ] {
+        let path = case.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+#[test]
+fn the_mcp_tools_validate_their_inputs() {
+    let root = fresh("inp");
+    let mut s = Server::start(&root, "ok");
+    store_cavity(&mut s);
+    let before = files_under(&root.join("ws"));
+
+    // An unknown field is refused, whatever it is called, and nothing happens.
+    for (tool, arguments) in [
+        (
+            "import_case",
+            json!({"source": "case-dir", "name": "imported", "path": "/x"}),
+        ),
+        (
+            "parity_table",
+            json!({"name": "cavity", "benchmark": "cylinder", "dictionary": "x"}),
+        ),
+        ("backend_list", json!({"host": "x"})),
+    ] {
+        let r = s.raw_tool(tool, arguments);
+        assert!(refused(&r), "{tool}: {r}");
+    }
+    assert_eq!(files_under(&root.join("ws")), before);
+
+    // A source that is not a plain name below the workspace is `CFD-IMPORT-001` and opens nothing.
+    for source in ["../outside", "/etc", "a/../b", "a\\b", "c:x", ""] {
+        let r = s.tool("import_case", json!({"source": source, "name": "imported"}));
+        assert_eq!(r["exit_class"], 2, "{source}: {r}");
+        assert_eq!(codes_of(&r), ["CFD-IMPORT-001"], "{source}: {r}");
+    }
+    assert!(!root.join("ws/imported.cfdcase").exists());
+
+    // A case folder of the workspace is imported under its new name, once.
+    write_foam_case(&root.join("ws/case-dir"));
+    let r = s.tool(
+        "import_case",
+        json!({"source": "case-dir", "name": "imported"}),
+    );
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert_eq!(r["repro"]["kind"], "import", "{r}");
+    assert_eq!(r["repro"]["case"], "imported.cfdcase", "{r}");
+    assert!(root.join("ws/imported.cfdcase/import.json").is_file());
+    let public = r.to_string();
+    assert!(
+        !public.contains(&root.to_string_lossy().into_owned()),
+        "{public}"
+    );
+    let again = s.tool(
+        "import_case",
+        json!({"source": "case-dir", "name": "imported"}),
+    );
+    assert_eq!(codes_of(&again), ["CFD-IMPORT-003"], "{again}");
+
+    // The parity table needs a document and a benchmark that exists.
+    let missing = s.tool(
+        "parity_table",
+        json!({"name": "absent", "benchmark": "cylinder"}),
+    );
+    assert_ne!(missing["exit_class"], 0, "{missing}");
+    let saved = s.tool("save_document", json!({"name": "cavity"}));
+    assert_eq!(saved["exit_class"], 0, "{saved}");
+    let unknown = s.tool(
+        "parity_table",
+        json!({"name": "cavity", "benchmark": "no-such-benchmark"}),
+    );
+    assert_eq!(unknown["exit_class"], 2, "{unknown}");
+    assert!(
+        unknown.to_string().contains("no-such-benchmark"),
+        "{unknown}"
+    );
+    assert_nothing_private(&root, &s);
+}
+
+#[test]
+fn compile_run_and_queue_take_a_backend() {
+    let root = fresh("bk");
+    let mut s = Server::start(&root, "ok");
+    store_cavity(&mut s);
+
+    let r = s.tool("compile", json!({"name": "cavity", "backend": "su2-8.6.0"}));
+    assert_eq!(r["exit_class"], 0, "{r}");
+    assert!(
+        r["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "CFD-BACKEND-008" && d["severity"] == "Warning"),
+        "{r}"
+    );
+    let names: Vec<String> = files_under(&root.join("ws/compiled/cavity"))
+        .into_keys()
+        .collect();
+    assert_eq!(names, ["config.cfg", "mesh.su2"]);
+
+    // An id no backend has is refused and the output of the last good compile stays.
+    let kept = files_under(&root.join("ws/compiled/cavity"));
+    let r = s.tool("compile", json!({"name": "cavity", "backend": "nope"}));
+    assert_eq!(r["exit_class"], 2, "{r}");
+    assert_eq!(codes_of(&r), ["CFD-BACKEND-001"], "{r}");
+    assert_eq!(files_under(&root.join("ws/compiled/cavity")), kept);
+
+    // A backend whose image is not pinned is refused before the host is touched.
+    let r = s.tool(
+        "start_run",
+        json!({"name": "cavity", "mode": "run", "backend": "su2-8.6.0"}),
+    );
+    assert_eq!(r["status"], "refused", "{r}");
+    assert!(codes_of(&r["report"]).contains(&"CFD-BACKEND-010"), "{r}");
+    assert_eq!(run_count(&root), 0, "{:?}", events(&root));
+    assert!(ssh_log(&root).is_empty(), "nothing reached the host");
+
+    // A job for an id no backend has is not queued and no runner starts.
+    let saved = s.tool("save_document", json!({"name": "cavity"}));
+    assert_eq!(saved["exit_class"], 0, "{saved}");
+    let documents = files_under(&root.join("ws/documents"));
+    let r = s.tool("queue_add", json!({"name": "cavity", "backend": "nope"}));
+    assert_eq!(r["exit_class"], 2, "{r}");
+    assert!(codes_of(&r).contains(&"CFD-BACKEND-001"), "{r}");
+    assert_eq!(files_under(&root.join("ws/documents")), documents);
+    assert_nothing_private(&root, &s);
 }
 
 // ---- documents and packs by name ----
@@ -947,12 +1109,12 @@ fn surface_problems(tools: &Value) -> Vec<String> {
 }
 
 #[test]
-fn the_surface_is_still_closed_with_forty_tools() {
+fn the_surface_is_still_closed_with_forty_three_tools() {
     let root = fresh("closed");
     let mut s = Server::start(&root, "ok");
     let r = s.call("tools/list", json!({}));
     let tools = &r["result"]["tools"];
-    assert_eq!(tools.as_array().unwrap().len(), 40);
+    assert_eq!(tools.as_array().unwrap().len(), 43);
     for name in [
         "save_document",
         "open_document",
@@ -999,8 +1161,19 @@ fn the_surface_is_still_closed_with_forty_tools() {
         ("get_result", &["name", "run_id"][..]),
         (
             "queue_add",
-            &["name", "remake_pruned", "run", "scenario", "sweep"][..],
+            &[
+                "backend",
+                "name",
+                "remake_pruned",
+                "run",
+                "scenario",
+                "sweep",
+            ][..],
         ),
+        ("compile", &["backend", "name"][..]),
+        ("start_run", &["backend", "from_export", "mode", "name"][..]),
+        ("import_case", &["name", "source"][..]),
+        ("parity_table", &["benchmark", "name"][..]),
         ("queue_reorder", &["job", "name", "position"][..]),
         ("queue_cancel", &["job", "name"][..]),
         ("run_stop", &["job", "name"][..]),
@@ -1050,18 +1223,20 @@ fn the_surface_is_still_closed_with_forty_tools() {
             "{name} takes names, runs, tolerances or items only"
         );
     }
-    let list = tools
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "benchmark_list")
-        .unwrap_or_else(|| panic!("benchmark_list is advertised"));
-    assert!(
-        list["inputSchema"]["properties"]
-            .as_object()
-            .is_none_or(|inputs| inputs.is_empty()),
-        "benchmark_list takes nothing: {list}"
-    );
+    for name in ["benchmark_list", "backend_list"] {
+        let list = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is advertised"));
+        assert!(
+            list["inputSchema"]["properties"]
+                .as_object()
+                .is_none_or(|inputs| inputs.is_empty()),
+            "{name} takes nothing: {list}"
+        );
+    }
     for tool in tools.as_array().unwrap() {
         assert_eq!(
             tool["inputSchema"]["additionalProperties"], false,
@@ -1121,7 +1296,7 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
     let mut s = Server::start(&root, "ok");
     store_cavity(&mut s);
     let before = files_under(&root.join("ws"));
-    let valid: [(&str, Value); 27] = [
+    let valid: [(&str, Value); 30] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -1178,6 +1353,15 @@ fn unknown_fields_are_refused_by_every_tool_and_nothing_happens() {
         (
             "gci_report",
             json!({"name": "cavity", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
+        ),
+        ("backend_list", json!({})),
+        (
+            "import_case",
+            json!({"source": "absent", "name": "imported"}),
+        ),
+        (
+            "parity_table",
+            json!({"name": "cavity", "benchmark": "cylinder"}),
         ),
     ];
     for (tool, arguments) in valid {
@@ -2972,7 +3156,7 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
     let tar = results_tar(&root);
     let mut s = Server::start_with_env(&root, "ok", &[("CFC_TEST_RESULTS_TAR", tar.as_str())]);
     store_cavity(&mut s);
-    let calls: [(&str, Value); 40] = [
+    let calls: [(&str, Value); 43] = [
         (
             "create_study",
             json!({"name": "other", "study": value(CAVITY)}),
@@ -3049,6 +3233,15 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
             "gci_report",
             json!({"name": "absent", "sweep": "mesh", "quantity": "bench.ghia.u_centre"}),
         ),
+        ("backend_list", json!({})),
+        (
+            "import_case",
+            json!({"source": "absent", "name": "imported"}),
+        ),
+        (
+            "parity_table",
+            json!({"name": "absent", "benchmark": "cylinder"}),
+        ),
     ];
     let mut called = std::collections::BTreeSet::new();
     for (tool, arguments) in calls {
@@ -3072,6 +3265,17 @@ fn no_tool_output_names_the_workspace_folder_or_the_key() {
         (
             "gci_report",
             json!({"name": "cavity", "sweep": "nope", "quantity": "x"}),
+        ),
+        ("compile", json!({"name": "cavity", "backend": "su2-8.6.0"})),
+        (
+            "start_run",
+            json!({"name": "cavity", "mode": "run", "backend": "su2-8.6.0"}),
+        ),
+        ("queue_add", json!({"name": "cavity", "backend": "nope"})),
+        ("import_case", json!({"source": "../x", "name": "imported"})),
+        (
+            "parity_table",
+            json!({"name": "cavity", "benchmark": "nope"}),
         ),
     ] {
         s.tool(tool, arguments);

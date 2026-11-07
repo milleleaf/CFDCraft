@@ -1,0 +1,20 @@
+[package]
+name = "cfdcraft-backend-lbm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cfdcraft-backend = { path = "../cfdcraft-backend", version = "=0.1.0" }
+# The result view implements the comparers' file-reading trait.
+cfdcraft-gate = { path = "../cfdcraft-gate", version = "=0.1.0" }
+cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
+cfdcraft-settle = { path = "../cfdcraft-settle", version = "=0.1.0" }
+# float_roundtrip: the numbers read back from a written command stream must be the numbers written.
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+zip = { workspace = true }
+
+[dev-dependencies]
+# The tests read the view with the parsers the benchmark comparers use.
+cfdcraft-monitors = { path = "../cfdcraft-monitors", version = "=0.1.0" }
+cfdcraft-templates = { path = "../cfdcraft-templates", version = "=0.1.0" }

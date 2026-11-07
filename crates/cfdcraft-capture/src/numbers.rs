@@ -92,12 +92,16 @@ pub fn key_numbers(results: &Path, end_time: f64) -> Result<KeyNumbers, CaptureE
 }
 
 /// [`key_numbers`] for the log and residual fields `plan` names; the centreline samples are read
-/// only when the plan asks for them.
+/// only when the plan asks for them. A plan that is not in the OpenFOAM layout has no numbers
+/// derived from its log: the set is empty.
 pub fn key_numbers_with(
     results: &Path,
     end_time: f64,
     plan: &CapturePlan,
 ) -> Result<KeyNumbers, CaptureError> {
+    if !plan.time_folder {
+        return Ok(KeyNumbers::new());
+    }
     let log = text_of(&read_regular(results, &plan.log, FILE_CAP)?, &plan.log)?;
     let (time, residuals) = last_iteration(&log, &plan.log, &plan.residual_fields)?;
     let mut numbers = KeyNumbers::new();

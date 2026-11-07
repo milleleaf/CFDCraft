@@ -86,13 +86,13 @@ pub fn result_bundle_limited_with(
     file_cap: u64,
     plan: &CapturePlan,
 ) -> Result<Bundle, CaptureError> {
+    if !plan.time_folder {
+        return read_all(results, file_names(plan), file_cap);
+    }
     let end = find_time_dir(results, end_time)?;
     let mut names: Vec<String> = plan.fields.iter().map(|f| format!("{end}/{f}")).collect();
-    names.extend([
-        "log.blockMesh".to_owned(),
-        "log.checkMesh".to_owned(),
-        plan.log.clone(),
-    ]);
+    names.extend(plan.logs.iter().cloned());
+    names.push(plan.log.clone());
     if plan.centreline {
         let centre = centreline_folder(results, end_time)?;
         names.push(format!("postProcessing/centreline/{centre}/vertical_U.xy"));
@@ -104,6 +104,21 @@ pub fn result_bundle_limited_with(
     push_if_present(results, "log.potentialFoam".to_owned(), &mut names)?;
     names.extend(monitor_names(results)?);
     read_all(results, names, file_cap)
+}
+
+/// The names of a file-layout plan: the solver log, the other logs, then the result files, each
+/// once, relative to the results folder.
+fn file_names(plan: &CapturePlan) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in std::iter::once(&plan.log)
+        .chain(&plan.logs)
+        .chain(&plan.fields)
+    {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names
 }
 
 /// Adds `rel` to `names` when something is there; whatever is there must then be a plain file,

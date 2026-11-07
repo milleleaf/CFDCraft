@@ -263,8 +263,8 @@ fn the_obstacle_face_needs_a_cylinder_and_a_wall() {
 }
 
 #[test]
-fn the_catalogue_has_ninety_three_entries() {
-    assert_eq!(CODES.len(), 93);
+fn the_catalogue_has_one_hundred_and_twenty_four_entries() {
+    assert_eq!(CODES.len(), 124);
     for code in [
         "CFD-MESH-002",
         "CFD-SHAPE-001",

@@ -33,6 +33,7 @@ fn writer_limits() -> Capabilities {
         requires_single_cell_z: true,
         same_kind_boundaries_must_agree: true,
         raw_backend: Some(RawBackend::Esi),
+        ..Capabilities::unrestricted()
     }
 }
 
@@ -213,5 +214,5 @@ fn the_new_codes_are_listed() {
         assert!(is_known_code(&format!("CFD-RAW-00{n}")), "{n}");
     }
     assert!(!is_known_code("CFD-RAW-008"));
-    assert_eq!(CODES.len(), 93);
+    assert_eq!(CODES.len(), 124);
 }

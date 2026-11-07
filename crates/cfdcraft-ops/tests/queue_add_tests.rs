@@ -96,6 +96,7 @@ fn fill(doc: &Path, count: usize) {
             scenario: None,
             kind: JobKind::Solve,
             origin: None,
+            backend: None,
         })
         .collect();
     QueueFile::new(doc)
@@ -245,6 +246,7 @@ fn two_selectors_at_once_are_refused() {
         sweep: Some("lids".to_owned()),
         remake_pruned: false,
         continue_run: None,
+        backend: None,
     };
     let out = queue_add(&doc, &both);
     assert_eq!(codes(&out.report), ["CFD-QUEUE-001"]);

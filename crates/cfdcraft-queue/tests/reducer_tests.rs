@@ -8,6 +8,7 @@ fn solve() -> NewJob {
         scenario: None,
         kind: JobKind::Solve,
         origin: None,
+        backend: None,
     }
 }
 
@@ -176,6 +177,7 @@ fn a_continue_job_carries_its_run() {
                 scenario: Some("base".to_owned()),
                 kind: kind.clone(),
                 origin: None,
+                backend: None,
             }],
         },
     );

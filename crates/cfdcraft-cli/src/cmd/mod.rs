@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod benchmark;
 pub mod check_case;
 pub mod compile;
@@ -5,7 +6,9 @@ pub mod disk;
 pub mod document;
 pub mod export;
 pub mod gci;
+pub mod import;
 pub mod keys;
+pub mod parity;
 pub mod queue;
 pub mod repro;
 pub mod run;
@@ -109,6 +112,34 @@ pub fn emit_data(outcome: &cfdcraft_ops::DocOutcome, json: bool) -> Result<i32, 
         println!("{}", cfdcraft_text::Text::english().render(line));
     }
     Ok(code)
+}
+
+/// Prints the sentences a report's data gives on standard output, and returns the exit status.
+///
+/// With `json` the report is the only thing on stdout and nothing goes to stderr. Otherwise the
+/// sentences of a passing report are the only thing on stdout, and every note and finding goes to
+/// stderr.
+pub fn emit_lines(
+    report: &cfdcraft_ops::Report,
+    json: bool,
+    lines: impl FnOnce(&cfdcraft_ops::Repro) -> Vec<cfdcraft_text::Line>,
+) -> i32 {
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        if let Some(data) = report
+            .repro
+            .as_ref()
+            .filter(|_| report.class() == cfdcraft_ops::ExitClass::Passed)
+        {
+            let text = cfdcraft_text::Text::english();
+            for line in lines(data) {
+                println!("{}", text.render(&line));
+            }
+        }
+        eprint!("{}", report.render_text());
+    }
+    i32::from(report.exit_class)
 }
 
 /// The report as JSON with one more member, for a verb whose answer has no place in the shared

@@ -52,7 +52,7 @@ fn reference_speed(s: &ResolvedStudy) -> Option<f64> {
 
 /// The inflow values of the turbulence fields; `None` for a laminar study or when they cannot be
 /// worked out.
-pub(crate) fn inlet_values(s: &ResolvedStudy) -> Option<InletTurbulence> {
+pub fn inlet_values(s: &ResolvedStudy) -> Option<InletTurbulence> {
     let t = &s.physics.as_ref()?.turbulence;
     if t.model == TurbulenceModel::Laminar {
         return None;
@@ -77,7 +77,7 @@ pub fn inlet_values_text(s: &ResolvedStudy) -> Option<String> {
 }
 
 /// The model and the inflow values the turbulence files are written from; `None` when laminar.
-pub(crate) fn turbulence_inputs(
+pub fn turbulence_inputs(
     s: &ResolvedStudy,
 ) -> Result<Option<(TurbulenceModel, InletTurbulence)>, CompileError> {
     let model = model_of(s);
@@ -91,7 +91,7 @@ pub(crate) fn turbulence_inputs(
         ))
 }
 
-pub(crate) fn turbulence_properties_for(s: &ResolvedStudy) -> String {
+pub fn turbulence_properties_for(s: &ResolvedStudy) -> String {
     let word = match model_of(s) {
         TurbulenceModel::Laminar => return transport::turbulence_properties(),
         TurbulenceModel::KOmegaSst => "kOmegaSST",
@@ -139,11 +139,11 @@ fn turbulent_field(
     scalar_file(object, dimensions, &v, &entries)
 }
 
-pub(crate) fn k_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
+pub fn k_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
     turbulent_field("k", "[0 2 -2 0 0 0 0]", "kqRWallFunction", inlet.k, patches)
 }
 
-pub(crate) fn omega_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
+pub fn omega_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
     turbulent_field(
         "omega",
         "[0 0 -1 0 0 0 0]",
@@ -153,7 +153,7 @@ pub(crate) fn omega_field(patches: &[Patch], inlet: &InletTurbulence) -> String 
     )
 }
 
-pub(crate) fn epsilon_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
+pub fn epsilon_field(patches: &[Patch], inlet: &InletTurbulence) -> String {
     turbulent_field(
         "epsilon",
         "[0 2 -3 0 0 0 0]",
@@ -165,7 +165,7 @@ pub(crate) fn epsilon_field(patches: &[Patch], inlet: &InletTurbulence) -> Strin
 
 /// The turbulent viscosity: worked out by the model, so it starts at zero and is only `calculated`
 /// away from the walls.
-pub(crate) fn nut_field(patches: &[Patch], model: TurbulenceModel) -> String {
+pub fn nut_field(patches: &[Patch], model: TurbulenceModel) -> String {
     let wall_function = if model == TurbulenceModel::KOmegaSst {
         "nutUBlendedWallFunction"
     } else {
@@ -186,7 +186,7 @@ pub(crate) fn nut_field(patches: &[Patch], model: TurbulenceModel) -> String {
 
 /// The temperature: held on a wall with a fixed temperature, at the reference temperature on an
 /// inlet, free elsewhere.
-pub(crate) fn t_field(patches: &[Patch], reference: f64) -> String {
+pub fn t_field(patches: &[Patch], reference: f64) -> String {
     let r = scalar(reference);
     let entries = boundary_field(patches, |p| match (p.kind, p.temperature) {
         (None, _) => "type empty;".into(),
@@ -201,7 +201,7 @@ pub(crate) fn t_field(patches: &[Patch], reference: f64) -> String {
 }
 
 /// The pressure without the hydrostatic part, which the buoyant solvers solve for.
-pub(crate) fn p_rgh_field(patches: &[Patch]) -> String {
+pub fn p_rgh_field(patches: &[Patch]) -> String {
     let entries = boundary_field(patches, |p| match p.kind {
         None => "type empty;".into(),
         Some(BoundaryKind::PressureOutlet) => "type fixedValue; value uniform 0;".into(),
@@ -212,7 +212,7 @@ pub(crate) fn p_rgh_field(patches: &[Patch]) -> String {
 }
 
 /// The pressure the buoyant solver works out from `p_rgh`; it is never read as an input.
-pub(crate) fn p_calculated_field(patches: &[Patch]) -> String {
+pub fn p_calculated_field(patches: &[Patch]) -> String {
     let entries = boundary_field(patches, |p| match p.kind {
         None => "type empty;".into(),
         Some(BoundaryKind::Symmetry) => format!("type {};", p.symmetry_type()),
@@ -223,7 +223,7 @@ pub(crate) fn p_calculated_field(patches: &[Patch]) -> String {
 
 /// The turbulent thermal diffusivity. The buoyant solver reads it even when the flow is laminar.
 /// A turbulence model puts a wall function with the turbulent Prandtl number on every wall.
-pub(crate) fn alphat_field(patches: &[Patch], turbulent_prandtl: Option<f64>) -> String {
+pub fn alphat_field(patches: &[Patch], turbulent_prandtl: Option<f64>) -> String {
     let entries = boundary_field(patches, |p| match (p.kind, turbulent_prandtl) {
         (None, _) => "type empty;".into(),
         (Some(BoundaryKind::Symmetry), _) => format!("type {};", p.symmetry_type()),
@@ -238,7 +238,7 @@ pub(crate) fn alphat_field(patches: &[Patch], turbulent_prandtl: Option<f64>) ->
 
 /// The patch fields the buoyant solvers read, as `(file, text)` pairs, in the order they are
 /// written. Empty for a study without buoyancy.
-pub(crate) fn buoyant_files(s: &ResolvedStudy, patches: &[Patch]) -> Vec<(&'static str, String)> {
+pub fn buoyant_files(s: &ResolvedStudy, patches: &[Patch]) -> Vec<(&'static str, String)> {
     let Some(b) = s.physics.as_ref().and_then(|p| p.buoyancy) else {
         return Vec::new();
     };
@@ -251,7 +251,7 @@ pub(crate) fn buoyant_files(s: &ResolvedStudy, patches: &[Patch]) -> Vec<(&'stat
 }
 
 /// The turbulence files of a case, as `(file, text)` pairs, in the order they are written.
-pub(crate) fn turbulence_files(
+pub fn turbulence_files(
     patches: &[Patch],
     model: TurbulenceModel,
     inlet: &InletTurbulence,
@@ -268,14 +268,14 @@ pub(crate) fn turbulence_files(
 
 /// True for a study whose numerics are those of the lid-driven cavity since the first release:
 /// steady, laminar, without buoyancy and on a plain box.
-pub(crate) fn has_plain_numerics(s: &ResolvedStudy, plan: &SolverPlan) -> bool {
+pub fn has_plain_numerics(s: &ResolvedStudy, plan: &SolverPlan) -> bool {
     !plan.transient
         && !plan.buoyant
         && model_of(s) == TurbulenceModel::Laminar
         && s.domain.shape.is_none()
 }
 
-pub(crate) fn fv_schemes_for(s: &ResolvedStudy, plan: &SolverPlan) -> String {
+pub fn fv_schemes_for(s: &ResolvedStudy, plan: &SolverPlan) -> String {
     let model = model_of(s);
     let ddt = if plan.transient {
         "backward"
@@ -330,7 +330,7 @@ fn solver_entry(
     )
 }
 
-pub(crate) fn fv_solution_for(s: &ResolvedStudy, plan: &SolverPlan) -> String {
+pub fn fv_solution_for(s: &ResolvedStudy, plan: &SolverPlan) -> String {
     let model = model_of(s);
     let cylinder = matches!(s.domain.shape, Some(ResolvedShape::CylinderChannel { .. }));
     let non_orthogonal = u32::from(cylinder);

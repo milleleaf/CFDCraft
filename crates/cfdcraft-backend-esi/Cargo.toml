@@ -7,5 +7,5 @@ license.workspace = true
 [dependencies]
 cfdcraft-model = { path = "../cfdcraft-model", version = "=0.1.0" }
 thiserror = "=2.0.21"
-ryu = "=1.0.20"
+ryu = "=1.0.23"
 
